@@ -1319,6 +1319,12 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
     // for a short period to prevent VS Code ConPTY duplicate injection.
     #[cfg(windows)]
     let mut paste_suppress_until: Option<Instant> = None;
+    // Content-matched suppression: after right-click paste, discard ConPTY
+    // duplicate key events by matching them against the pasted clipboard text.
+    #[cfg(windows)]
+    let mut paste_suppress_chars: Vec<char> = Vec::new();
+    #[cfg(windows)]
+    let mut paste_suppress_pos: usize = 0;
 
     // Track whether a modified Enter Press was already handled this keypress
     // cycle.  WezTerm sends Shift+Enter as Release-only (no Press), so we
@@ -1872,7 +1878,7 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                             input_log("paste", &format!("stage2: {} chars in 20ms, waiting for Ctrl+V Release", paste_pend.len()));
                         }
                     } else if paste_pend.len() >= 20 && has_non_ascii {
-                        // ≥20 non-ASCII chars in 20ms — almost certainly a paste
+                        // ≥8 non-ASCII chars in 20ms — almost certainly a paste
                         // containing Unicode content (em-dashes, CJK, etc.), not
                         // IME composition (which rarely exceeds a few chars).
                         paste_stage2 = true;
@@ -2046,14 +2052,55 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                         // keyboard to detect the real modifier.
                         #[cfg(windows)]
                         crate::platform::augment_enter_shift(&mut key);
-                        // Clear the WezTerm dedup flag on any non-Enter key; set
-                        // it when a modified Enter Press is being processed.
+                        // During paste suppression, discard duplicate key events.
+                        // Timer-based: after right-click copy (no content to match).
+                        // Content-matched: after right-click paste (match against clipboard).
                         #[cfg(windows)]
                         {
-                            if matches!(key.code, KeyCode::Enter) && !key.modifiers.is_empty() {
-                                modified_enter_press_handled = true;
-                            } else {
-                                modified_enter_press_handled = false;
+                            // Timer-based suppression (copy case)
+                            if paste_suppress_until.is_some() {
+                                let expired = paste_suppress_until.map_or(true, |t| Instant::now() >= t);
+                                if expired {
+                                    paste_suppress_until = None;
+                                } else {
+                                    let is_text_key = matches!(key.code,
+                                        KeyCode::Char(_) | KeyCode::Enter | KeyCode::Tab
+                                    ) && !key.modifiers.contains(KeyModifiers::CONTROL);
+                                    if is_text_key {
+                                        _pending_evt = input.try_read()?;
+                                        continue;
+                                    }
+                                }
+                            }
+                            // Content-matched suppression (paste case)
+                            if paste_suppress_pos < paste_suppress_chars.len() {
+                                let expected = paste_suppress_chars[paste_suppress_pos];
+                                let matched = match key.code {
+                                    KeyCode::Char(c) => c == expected,
+                                    KeyCode::Enter => expected == '\r' || expected == '\n',
+                                    KeyCode::Tab => expected == '\t',
+                                    _ => false,
+                                };
+                                if matched {
+                                    paste_suppress_pos += 1;
+                                    // Skip CRLF: if we matched \r and next is \n, skip it too
+                                    if expected == '\r'
+                                        && paste_suppress_pos < paste_suppress_chars.len()
+                                        && paste_suppress_chars[paste_suppress_pos] == '\n'
+                                    {
+                                        paste_suppress_pos += 1;
+                                    }
+                                    if paste_suppress_pos >= paste_suppress_chars.len() {
+                                        paste_suppress_chars.clear();
+                                        paste_suppress_pos = 0;
+                                    }
+                                    _pending_evt = input.try_read()?;
+                                    continue;
+                                } else {
+                                    // Mismatch — stop suppressing, let event through
+                                    paste_suppress_chars.clear();
+                                    paste_suppress_pos = 0;
+                                }
                             }
                         }
                         // Flush pending paste buffer before processing any non-bufferable key.
@@ -3271,16 +3318,18 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                 }
 
                                 KeyCode::Char(' ') => {
-                                    #[cfg(windows)]
-                                    {
-                                        paste_pend.push(' ');
-                                        if paste_pend_start.is_none() {
-                                            paste_pend_start = Some(Instant::now());
+                                    if key.modifiers.is_empty() {
+                                        #[cfg(windows)]
+                                        {
+                                            paste_pend.push(' ');
+                                            if paste_pend_start.is_none() {
+                                                paste_pend_start = Some(Instant::now());
+                                            }
                                         }
-                                    }
-                                    #[cfg(not(windows))]
-                                    {
-                                        cmd_batch.push("send-key space\n".into());
+                                        #[cfg(not(windows))]
+                                        { cmd_batch.push("send-key space\n".into()); }
+                                    } else {
+                                        cmd_batch.push(format!("send-key {}\n", modified_key_name("Space", key.modifiers)));
                                     }
                                 }
                                 // AltGr detection: On Windows, AltGr is reported as
@@ -3476,16 +3525,16 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                                 paste_pend_start = Some(Instant::now());
                                             }
                                         } else {
-                                            cmd_batch.push("send-key tab\n".into());
+                                            cmd_batch.push(format!("send-key {}\n", modified_key_name("Tab", key.modifiers)));
                                         }
                                     }
                                     #[cfg(not(windows))]
-                                    { cmd_batch.push("send-key tab\n".into()); }
+                                    { cmd_batch.push(format!("send-key {}\n", modified_key_name("Tab", key.modifiers))); }
                                 }
-                                KeyCode::BackTab => { cmd_batch.push("send-key btab\n".into()); }
-                                KeyCode::Backspace => { cmd_batch.push("send-key backspace\n".into()); }
+                                KeyCode::BackTab => { cmd_batch.push(format!("send-key {}\n", modified_key_name("BTab", key.modifiers))); }
+                                KeyCode::Backspace => { cmd_batch.push(format!("send-key {}\n", modified_key_name("Backspace", key.modifiers))); }
                                 KeyCode::Delete => { cmd_batch.push(format!("send-key {}\n", modified_key_name("Delete", key.modifiers))); }
-                                KeyCode::Esc => { cmd_batch.push("send-key esc\n".into()); }
+                                KeyCode::Esc => { cmd_batch.push(format!("send-key {}\n", modified_key_name("Esc", key.modifiers))); }
                                 KeyCode::Left => { cmd_batch.push(format!("send-key {}\n", modified_key_name("Left", key.modifiers))); }
                                 KeyCode::Right => { cmd_batch.push(format!("send-key {}\n", modified_key_name("Right", key.modifiers))); }
                                 KeyCode::Up => { cmd_batch.push(format!("send-key {}\n", modified_key_name("Up", key.modifiers))); }
@@ -3794,6 +3843,10 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                         if !text.is_empty() {
                                             let encoded = base64_encode(&text);
                                             cmd_batch.push(format!("send-paste {}\n", encoded));
+                                            // Suppress ConPTY duplicate injection by
+                                            // matching incoming events against clipboard.
+                                            paste_suppress_chars = text.chars().collect();
+                                            paste_suppress_pos = 0;
                                         }
                                     }
                                 }
@@ -5177,6 +5230,7 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                     right_text.len(), right_text.chars().take(100).collect::<String>()));
             }
             let mut right_spans = crate::rendering::parse_inline_styles(&right_text, sb_base);
+
 
             // Enforce status-left-length / status-right-length truncation (tmux parity)
             crate::style::truncate_spans_to_width(&mut left_spans, state.status_left_length);

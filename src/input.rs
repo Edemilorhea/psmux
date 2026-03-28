@@ -1666,6 +1666,8 @@ pub fn parse_modified_special_key(s: &str) -> Option<String> {
     // Match the base key name
     match rest {
         "ENTER" | "RETURN" | "CR" => Some(format!("\x1b[13;{}~", m)),
+        "BACKSPACE" | "BSPACE" => Some(format!("\x1b[127;{}u", m)),
+        "ESC" | "ESCAPE" => Some(format!("\x1b[27;{}u", m)),
         "TAB" => Some(format!("\x1b[9;{}~", m)),
         "BTAB" | "BACKTAB" => {
             // Shift is implicit in BackTab; ensure Shift bit is set in the bitmask
@@ -1809,20 +1811,8 @@ pub fn encode_key_event(key: &KeyEvent) -> Option<Vec<u8>> {
         KeyCode::Enter => {
             let m = modifier_param(key.modifiers);
             if m > 1 {
-                // On Windows, CSI 13;mod~ is non-standard and dropped by ConPTY.
-                // Send ESC+CR (\x1b\r) for Shift/Alt+Enter — the same bytes VS Code's
-                // xterm.js sends.  libuv preserves ESC as Alt prefix, so Node.js apps
-                // (Claude Code) receive \x1b\r and interpret it as Shift+Enter.
-                // Ctrl+Enter and Ctrl+Shift+Enter still use CSI encoding (those are
-                // less common and consumed by other layers).
-                #[cfg(windows)]
-                {
-                    let has_ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-                    if !has_ctrl {
-                        return Some(b"\x1b\r".to_vec());
-                    }
-                }
-                // Non-Windows or Ctrl combos: xterm modified-Enter: CSI 13 ; mod ~
+                // xterm modified-Enter: CSI 13 ; mod ~
+                // (On Windows, encode_key_win32 is used instead of this function.)
                 format!("\x1b[13;{}~", m).into_bytes()
             } else {
                 b"\r".to_vec()
@@ -1847,7 +1837,14 @@ pub fn encode_key_event(key: &KeyEvent) -> Option<Vec<u8>> {
                 b"\x1b[Z".to_vec()
             }
         }
-        KeyCode::Backspace => b"\x08".to_vec(),
+        KeyCode::Backspace => {
+            let m = modifier_param(key.modifiers);
+            if m > 1 {
+                format!("\x1b[127;{}u", m).into_bytes()
+            } else {
+                b"\x08".to_vec()
+            }
+        }
         KeyCode::Esc => b"\x1b".to_vec(),
         // Arrow keys and special keys with xterm modifier encoding.
         // Format: \x1b[1;{mod}{letter} where mod = 1 + Shift*1 + Alt*2 + Ctrl*4
@@ -1958,163 +1955,16 @@ pub fn forward_key_to_active(app: &mut AppState, key: KeyEvent) -> io::Result<()
         for_each_receiving_pane(app, |p| p.last_special_key = Some((now, name.clone())));
     }
 
-    // On Windows, modified Enter delivery depends on the modifier:
-    //
-    // Shift/Alt+Enter (no Ctrl): Use VT encoding ONLY (\x1b\r).  Native
-    //   WriteConsoleInputW injection would cause ConPTY to translate the
-    //   KEY_EVENT back to plain \r, so VT-native apps (Claude Code) see a
-    //   double Enter.
-    //
-    // Ctrl+Enter / Ctrl+Shift+Enter: Use native injection ONLY.  ConPTY
-    //   cannot encode Ctrl+Enter in VT, so injection is the only reliable
-    //   path for console apps (PSReadLine).  Falls back to xterm CSI
-    //   encoding (\x1b[13;N~) if injection fails (for non-console apps).
-    #[cfg(windows)]
-    {
-        if matches!(key.code, KeyCode::Enter) && !key.modifiers.is_empty() {
-            let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-            let alt = key.modifiers.contains(KeyModifiers::ALT);
-            let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-
-            // Only use native injection when Ctrl is involved.
-            if ctrl {
-                let try_inject = |pane: &mut Pane| -> bool {
-                    if let Some(pid) = pane.child_pid {
-                        crate::platform::mouse_inject::send_modified_key_event(pid, '\r', ctrl, alt, shift)
-                    } else {
-                        false
-                    }
-                };
-
-                if app.sync_input {
-                    let win = &mut app.windows[app.active_idx];
-                    fn inject_all(node: &mut Node, ctrl: bool, alt: bool, shift: bool) {
-                        match node {
-                            Node::Leaf(p) if !p.dead => {
-                                if let Some(pid) = p.child_pid {
-                                    if !crate::platform::mouse_inject::send_modified_key_event(pid, '\r', ctrl, alt, shift) {
-                                        // Fallback: xterm CSI encoding for non-console apps
-                                        let m: u8 = 1 + (shift as u8) + (alt as u8) * 2 + (ctrl as u8) * 4;
-                                        let bytes = if m > 1 { format!("\x1b[13;{}~", m).into_bytes() } else { b"\r".to_vec() };
-                                        let _ = p.writer.write_all(&bytes);
-                                        let _ = p.writer.flush();
-                                    }
-                                }
-                            }
-                            Node::Leaf(_) => {}
-                            Node::Split { children, .. } => {
-                                for c in children { inject_all(c, ctrl, alt, shift); }
-                            }
-                        }
-                    }
-                    inject_all(&mut win.root, ctrl, alt, shift);
-                    return Ok(());
-                } else {
-                    let win = &mut app.windows[app.active_idx];
-                    if let Some(active) = active_pane_mut(&mut win.root, &win.active_path) {
-                        if !active.dead {
-                            if try_inject(active) {
-                                return Ok(());
-                            }
-                            // Fallback: VT encoding (falls through below)
-                        }
-                    }
-                }
-            }
-            // Shift/Alt+Enter (no Ctrl): fall through to VT encoding below.
-        }
-
-        // Ctrl+letter: inject via WriteConsoleInputW so ConPTY's VT parser
-        // state is never touched.  Writing Win32 VT sequences to the pipe
-        // leaves the parser buffering \x1b, which blocks subsequent ESC
-        // delivery to apps like Neovim (#305, fixed for send-keys; this
-        // fixes the live-keypress path).
-        //
-        // crossterm may report Ctrl+K two ways:
-        //   1. KeyCode::Char('k') with KeyModifiers::CONTROL
-        //   2. KeyCode::Char('\x0b') with NO modifiers (raw control byte)
-        // We handle both variants here.
-        if let KeyCode::Char(c) = key.code {
-            let is_ctrl_c = is_ctrl_c_key_event(&key);
-            let (inject_char, is_ctrl_letter) = if key.modifiers.contains(KeyModifiers::CONTROL)
-                && !key.modifiers.contains(KeyModifiers::ALT)
-                && c.is_ascii_alphabetic()
-            {
-                (c, true)
-            } else if !key.modifiers.contains(KeyModifiers::ALT)
-                && (c as u32) >= 0x01
-                && (c as u32) <= 0x1A
-            {
-                // Raw control byte → map back to the letter (0x01='a', 0x0B='k', etc.)
-                let letter = (c as u8 + b'a' - 1) as char;
-                (letter, true)
-            } else {
-                (c, false)
-            };
-
-            if is_ctrl_letter {
-                let ctrl_char = (inject_char.to_ascii_lowercase() as u8) & 0x1F;
-
-                if app.sync_input {
-                    let win = &mut app.windows[app.active_idx];
-                    fn inject_ctrl_all(node: &mut Node, ch: char, raw: u8, is_ctrl_c: bool) {
-                        match node {
-                            Node::Leaf(p) if !p.dead => {
-                                let mut injected = false;
-                                #[cfg(windows)]
-                                if let Some(pid) = p.child_pid {
-                                    if is_ctrl_c {
-                                        // Keyboard pass-through: let raw-mode TUIs (opencode,
-                                        // neovim) handle 0x03 themselves (force=false).
-                                        crate::platform::mouse_inject::send_ctrl_c_event(pid, false, false);
-                                    } else {
-                                        injected = crate::platform::mouse_inject::send_modified_key_event(pid, ch, true, false, false);
-                                    }
-                                }
-                                if !injected {
-                                    let _ = p.writer.write_all(&[raw]);
-                                    let _ = p.writer.flush();
-                                }
-                                crate::debug_log::input_log("ctrl-key",
-                                    &format!("sync inject_ctrl char='{}' pid={:?}", ch, p.child_pid));
-                            }
-                            Node::Leaf(_) => {}
-                            Node::Split { children, .. } => {
-                                for child in children { inject_ctrl_all(child, ch, raw, is_ctrl_c); }
-                            }
-                        }
-                    }
-                    inject_ctrl_all(&mut win.root, inject_char, ctrl_char, is_ctrl_c);
-                } else {
-                    let win = &mut app.windows[app.active_idx];
-                    if let Some(active) = active_pane_mut(&mut win.root, &win.active_path) {
-                        if !active.dead {
-                            let mut injected = false;
-                            #[cfg(windows)]
-                            if let Some(pid) = active.child_pid {
-                                if is_ctrl_c {
-                                    // Keyboard pass-through: let raw-mode TUIs (opencode,
-                                    // neovim) handle 0x03 themselves (force=false).
-                                    crate::platform::mouse_inject::send_ctrl_c_event(pid, false, false);
-                                } else {
-                                    injected = crate::platform::mouse_inject::send_modified_key_event(pid, inject_char, true, false, false);
-                                }
-                            }
-                            if !injected {
-                                let _ = active.writer.write_all(&[ctrl_char]);
-                                let _ = active.writer.flush();
-                            }
-                            crate::debug_log::input_log("ctrl-key",
-                                &format!("inject_ctrl char='{}' pid={:?}", inject_char, active.child_pid));
-                        }
-                    }
-                }
-                return Ok(());
-            }
-        }
-    }
-
-    let encoded = match encode_key_event(&key) {
+    // On Windows, encode ALL keys as win32-input-mode sequences.  ConPTY
+    // created with PSEUDOCONSOLE_WIN32_INPUT_MODE accepts ESC[Vk;Sc;Uc;Kd;Cs;Rc_
+    // unconditionally, preserving modifier flags that VT sequences cannot express.
+    let encoded = {
+        #[cfg(windows)]
+        { crate::win32_input::encode_key_win32(&key) }
+        #[cfg(not(windows))]
+        { encode_key_event(&key) }
+    };
+    let encoded = match encoded {
         Some(bytes) => bytes,
         None => return Ok(()),
     };
@@ -3266,6 +3116,16 @@ pub fn send_key_to_active(app: &mut AppState, k: &str, force_signal: bool) -> io
     // always deliver CTRL_C_EVENT.  Pass true for `send-keys -f C-c` bindings.
     fn write_named_key_to_pane(p: &mut crate::types::Pane, k: &str, force_signal: bool) {
         use std::io::Write as _;
+        // On Windows, encode all keys as win32-input-mode sequences.
+        // This replaces per-key VT hacks and preserves modifier flags.
+        #[cfg(windows)]
+        {
+            if let Some(seq) = crate::win32_input::encode_key_name_win32(k) {
+                let _ = p.writer.write_all(&seq);
+                let _ = p.writer.flush();
+                return;
+            }
+        }
         match k {
             "enter" => { let _ = write!(p.writer, "\r"); }
             "tab" => { let _ = write!(p.writer, "\t"); }
@@ -3361,43 +3221,9 @@ pub fn send_key_to_active(app: &mut AppState, k: &str, force_signal: bool) -> io
                     let _ = p.writer.write_all(&[0x1b, ctrl_char]);
                 }
             }
-            // Modified Enter: for Ctrl combos, try native console injection
-            // (WriteConsoleInputW) so PSReadLine sees the correct modifier flags.
-            // For Shift/Alt-only combos, use VT encoding to avoid ConPTY
-            // translating the injected KEY_EVENT back to plain \r (double Enter).
-            #[cfg(windows)]
-            s if {
-                let u = s.to_uppercase();
-                let r = u.trim_start_matches("C-").trim_start_matches("M-").trim_start_matches("S-");
-                r == "ENTER" || r == "RETURN" || r == "CR"
-            } => {
-                let upper = s.to_uppercase();
-                let has_shift = upper.contains("S-");
-                let has_ctrl = upper.contains("C-");
-                let has_alt = upper.contains("M-");
-                let injected = if has_ctrl {
-                    // Only use native injection for Ctrl combos.
-                    if let Some(pid) = p.child_pid {
-                        crate::platform::mouse_inject::send_modified_key_event(pid, '\r', has_ctrl, has_alt, has_shift)
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                };
-                if !injected {
-                    if (has_shift || has_alt) && !has_ctrl {
-                        // Fallback: ESC + CR for VT-native apps (Claude Code, etc.)
-                        let _ = p.writer.write_all(b"\x1b\r");
-                    } else {
-                        // Ctrl+Enter and other combos: CSI encoding
-                        if let Some(seq) = parse_modified_special_key(s) {
-                            let _ = p.writer.write_all(seq.as_bytes());
-                        }
-                    }
-                }
-            }
+
             // Modifier + special key combos: C-Left, S-Right, C-S-Up, C-M-Home, etc.
+            // (On Windows, encode_key_name_win32 handles these via the early return above.)
             s if parse_modified_special_key(s).is_some() => {
                 let seq = parse_modified_special_key(s).unwrap();
                 let _ = p.writer.write_all(seq.as_bytes());

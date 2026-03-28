@@ -1249,9 +1249,18 @@ pub fn ensure_prefix_self_binding(app: &mut AppState) {
 /// (e.g. `[` `]` `{` `}` `@` `\` `|` `~` on German/Czech keyboards) arrive
 /// as Char('[') with CONTROL|ALT modifiers.  Stripping those fake modifiers
 /// lets the binding lookup match the registered `[` binding (issue #287).
+///
+/// When win32-input-mode is active, terminals report Shift+i as (Char('i'), SHIFT) rather than
+/// (Char('I'), NONE), so we uppercase lowercase letters before stripping SHIFT.
 pub fn normalize_key_for_binding(key: (KeyCode, KeyModifiers)) -> (KeyCode, KeyModifiers) {
     match key.0 {
         KeyCode::Char(c) => {
+            // win32-input-mode: Shift+lowercase → uppercase before stripping SHIFT
+            let c = if key.1.contains(KeyModifiers::SHIFT) && c.is_ascii_lowercase() {
+                c.to_ascii_uppercase()
+            } else {
+                c
+            };
             let mut mods = key.1.difference(KeyModifiers::SHIFT);
             // On Windows, AltGr is reported as Ctrl+Alt.  Non-lowercase-letter
             // chars with both Ctrl and Alt are AltGr-produced — strip the fake
@@ -1264,7 +1273,7 @@ pub fn normalize_key_for_binding(key: (KeyCode, KeyModifiers)) -> (KeyCode, KeyM
                 mods = mods.difference(KeyModifiers::CONTROL);
                 mods = mods.difference(KeyModifiers::ALT);
             }
-            (key.0, mods)
+            (KeyCode::Char(c), mods)
         }
         _ => key,
     }
@@ -1488,12 +1497,15 @@ pub fn parse_key_string(key: &str) -> Option<(KeyCode, KeyModifiers)> {
         }
     }
     
+    // Single characters: preserve original case so uppercase letters like 'I'
+    // register as Char('I'), matching tmux convention where uppercase = Shift.
+    if key_part.len() == 1 {
+        let c = key_part.chars().next().unwrap();
+        return Some((KeyCode::Char(c), mods));
+    }
+
+    // Multi-character named keys (case-insensitive lookup)
     let keycode = match key_part.to_lowercase().as_str() {
-        // Single character keys: preserve the ORIGINAL case from key_part, not the lowercased version.
-        // This is critical for case-sensitive bind-key (issue #157): bind-key T != bind-key t.
-        _ if key_part.len() == 1 => {
-            KeyCode::Char(key_part.chars().next().unwrap())
-        }
         "space" => KeyCode::Char(' '),
         "enter" | "return" => KeyCode::Enter,
         "tab" => KeyCode::Tab,
@@ -1522,19 +1534,7 @@ pub fn parse_key_string(key: &str) -> Option<(KeyCode, KeyModifiers)> {
         "f10" => KeyCode::F(10),
         "f11" => KeyCode::F(11),
         "f12" => KeyCode::F(12),
-        "\"" => KeyCode::Char('"'),
-        "%" => KeyCode::Char('%'),
-        "," => KeyCode::Char(','),
-        "." => KeyCode::Char('.'),
-        ":" => KeyCode::Char(':'),
-        ";" => KeyCode::Char(';'),
-        "[" => KeyCode::Char('['),
-        "]" => KeyCode::Char(']'),
-        "{" => KeyCode::Char('{'),
-        "}" => KeyCode::Char('}'),
-        _ => {
-            return None;
-        }
+        _ => return None,
     };
     
     Some((keycode, mods))

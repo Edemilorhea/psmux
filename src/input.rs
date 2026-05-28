@@ -2111,8 +2111,7 @@ pub fn forward_key_to_active(app: &mut AppState, key: KeyEvent) -> io::Result<()
                     fn inject_ctrl_all(node: &mut Node, ch: char, raw: u8, is_ctrl_c: bool) {
                         match node {
                             Node::Leaf(p) if !p.dead => {
-                                let _ = p.writer.write_all(&[raw]);
-                                let _ = p.writer.flush();
+                                let mut injected = false;
                                 #[cfg(windows)]
                                 if let Some(pid) = p.child_pid {
                                     if is_ctrl_c {
@@ -2120,8 +2119,12 @@ pub fn forward_key_to_active(app: &mut AppState, key: KeyEvent) -> io::Result<()
                                         // neovim) handle 0x03 themselves (force=false).
                                         crate::platform::mouse_inject::send_ctrl_c_event(pid, false, false);
                                     } else {
-                                        crate::platform::mouse_inject::send_modified_key_event(pid, ch, true, false, false);
+                                        injected = crate::platform::mouse_inject::send_modified_key_event(pid, ch, true, false, false);
                                     }
+                                }
+                                if !injected {
+                                    let _ = p.writer.write_all(&[raw]);
+                                    let _ = p.writer.flush();
                                 }
                                 crate::debug_log::input_log("ctrl-key",
                                     &format!("sync inject_ctrl char='{}' pid={:?}", ch, p.child_pid));
@@ -2137,8 +2140,7 @@ pub fn forward_key_to_active(app: &mut AppState, key: KeyEvent) -> io::Result<()
                     let win = &mut app.windows[app.active_idx];
                     if let Some(active) = active_pane_mut(&mut win.root, &win.active_path) {
                         if !active.dead {
-                            let _ = active.writer.write_all(&[ctrl_char]);
-                            let _ = active.writer.flush();
+                            let mut injected = false;
                             #[cfg(windows)]
                             if let Some(pid) = active.child_pid {
                                 if is_ctrl_c {
@@ -2146,8 +2148,12 @@ pub fn forward_key_to_active(app: &mut AppState, key: KeyEvent) -> io::Result<()
                                     // neovim) handle 0x03 themselves (force=false).
                                     crate::platform::mouse_inject::send_ctrl_c_event(pid, false, false);
                                 } else {
-                                    crate::platform::mouse_inject::send_modified_key_event(pid, inject_char, true, false, false);
+                                    injected = crate::platform::mouse_inject::send_modified_key_event(pid, inject_char, true, false, false);
                                 }
+                            }
+                            if !injected {
+                                let _ = active.writer.write_all(&[ctrl_char]);
+                                let _ = active.writer.flush();
                             }
                             crate::debug_log::input_log("ctrl-key",
                                 &format!("inject_ctrl char='{}' pid={:?}", inject_char, active.child_pid));

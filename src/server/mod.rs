@@ -2949,7 +2949,7 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
                 }
                 CtrlReq::PtyWake => { /* the wake itself is the whole point; the
                     PTY_DATA_READY swap above already set state_dirty. */ }
-                CtrlReq::SendKey(k) => { crate::pty_trace::mark("g", 0, k.as_bytes()); app.status_message = None; crate::input::stamp_interactive_key(&mut app, &k); send_key_to_active(&mut app, &k)?; echo_pending_until = Some(Instant::now()); }
+                CtrlReq::SendKey(k) => { crate::pty_trace::mark("g", 0, k.as_bytes()); app.status_message = None; crate::input::stamp_interactive_key(&mut app, &k); send_key_to_active(&mut app, &k, false)?; echo_pending_until = Some(Instant::now()); }
                 CtrlReq::SendPaste(s) => { send_paste_to_active(&mut app, &s)?; echo_pending_until = Some(Instant::now()); }
                 CtrlReq::ZoomPane => { toggle_zoom(&mut app); state_dirty = true; meta_dirty = true; hook_event = Some("after-resize-pane"); }
                 // tmux: the prefix forces a switch to the prefix table, which
@@ -3198,7 +3198,7 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
                 CtrlReq::SendBytes(bytes) => {
                     send_bytes_to_active(&mut app, &bytes)?;
                 }
-                CtrlReq::SendKeys(keys, literal) => {
+                CtrlReq::SendKeys(keys, literal, force_signal) => {
                     let in_copy = matches!(app.mode, Mode::CopyMode | Mode::CopySearch { .. });
                     if in_copy {
                         // In copy/search mode — route through mode-aware handlers
@@ -3233,9 +3233,9 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
                                     _ => "",
                                 };
                                 if !normalized.is_empty() {
-                                    send_key_to_active(&mut app, normalized)?;
+                                    send_key_to_active(&mut app, normalized, false)?;
                                 } else if key_upper.starts_with("C-") || key_upper.starts_with("M-") || (key_upper.starts_with("F") && key_upper.len() >= 2 && key_upper[1..].chars().all(|c| c.is_ascii_digit())) {
-                                    send_key_to_active(&mut app, &key.to_lowercase())?;
+                                    send_key_to_active(&mut app, &key.to_lowercase(), false)?;
                                 } else {
                                     // Plain text char — route through send_text_to_active (handles copy mode chars)
                                     send_text_to_active(&mut app, key)?;
@@ -3382,7 +3382,7 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
                                                                 p.child_pid = crate::platform::mouse_inject::get_child_pid(&*p.child);
                                                             }
                                                             if let Some(pid) = p.child_pid {
-                                                                crate::platform::mouse_inject::send_ctrl_c_event(pid, false);
+                                                                crate::platform::mouse_inject::send_ctrl_c_event(pid, false, force_signal);
                                                             }
                                                         }
                                                     }

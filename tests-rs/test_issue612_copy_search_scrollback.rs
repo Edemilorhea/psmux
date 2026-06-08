@@ -375,7 +375,7 @@ fn type_search(app: &mut AppState, opener: &str, term: &str) {
     if opener.len() == 1 {
         crate::input::send_text_to_active(app, opener).unwrap();
     } else {
-        crate::input::send_key_to_active(app, opener).unwrap();
+        crate::input::send_key_to_active(app, opener, false).unwrap();
     }
     assert!(matches!(app.mode, Mode::CopySearch { .. }),
         "{opener} must open the copy mode search prompt");
@@ -383,7 +383,7 @@ fn type_search(app: &mut AppState, opener: &str, term: &str) {
         crate::input::send_text_to_active(app, &ch.to_string()).unwrap();
     }
     // The CLI lowercases named keys before they reach this dispatcher.
-    crate::input::send_key_to_active(app, "enter").unwrap();
+    crate::input::send_key_to_active(app, "enter", false).unwrap();
 }
 
 #[test]

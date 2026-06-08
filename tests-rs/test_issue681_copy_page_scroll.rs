@@ -224,16 +224,16 @@ fn live_page_keys_move_a_full_page() {
         for key in ["C-b", "pageup", "M-v"] {
             let mut app = copy_app("vi", rows);
             let r0 = row(&app);
-            crate::input::send_key_to_active(&mut app, key).unwrap();
+            crate::input::send_key_to_active(&mut app, key, false).unwrap();
             assert_eq!(offset(&app), page, "rows={rows}: {key} must scroll a page of rows-2 lines");
             assert_eq!(row(&app), r0, "rows={rows}: {key} must leave the cursor on its screen row");
         }
         for key in ["C-f", "pagedown"] {
             let mut app = copy_app("vi", rows);
-            crate::input::send_key_to_active(&mut app, "C-b").unwrap();
-            crate::input::send_key_to_active(&mut app, "C-b").unwrap();
+            crate::input::send_key_to_active(&mut app, "C-b", false).unwrap();
+            crate::input::send_key_to_active(&mut app, "C-b", false).unwrap();
             let before = offset(&app);
-            crate::input::send_key_to_active(&mut app, key).unwrap();
+            crate::input::send_key_to_active(&mut app, key, false).unwrap();
             assert_eq!(offset(&app), before - page, "rows={rows}: {key} must scroll back a page");
         }
     }
@@ -245,10 +245,10 @@ fn live_half_page_keys_move_half_a_page() {
         let half = usize::from(rows / 2);
         let mut app = copy_app("vi", rows);
         let r0 = row(&app);
-        crate::input::send_key_to_active(&mut app, "C-u").unwrap();
+        crate::input::send_key_to_active(&mut app, "C-u", false).unwrap();
         assert_eq!(offset(&app), half, "rows={rows}: C-u must scroll half the pane height");
         assert_eq!(row(&app), r0, "rows={rows}: C-u must leave the cursor on its screen row");
-        crate::input::send_key_to_active(&mut app, "C-d").unwrap();
+        crate::input::send_key_to_active(&mut app, "C-d", false).unwrap();
         assert_eq!(offset(&app), 0, "rows={rows}: C-d must scroll back the same half page");
     }
 }
@@ -259,10 +259,10 @@ fn live_page_keys_move_one_line_in_a_tiny_pane() {
     // a single line instead of standing still or jumping the buffer.
     for rows in [2u16, 1] {
         let mut app = copy_app("vi", rows);
-        crate::input::send_key_to_active(&mut app, "C-b").unwrap();
+        crate::input::send_key_to_active(&mut app, "C-b", false).unwrap();
         assert_eq!(offset(&app), 1, "rows={rows}: a page must be one line");
         let mut app = copy_app("vi", rows);
-        crate::input::send_key_to_active(&mut app, "C-u").unwrap();
+        crate::input::send_key_to_active(&mut app, "C-u", false).unwrap();
         assert_eq!(offset(&app), 1, "rows={rows}: a half page must be one line");
     }
 }
@@ -275,14 +275,14 @@ fn live_page_up_stops_at_the_history_top_and_pulls_the_cursor_with_it() {
     // Park the view one line short of the top so the next page up is clamped.
     crate::copy_mode::scroll_copy_up(&mut app, top - 1);
     app.copy_pos = Some((rows - 1, 0));
-    crate::input::send_key_to_active(&mut app, "C-b").unwrap();
+    crate::input::send_key_to_active(&mut app, "C-b", false).unwrap();
     assert_eq!(offset(&app), top, "the view must stop at the oldest retained line");
     assert_eq!(
         row(&app), rows - 1 - (rows - 2),
         "a clamped page up moves the cursor by the page amount (window-copy.c:775-782)"
     );
     // Once the cursor is on the top row too, the pane is fully at the top.
-    crate::input::send_key_to_active(&mut app, "C-b").unwrap();
+    crate::input::send_key_to_active(&mut app, "C-b", false).unwrap();
     assert_eq!(offset(&app), top, "the view stays at the top");
     assert_eq!(row(&app), 0, "the cursor lands on the first line of the history");
 }
@@ -293,7 +293,7 @@ fn live_page_down_stops_at_the_live_end_and_pulls_the_cursor_with_it() {
     let mut app = copy_app("vi", rows);
     crate::copy_mode::scroll_copy_up(&mut app, 3);
     app.copy_pos = Some((0, 0));
-    crate::input::send_key_to_active(&mut app, "C-f").unwrap();
+    crate::input::send_key_to_active(&mut app, "C-f", false).unwrap();
     assert_eq!(offset(&app), 0, "the view must stop at the live output");
     assert_eq!(
         row(&app), rows - 2,
@@ -321,7 +321,7 @@ fn handle_key_page_keys_match_the_live_path() {
         crate::copy_mode::scroll_copy_up(&mut a, 60);
         crate::copy_mode::scroll_copy_up(&mut b, 60);
         crate::input::handle_key(&mut a, event).unwrap();
-        crate::input::send_key_to_active(&mut b, name).unwrap();
+        crate::input::send_key_to_active(&mut b, name, false).unwrap();
         assert_eq!(
             (offset(&a), row(&a)), (offset(&b), row(&b)),
             "{name}: handle_key and send_key_to_active must agree on the page amount"

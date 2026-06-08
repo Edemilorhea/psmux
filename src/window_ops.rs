@@ -2762,13 +2762,13 @@ mod window_ops_tests {
             super::handle_pane_scroll(&mut app, 41, true, None);
             app.mode_keys = mode_keys.to_string();
             let before = app.copy_scroll_offset;
-            crate::input::send_key_to_active(&mut app, "M-<").expect("send-key M-<");
+            crate::input::send_key_to_active(&mut app, "M-<", false).expect("send-key M-<");
             assert!(
                 app.copy_scroll_offset > before,
                 "M-< must reach history-top under mode-keys {mode_keys} (got {})",
                 app.copy_scroll_offset
             );
-            crate::input::send_key_to_active(&mut app, "M->").expect("send-key M->");
+            crate::input::send_key_to_active(&mut app, "M->", false).expect("send-key M->");
             assert_eq!(
                 app.copy_scroll_offset, 0,
                 "M-> must reach history-bottom under mode-keys {mode_keys}"

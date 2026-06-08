@@ -179,14 +179,14 @@ fn live_ctrl_v_toggles_rectangle_in_vi_and_does_not_scroll() {
     crate::copy_mode::scroll_copy_up(&mut app, 50);
     let before = offset(&app);
 
-    crate::input::send_key_to_active(&mut app, "C-v").unwrap();
+    crate::input::send_key_to_active(&mut app, "C-v", false).unwrap();
     assert!(
         matches!(app.copy_selection_mode, SelectionMode::Rect),
         "copy-mode-vi C-v is rectangle-toggle (key-bindings.c:652), it must switch block selection on"
     );
     assert_eq!(offset(&app), before, "rectangle-toggle must not move the view");
 
-    crate::input::send_key_to_active(&mut app, "C-v").unwrap();
+    crate::input::send_key_to_active(&mut app, "C-v", false).unwrap();
     assert!(
         matches!(app.copy_selection_mode, SelectionMode::Char),
         "a toggle: the second C-v must switch block selection back off"
@@ -201,7 +201,7 @@ fn live_ctrl_v_still_pages_down_in_emacs() {
     crate::copy_mode::scroll_copy_up(&mut app, 100);
     let before = offset(&app);
 
-    crate::input::send_key_to_active(&mut app, "C-v").unwrap();
+    crate::input::send_key_to_active(&mut app, "C-v", false).unwrap();
     assert_eq!(offset(&app), before - PAGE, "emacs C-v must page down one page");
     assert!(
         matches!(app.copy_selection_mode, SelectionMode::Char),
@@ -232,7 +232,7 @@ fn both_dispatchers_agree_on_ctrl_v() {
         crate::copy_mode::scroll_copy_up(&mut b, 100);
 
         crate::input::handle_key(&mut a, KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL)).unwrap();
-        crate::input::send_key_to_active(&mut b, "C-v").unwrap();
+        crate::input::send_key_to_active(&mut b, "C-v", false).unwrap();
 
         assert_eq!(
             (offset(&a), a.copy_selection_mode == SelectionMode::Rect),
@@ -257,7 +257,7 @@ fn live_numeric_prefix_repeats_a_page_motion() {
     type_count(&mut app, "3");
     assert_eq!(app.copy_count, Some(3), "the digit must be collected, not typed into the pane");
 
-    crate::input::send_key_to_active(&mut app, "C-b").unwrap();
+    crate::input::send_key_to_active(&mut app, "C-b", false).unwrap();
     assert_eq!(offset(&app), 3 * PAGE, "3 then C-b must page up three times");
     assert_eq!(app.copy_count, None, "the count must be spent");
 }
@@ -267,7 +267,7 @@ fn live_numeric_prefix_repeats_a_half_page_motion() {
     // window-copy.c:1791 does the same for halfpage-up.
     let mut app = copy_app("vi");
     type_count(&mut app, "2");
-    crate::input::send_key_to_active(&mut app, "C-u").unwrap();
+    crate::input::send_key_to_active(&mut app, "C-u", false).unwrap();
     assert_eq!(offset(&app), 2 * usize::from(ROWS / 2), "2 then C-u must move two half pages");
 }
 
@@ -277,7 +277,7 @@ fn live_numeric_prefix_does_not_leak_into_the_next_key() {
     // spent it.  A plain `k` after `3 C-b` moved three rows instead of one.
     let mut app = copy_app("vi");
     type_count(&mut app, "3");
-    crate::input::send_key_to_active(&mut app, "C-b").unwrap();
+    crate::input::send_key_to_active(&mut app, "C-b", false).unwrap();
     let r0 = row(&app);
 
     crate::input::send_text_to_active(&mut app, "k").unwrap();
@@ -290,7 +290,7 @@ fn live_numeric_prefix_is_consumed_by_a_key_that_takes_no_count() {
     // spent by a later motion.
     let mut app = copy_app("vi");
     type_count(&mut app, "4");
-    crate::input::send_key_to_active(&mut app, "home").unwrap();
+    crate::input::send_key_to_active(&mut app, "home", false).unwrap();
     assert_eq!(app.copy_count, None, "a non repeating key still spends the count");
 
     crate::input::send_text_to_active(&mut app, "k").unwrap();
@@ -302,7 +302,7 @@ fn live_numeric_prefix_repeats_a_cursor_motion() {
     let mut app = copy_app("vi");
     let r0 = row(&app);
     type_count(&mut app, "5");
-    crate::input::send_key_to_active(&mut app, "up").unwrap();
+    crate::input::send_key_to_active(&mut app, "up", false).unwrap();
     assert_eq!(row(&app), r0 - 5, "5 then Up must move five rows");
 }
 
@@ -311,6 +311,6 @@ fn live_page_keys_are_unchanged_without_a_prefix() {
     // The default of one keeps every existing single press exactly where #681
     // put it.
     let mut app = copy_app("vi");
-    crate::input::send_key_to_active(&mut app, "C-b").unwrap();
+    crate::input::send_key_to_active(&mut app, "C-b", false).unwrap();
     assert_eq!(offset(&app), PAGE, "a bare C-b still moves exactly one page");
 }

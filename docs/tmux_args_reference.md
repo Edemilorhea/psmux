@@ -418,6 +418,8 @@ A psmux extension that creates a pane floating above the tiled layout.
 - Value: `-N` (repeat count, value consumed), `-t` (target pane)
 - Not accepted: `-c`, `-F`, `-H`, `-K`, `-M`
 - Named key tokens accepted as arguments: `ENTER`, `TAB`, `BTAB` / `BACKTAB`, `ESCAPE` / `ESC`, `SPACE`, `BSPACE` / `BACKSPACE`, `UP`, `DOWN`, `LEFT`, `RIGHT`, `HOME`, `END`, `PAGEUP` / `PPAGE`, `PAGEDOWN` / `NPAGE`, `DELETE` / `DC`, `INSERT` / `IC`
+- psmux extension: `-f` / `--force-signal` with `C-c` forces a Windows
+  CTRL_C_EVENT to the foreground process, bypassing the raw-mode TUI heuristic.
 
 **send-prefix**
 - No flags.

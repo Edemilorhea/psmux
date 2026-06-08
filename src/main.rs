@@ -1989,8 +1989,9 @@ fn run_main() -> io::Result<()> {
                 let mut literal = false;
                 let mut has_x = false;
                 let mut has_hex = false;
+                let mut force_signal = false;
                 let mut keys: Vec<String> = Vec::new();
-                // Getopt-style parsing: -t consumes next arg, -l/-R/-X/-H are flags
+                // Getopt-style parsing: -t/-N consume next arg; -l/-R/-X/-H/-f are flags.
                 let mut i = 1;
                 while i < cmd_args.len() {
                     match cmd_args[i].as_str() {
@@ -1998,6 +1999,7 @@ fn run_main() -> io::Result<()> {
                         "-R" => { keys.push("__RESET__".to_string()); }
                         "-X" => { has_x = true; }
                         "-H" => { has_hex = true; }
+                        "-f" | "--force-signal" => { force_signal = true; }
                         "-t" => { i += 1; } // consume target value (already handled globally)
                         "-N" => { i += 1; } // repeat count, consume value
                         _ => { keys.push(cmd_args[i].to_string()); }
@@ -2008,6 +2010,7 @@ fn run_main() -> io::Result<()> {
                 if literal { cmd.push_str(" -l"); }
                 if has_x { cmd.push_str(" -X"); }
                 if has_hex { cmd.push_str(" -H"); }
+                if force_signal { cmd.push_str(" -f"); }
                 // Quote arguments that need it. quote_arg_if_needed escapes
                 // backslashes as well as quotes inside the wrapping quotes,
                 // matching what parse_command_line decodes there (#547) —

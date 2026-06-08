@@ -1554,6 +1554,10 @@ match cmd {
         let paste_mode = flag_has('p');
         let has_x = flag_has('X');
         let hex_mode = flag_has('H');
+        // -f / --force-signal: bypass raw-mode TUI heuristic and always deliver
+        // CTRL_C_EVENT when C-c is sent.  Intended for explicit kill bindings
+        // like `bind -n C-F12 send-keys -f C-c` in psmux.conf.
+        let force_signal = flag_has('f') || args.iter().any(|a| *a == "--force-signal");
         // Parse -N <count> for repeat (look for any cluster ending in 'N')
         let mut repeat_count: usize = 1;
         if let Some(n_pos) = args.iter().enumerate().position(|(i, a)| !is_marker(i) && !past_opts(i) && a.starts_with('-') && !a.starts_with("--") && a.ends_with('N')) {
@@ -1626,7 +1630,7 @@ match cmd {
                 } else {
                     // #490: hand the tokens over UNJOINED so quoted
                     // arguments keep their exact whitespace end to end.
-                    let _ = tx.send(CtrlReq::SendKeys(keys.clone(), effective_literal));
+                    let _ = tx.send(CtrlReq::SendKeys(keys.clone(), effective_literal, force_signal));
                 }
             }
         }
@@ -3993,6 +3997,7 @@ fn dispatch_control_command(
                 }
                 return true;
             }
+            let force_signal = flag_has('f') || args.iter().any(|a| *a == "--force-signal");
             // Convert real-tmux 0xNN hex codepoint syntax (used by iTerm2 for
             // every keystroke: `send -t %1 0xd` etc.) into literal characters.
             // An empty operand sends nothing, as in tmux. Same rule as the
@@ -4023,7 +4028,7 @@ fn dispatch_control_command(
             let effective_literal = literal || any_hex;
             // #490: hand the tokens over UNJOINED so quoted arguments keep
             // their exact whitespace end to end.
-            let _ = tx.send(CtrlReq::SendKeys(keys, effective_literal));
+            let _ = tx.send(CtrlReq::SendKeys(keys, effective_literal, force_signal));
             let _ = resp_tx.send(String::new());
             true
         }

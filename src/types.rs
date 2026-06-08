@@ -1575,7 +1575,7 @@ pub enum CtrlReq {
     // text typed verbatim with its whitespace intact. Never re-join and
     // re-split on whitespace — that collapsed runs of spaces inside quoted
     // arguments and stripped leading/trailing spaces.
-    SendKeys(Vec<String>, bool),
+    SendKeys(Vec<String>, bool, bool),
     /// send-keys -H: hexadecimal operands already decoded to raw bytes,
     /// written to the pane verbatim.
     SendBytes(Vec<u8>),

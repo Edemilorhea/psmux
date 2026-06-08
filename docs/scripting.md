@@ -61,12 +61,22 @@ psmux send-keys -H 65 63 68 6f 20 68 69 0d      # types "echo hi" then CR
 $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("line one`nline two"))
 psmux send-paste -t %1 $b64
 
+# Force Ctrl+C to the foreground process (Windows CTRL_C_EVENT)
+# Useful for a dedicated interrupt binding when a raw-mode TUI consumes Ctrl+C.
+psmux send-keys -f C-c
+
 # Special keys supported:
 # Enter, Tab, Escape, Space, Backspace
 # Up, Down, Left, Right, Home, End
 # PageUp, PageDown, Delete, Insert
 # F1-F12, C-a through C-z (Ctrl+key)
 ```
+
+`send-keys -f C-c` (or `--force-signal`) is a psmux extension for Windows. It
+bypasses the raw-mode TUI heuristic and sends a CTRL_C_EVENT to the foreground
+process. This keeps normal keyboard Ctrl+C pass-through behavior unchanged while
+allowing an explicit binding such as `bind -n C-F12 send-keys -f C-c` to force an
+interrupt.
 
 ## Pane Information
 

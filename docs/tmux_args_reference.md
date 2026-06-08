@@ -433,6 +433,8 @@ A psmux extension that creates a pane floating above the tiled layout.
 - `--` ends option parsing (#562). Every token after it is a key to deliver even if it begins with `-`, so `send-keys -l -- -rf` types `-rf`. An empty argument sends nothing, as in tmux.
 - Not accepted: `-c`, `-F`, `-K`, `-M`
 - Named key tokens accepted as arguments: `ENTER`, `TAB`, `BTAB` / `BACKTAB`, `ESCAPE` / `ESC`, `SPACE`, `BSPACE` / `BACKSPACE`, `UP`, `DOWN`, `LEFT`, `RIGHT`, `HOME`, `END`, `PAGEUP` / `PPAGE`, `PAGEDOWN` / `NPAGE`, `DELETE` / `DC`, `INSERT` / `IC`
+- psmux extension: `-f` / `--force-signal` with `C-c` forces a Windows
+  CTRL_C_EVENT to the foreground process, bypassing the raw-mode TUI heuristic.
 
 **send-prefix**
 - No flags.

@@ -3463,7 +3463,7 @@ pub fn send_key_to_active(app: &mut AppState, k: &str, force_signal: bool) -> io
                     crate::platform::mouse_inject::send_ctrl_break_event(pid, false);
                 }
             }
-            s if s.starts_with("C-") && s.len() == 3 => {
+            s if (s.starts_with("C-") || s.starts_with("c-")) && s.len() == 3 => {
                 let c = s.chars().nth(2).unwrap_or('c');
                 // tmux-parity mapping so C-/ -> 0x1f (^_), not the naive '/' & 0x1f
                 // == 0x0f (^O) collision with C-o (issue #226/#394).  Letters keep
@@ -3587,7 +3587,7 @@ pub fn send_key_to_active(app: &mut AppState, k: &str, force_signal: bool) -> io
         let win = &mut app.windows[app.active_idx];
         if let Some(fi) = win.floating_focus {
             if let Some(fp) = win.floating.get_mut(fi) {
-                write_named_key_to_pane(&mut fp.pane, k);
+                write_named_key_to_pane(&mut fp.pane, k, force_signal);
                 return Ok(());
             }
         }

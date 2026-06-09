@@ -2330,11 +2330,11 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
                                     send_text_to_active(&mut app, &seq)?;
                                 }
                                 s if s.starts_with("C-M-") || s.starts_with("C-m-") => {
-                                    if let Some(c) = key.chars().nth(4) {
-                                        if let Some(ctrl) = crate::input::ctrl_char_send_keys_byte(c) {
-                                            send_text_to_active(&mut app, &format!("\x1b{}", ctrl as char))?;
-                                        }
-                                    }
+                                    // Route through the shared key injector instead of writing
+                                    // ESC-prefixed bytes here.  On Windows that path uses
+                                    // WriteConsoleInputW for Ctrl/Alt chords, which avoids
+                                    // leaving ConPTY's ESC parser in a buffered state.
+                                    send_key_to_active(&mut app, &key.to_lowercase(), force_signal)?;
                                 }
                                 // Ctrl+Shift+<punctuation/digit> that collapses to a single
                                 // C0 byte, e.g. Ctrl+/ delivered by ConPTY terminals
@@ -2355,62 +2355,13 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
                                     }
                                 }
                                 s if s.starts_with("C-") => {
-                                    if let Some(c) = s.chars().nth(2) {
-                                        let Some(ctrl) = crate::input::ctrl_char_send_keys_byte(c) else { continue };
-                                        // On Windows with Win32 input mode, write the key as
-                                        // a Win32 input mode escape sequence so ConPTY generates
-                                        // a proper KEY_EVENT with VK + LEFT_CTRL_PRESSED (#305).
-                                        #[cfg(windows)]
-                                        {
-                                            if c.is_ascii_alphabetic() {
-                                                // Keep Ctrl+C on the legacy interrupt path:
-                                                // raw 0x03 + send_ctrl_c_event below.
-                                                if ctrl == 0x03 {
-                                                    send_text_to_active(&mut app, &String::from(ctrl as char))?;
-                                                } else {
-                                                    let vk = crate::platform::mouse_inject::char_to_vk(c);
-                                                    let scan = crate::platform::mouse_inject::vk_to_scan(vk);
-                                                    let u_char = (c.to_ascii_lowercase() as u16) & 0x1F;
-                                                    const LEFT_CTRL_PRESSED: u32 = 0x0008;
-                                                    let seq = format!(
-                                                        "\x1b[{};{};{};1;{};1_\x1b[{};{};{};0;{};1_",
-                                                        vk, scan, u_char, LEFT_CTRL_PRESSED,
-                                                        vk, scan, u_char, LEFT_CTRL_PRESSED
-                                                    );
-                                                    send_text_to_active(&mut app, &seq)?;
-                                                }
-                                            } else {
-                                                send_text_to_active(&mut app, &String::from(ctrl as char))?;
-                                            }
-                                        }
-                                        #[cfg(not(windows))]
-                                        send_text_to_active(&mut app, &String::from(ctrl as char))?;
-                                        // On Windows, writing 0x03 to the PTY pipe doesn't
-                                        // generate CTRL_C_EVENT when ENABLE_PROCESSED_INPUT
-                                        // is disabled (e.g. after a TUI app).  Fire the real
-                                        // signal via the platform helper so detached/headless
-                                        // send-keys C-c reliably interrupts processes.
-                                        // force_signal=true (from `send-keys -f C-c`) bypasses
-                                        // the raw-mode TUI heuristic and always delivers the signal.
-                                        #[cfg(windows)]
-                                        if ctrl == 0x03 {
-                                            if let Some(win) = app.windows.get_mut(app.active_idx) {
-                                                if let Some(p) = active_pane_mut(&mut win.root, &win.active_path) {
-                                                    if p.child_pid.is_none() {
-                                                        p.child_pid = crate::platform::mouse_inject::get_child_pid(&*p.child);
-                                                    }
-                                                    if let Some(pid) = p.child_pid {
-                                                        crate::platform::mouse_inject::send_ctrl_c_event(pid, false, force_signal);
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
+                                    // Keep all Ctrl delivery in input.rs so live keys and
+                                    // send-keys use the same Ctrl+C signal heuristic and the
+                                    // same native injection fallback for Ctrl+letter.
+                                    send_key_to_active(&mut app, &key.to_lowercase(), force_signal)?;
                                 }
                                 s if s.starts_with("M-") => {
-                                    if let Some(c) = key.chars().nth(2) {
-                                        send_text_to_active(&mut app, &format!("\x1b{}", c))?;
-                                    }
+                                    send_key_to_active(&mut app, &key.to_lowercase(), force_signal)?;
                                 }
                                 _ => {
                                     send_text_to_active(&mut app, key)?;

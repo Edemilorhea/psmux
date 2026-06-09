@@ -3668,7 +3668,7 @@ pub fn send_key_to_active(app: &mut AppState, k: &str, force_signal: bool) -> io
                 }
                 write_key_seq(p, b"\x00");
             }
-            s if s.starts_with("C-") && s.len() == 3 => {
+            s if (s.starts_with("C-") || s.starts_with("c-")) && s.len() == 3 => {
                 let c = s.chars().nth(2).unwrap_or('c');
                 // Issue #623: a record reading pane gets the modifier that the
                 // legacy byte cannot carry.  Every other pane falls through to
@@ -3799,7 +3799,7 @@ pub fn send_key_to_active(app: &mut AppState, k: &str, force_signal: bool) -> io
         let win = &mut app.windows[app.active_idx];
         if let Some(fi) = win.floating_focus {
             if let Some(fp) = win.floating.get_mut(fi) {
-                write_named_key_to_pane(&mut fp.pane, k);
+                write_named_key_to_pane(&mut fp.pane, k, force_signal);
                 return Ok(());
             }
         }

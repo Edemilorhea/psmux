@@ -3299,11 +3299,11 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
                                     send_text_to_active(&mut app, &seq)?;
                                 }
                                 s if s.starts_with("C-M-") || s.starts_with("C-m-") => {
-                                    if let Some(c) = key.chars().nth(4) {
-                                        if let Some(ctrl) = crate::input::ctrl_char_send_keys_byte(c) {
-                                            send_text_to_active(&mut app, &format!("\x1b{}", ctrl as char))?;
-                                        }
-                                    }
+                                    // Route through the shared key injector instead of writing
+                                    // ESC-prefixed bytes here.  On Windows that path uses
+                                    // WriteConsoleInputW for Ctrl/Alt chords, which avoids
+                                    // leaving ConPTY's ESC parser in a buffered state.
+                                    send_key_to_active(&mut app, &key.to_lowercase(), force_signal)?;
                                 }
                                 // Ctrl+Shift+<punctuation/digit> that collapses to a single
                                 // C0 byte, e.g. Ctrl+/ delivered by ConPTY terminals
@@ -3423,9 +3423,7 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
                                     }
                                 }
                                 s if s.starts_with("M-") => {
-                                    if let Some(c) = key.chars().nth(2) {
-                                        send_text_to_active(&mut app, &format!("\x1b{}", c))?;
-                                    }
+                                    send_key_to_active(&mut app, &key.to_lowercase(), force_signal)?;
                                 }
                                 _ => {
                                     // Plain token: typed VERBATIM (#490 — the

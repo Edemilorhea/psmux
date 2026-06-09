@@ -2060,8 +2060,7 @@ pub fn forward_key_to_active(app: &mut AppState, key: KeyEvent) -> io::Result<()
                     fn inject_ctrl_all(node: &mut Node, ch: char, raw: u8, is_ctrl_c: bool) {
                         match node {
                             Node::Leaf(p) if !p.dead => {
-                                let _ = p.writer.write_all(&[raw]);
-                                let _ = p.writer.flush();
+                                let mut injected = false;
                                 #[cfg(windows)]
                                 if let Some(pid) = p.child_pid {
                                     if is_ctrl_c {
@@ -2069,8 +2068,12 @@ pub fn forward_key_to_active(app: &mut AppState, key: KeyEvent) -> io::Result<()
                                         // neovim) handle 0x03 themselves (force=false).
                                         crate::platform::mouse_inject::send_ctrl_c_event(pid, false, false);
                                     } else {
-                                        crate::platform::mouse_inject::send_modified_key_event(pid, ch, true, false, false);
+                                        injected = crate::platform::mouse_inject::send_modified_key_event(pid, ch, true, false, false);
                                     }
+                                }
+                                if !injected {
+                                    let _ = p.writer.write_all(&[raw]);
+                                    let _ = p.writer.flush();
                                 }
                                 crate::debug_log::input_log("ctrl-key",
                                     &format!("sync inject_ctrl char='{}' pid={:?}", ch, p.child_pid));
@@ -2086,8 +2089,7 @@ pub fn forward_key_to_active(app: &mut AppState, key: KeyEvent) -> io::Result<()
                     let win = &mut app.windows[app.active_idx];
                     if let Some(active) = active_pane_mut(&mut win.root, &win.active_path) {
                         if !active.dead {
-                            let _ = active.writer.write_all(&[ctrl_char]);
-                            let _ = active.writer.flush();
+                            let mut injected = false;
                             #[cfg(windows)]
                             if let Some(pid) = active.child_pid {
                                 if is_ctrl_c {
@@ -2095,8 +2097,12 @@ pub fn forward_key_to_active(app: &mut AppState, key: KeyEvent) -> io::Result<()
                                     // neovim) handle 0x03 themselves (force=false).
                                     crate::platform::mouse_inject::send_ctrl_c_event(pid, false, false);
                                 } else {
-                                    crate::platform::mouse_inject::send_modified_key_event(pid, inject_char, true, false, false);
+                                    injected = crate::platform::mouse_inject::send_modified_key_event(pid, inject_char, true, false, false);
                                 }
+                            }
+                            if !injected {
+                                let _ = active.writer.write_all(&[ctrl_char]);
+                                let _ = active.writer.flush();
                             }
                             crate::debug_log::input_log("ctrl-key",
                                 &format!("inject_ctrl char='{}' pid={:?}", inject_char, active.child_pid));
@@ -3300,34 +3306,29 @@ pub fn send_key_to_active(app: &mut AppState, k: &str, force_signal: bool) -> io
             s if s.starts_with("C-") && s.len() == 3 => {
                 let c = s.chars().nth(2).unwrap_or('c');
                 let ctrl_char = (c.to_ascii_lowercase() as u8) & 0x1F;
-                // Always write the raw control byte so ConPTY can generate
-                // console control events (e.g. CTRL_C_EVENT for \x03).
-                // Raw bytes do NOT start with \x1b so they never corrupt
-                // ConPTY's VT parser state.
-                //
-                // ConPTY already reconstructs the proper VK + LEFT_CTRL_PRESSED
-                // console key event from this raw C0 byte, so console apps
-                // (PSReadLine, neovim) receive a correct Ctrl+<letter> event
-                // from the byte alone.  We must therefore NOT also inject a
-                // separate KEY_EVENT via WriteConsoleInputW for letters — doing
-                // both delivered the key TWICE (issue #363: a single <C-w>
-                // arrived as <C-w><C-w>, turning neovim's window command into a
-                // no-op and making `<C-w>s` behave like a bare `s`; PSReadLine's
-                // Ctrl+W likewise deleted two words instead of one).
-                let _ = p.writer.write_all(&[ctrl_char]);
-                let _ = p.writer.flush();
-                // Ctrl+C is the sole exception: a CTRL_C_EVENT must be raised so
-                // the child's console handler runs (SIGINT parity, issue #338).
-                // force_signal comes from `send-keys -f` in psmux.conf: when true,
-                // bypass the raw-mode TUI heuristic and always deliver the signal,
-                // allowing a dedicated keybinding (e.g. `bind -n C-F12 send-keys -f C-c`)
-                // to terminate any foreground app (including opencode, neovim).
-                // Without -f, direct keyboard Ctrl+C lets TUIs handle 0x03 themselves.
+                // On Windows, use one delivery path only.  For non-Ctrl+C alphabetic
+                // keys, prefer WriteConsoleInputW so apps see a proper VK +
+                // LEFT_CTRL_PRESSED event without corrupting ConPTY's ESC parser;
+                // fall back to the raw control byte if injection fails.  Writing
+                // both causes double delivery (#363).
+                let mut injected = false;
                 #[cfg(windows)]
-                if c.eq_ignore_ascii_case(&'c') {
+                if c.is_ascii_alphabetic() {
                     if let Some(pid) = p.child_pid {
-                        crate::platform::mouse_inject::send_ctrl_c_event(pid, false, force_signal);
+                        if c.eq_ignore_ascii_case(&'c') {
+                            // Ctrl+C needs raw 0x03 plus a real CTRL_C_EVENT for
+                            // signal parity. `send-keys -f C-c` forces the signal
+                            // even for raw-mode TUIs; without -f, TUIs receive the
+                            // raw byte and decide copy-vs-interrupt themselves.
+                            crate::platform::mouse_inject::send_ctrl_c_event(pid, false, force_signal);
+                        } else {
+                            injected = crate::platform::mouse_inject::send_modified_key_event(pid, c, true, false, false);
+                        }
                     }
+                }
+                if !injected {
+                    let _ = p.writer.write_all(&[ctrl_char]);
+                    let _ = p.writer.flush();
                 }
             }
             s if (s.starts_with("M-") || s.starts_with("m-")) && s.len() == 3 => {

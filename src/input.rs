@@ -3303,7 +3303,7 @@ pub fn send_key_to_active(app: &mut AppState, k: &str, force_signal: bool) -> io
                     if !seq.is_empty() { let _ = write!(p.writer, "{}", seq); }
                 }
             }
-            s if s.starts_with("C-") && s.len() == 3 => {
+            s if (s.starts_with("C-") || s.starts_with("c-")) && s.len() == 3 => {
                 let c = s.chars().nth(2).unwrap_or('c');
                 let ctrl_char = (c.to_ascii_lowercase() as u8) & 0x1F;
                 // On Windows, use one delivery path only.  For non-Ctrl+C alphabetic

@@ -1797,8 +1797,15 @@ pub fn encode_key_event(key: &KeyEvent) -> Option<Vec<u8>> {
             format!("\x1b{}", c).into_bytes()
         }
         KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            let ctrl_char = (c as u8) & 0x1F;
-            vec![ctrl_char]
+            // Use ctrl_char_send_keys_byte for correct tmux-parity mapping.
+            // Naive `c & 0x1F` is wrong for punctuation: C-/ gives 0x0F (^O)
+            // instead of 0x1F (^_). See #226.
+            if let Some(b) = ctrl_char_send_keys_byte(c) {
+                vec![b]
+            } else {
+                let ctrl_char = (c as u8) & 0x1F;
+                vec![ctrl_char]
+            }
         }
         KeyCode::Char(c) if (c as u32) >= 0x01 && (c as u32) <= 0x1A => {
             vec![c as u8]
@@ -3305,7 +3312,8 @@ pub fn send_key_to_active(app: &mut AppState, k: &str, force_signal: bool) -> io
             }
             s if (s.starts_with("C-") || s.starts_with("c-")) && s.len() == 3 => {
                 let c = s.chars().nth(2).unwrap_or('c');
-                let ctrl_char = (c.to_ascii_lowercase() as u8) & 0x1F;
+                let ctrl_char = ctrl_char_send_keys_byte(c)
+                    .unwrap_or((c.to_ascii_lowercase() as u8) & 0x1F);
                 // On Windows, use one delivery path only.  For non-Ctrl+C alphabetic
                 // keys, prefer WriteConsoleInputW so apps see a proper VK +
                 // LEFT_CTRL_PRESSED event without corrupting ConPTY's ESC parser;

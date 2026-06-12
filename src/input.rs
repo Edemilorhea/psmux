@@ -3179,16 +3179,61 @@ pub fn send_key_to_active(app: &mut AppState, k: &str, force_signal: bool) -> io
                     if !seq.is_empty() { let _ = write!(p.writer, "{}", seq); }
                 }
             }
-            s if (s.starts_with("C-") || s.starts_with("c-")) && s.len() == 3 => {
+            // Ctrl+Shift+<letter>: inject a native KEY_EVENT carrying BOTH the
+            // Ctrl and Shift modifier flags so console-input apps (ReadConsoleInputW)
+            // can distinguish it from a plain Ctrl+<letter> (issue #368: psmux used
+            // to collapse Ctrl+Shift+V to Ctrl+V, stripping Shift).  We deliberately
+            // do NOT also write the raw C0 byte: emitting both double-delivers the
+            // key (issue #363).  VT-pipe apps still receive ConPTY's translation of
+            // this single event.
+            s if (s.starts_with("C-S-") || s.starts_with("c-s-"))
+                && s.chars().count() == 5
+                && s.chars().nth(4).map_or(false, |c| c.is_ascii_alphabetic()) =>
+            {
+                let c = s.chars().nth(4).unwrap().to_ascii_lowercase();
+                let ctrl_char = (c as u8) & 0x1F;
+                #[cfg(windows)]
+                {
+                    let injected = if let Some(pid) = p.child_pid {
+                        crate::platform::mouse_inject::send_modified_key_event(pid, c, true, false, true)
+                    } else {
+                        false
+                    };
+                    if !injected {
+                        // No child pid / injection failed: fall back to the raw
+                        // control byte (Shift unrepresentable, but key still arrives).
+                        let _ = p.writer.write_all(&[ctrl_char]);
+                    }
+                }
+                #[cfg(not(windows))]
+                {
+                    // Non-Windows: no console-input modifier channel; legacy VT has
+                    // no distinct Ctrl+Shift+<letter> encoding, so deliver the byte.
+                    let _ = p.writer.write_all(&[ctrl_char]);
+                }
+            }
+            s if s.starts_with("C-") && s.len() == 3 => {
                 let c = s.chars().nth(2).unwrap_or('c');
                 let ctrl_char = ctrl_char_send_keys_byte(c)
                     .unwrap_or((c.to_ascii_lowercase() as u8) & 0x1F);
-                // On Windows, use one delivery path only.  For non-Ctrl+C alphabetic
-                // keys, prefer WriteConsoleInputW so apps see a proper VK +
-                // LEFT_CTRL_PRESSED event without corrupting ConPTY's ESC parser;
-                // fall back to the raw control byte if injection fails.  Writing
-                // both causes double delivery (#363).
-                let mut injected = false;
+                // Always write the raw control byte so ConPTY can generate
+                // console control events (e.g. CTRL_C_EVENT for \x03).
+                // Raw bytes do NOT start with \x1b so they never corrupt
+                // ConPTY's VT parser state.
+                //
+                // ConPTY already reconstructs the proper VK + LEFT_CTRL_PRESSED
+                // console key event from this raw C0 byte, so console apps
+                // (PSReadLine, neovim) receive a correct Ctrl+<letter> event
+                // from the byte alone.  We must therefore NOT also inject a
+                // separate KEY_EVENT via WriteConsoleInputW for letters — doing
+                // both delivered the key TWICE (issue #363: a single <C-w>
+                // arrived as <C-w><C-w>, turning neovim's window command into a
+                // no-op and making `<C-w>s` behave like a bare `s`; PSReadLine's
+                // Ctrl+W likewise deleted two words instead of one).
+                let _ = p.writer.write_all(&[ctrl_char]);
+                let _ = p.writer.flush();
+                // Ctrl+C is the sole exception: a CTRL_C_EVENT must be raised so
+                // the child's console handler runs (SIGINT parity, issue #338).
                 #[cfg(windows)]
                 if c.is_ascii_alphabetic() {
                     if let Some(pid) = p.child_pid {
@@ -3198,14 +3243,8 @@ pub fn send_key_to_active(app: &mut AppState, k: &str, force_signal: bool) -> io
                             // even for raw-mode TUIs; without -f, TUIs receive the
                             // raw byte and decide copy-vs-interrupt themselves.
                             crate::platform::mouse_inject::send_ctrl_c_event(pid, false, force_signal);
-                        } else {
-                            injected = crate::platform::mouse_inject::send_modified_key_event(pid, c, true, false, false);
                         }
                     }
-                }
-                if !injected {
-                    let _ = p.writer.write_all(&[ctrl_char]);
-                    let _ = p.writer.flush();
                 }
             }
             s if (s.starts_with("M-") || s.starts_with("m-")) && s.len() == 3 => {

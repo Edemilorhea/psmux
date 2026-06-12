@@ -56,6 +56,31 @@ use crossterm::event::{
     MouseButton, MouseEvent, MouseEventKind,
 };
 
+// ─── Windows process-tree types (module-level to avoid clashing_extern_declarations) ─
+#[cfg(windows)]
+#[repr(C)]
+struct ProcessEntry32W {
+    dw_size: u32,
+    cnt_usage: u32,
+    th32_process_id: u32,
+    th32_default_heap_id: usize,
+    th32_module_id: u32,
+    cnt_threads: u32,
+    th32_parent_process_id: u32,
+    pc_pri_class_base: i32,
+    dw_flags: u32,
+    sz_exe_file: [u16; 260],
+}
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+extern "system" {
+    #[link_name = "Process32FirstW"]
+    fn ssh_input_process32_first(h_snapshot: isize, lppe: *mut ProcessEntry32W) -> i32;
+    #[link_name = "Process32NextW"]
+    fn ssh_input_process32_next(h_snapshot: isize, lppe: *mut ProcessEntry32W) -> i32;
+}
+
 /// Explicitly (re-)send the VT mouse-enable escape sequences to stdout.
 ///
 /// Over SSH, ConPTY may consume DECSET 1000/1002/1003/1006 from the output
@@ -211,25 +236,139 @@ pub fn needs_vt_input() -> bool {
     {
         return true;
     }
-    // Alacritty and WezTerm on Windows route input through ConPTY and send
-    // VT escape sequences (e.g. \x1b[27;5;47~ for Ctrl+/).
-    //
-    // Detection by env vars each terminal sets on Windows:
-    //   Alacritty  → ALACRITTY_LOG (e.g. C:\...\Alacritty-NNNN.log)
-    //   WezTerm    → WEZTERM_LOG   (e.g. "warn")
-    //   TERM_PROGRAM → set by some terminals on other platforms
-    //
-    // Windows Terminal sets WT_SESSION and delivers native Win32 INPUT_RECORDs,
-    // so it does NOT need VT mode.
-    if std::env::var_os("ALACRITTY_LOG").is_some() {
+    // On Windows, detect ConPTY-based terminals (WezTerm, Alacritty, etc.)
+    // by walking the process tree upward and matching against known terminal
+    // executable names.  This is more reliable than environment variables,
+    // which can be inherited across terminal launches (e.g. WEZTERM_LOG
+    // persisting into a Windows Terminal child process causing false positives).
+    #[cfg(windows)]
+    return is_conpty_environment();
+    #[cfg(not(windows))]
+    false
+}
+
+/// Returns `true` when running inside a ConPTY-based terminal (WezTerm,
+/// Alacritty, etc.) on Windows.
+///
+/// Strategy: walk the process tree from the current PID upward via PPID,
+/// comparing each ancestor's executable name against a known list of
+/// ConPTY-based terminals (→ true) and native console hosts (→ false).
+/// If no known terminal is found in the tree, fall back to environment
+/// variable heuristics for forward-compatibility.
+///
+/// This is more reliable than `GetConsoleWindow()` (which returns non-NULL
+/// even under ConPTY because conhost still creates a hidden window) and
+/// more reliable than environment variables (which can be inherited across
+/// terminal launches, e.g. WEZTERM_LOG persisting into a Windows Terminal
+/// child process).
+#[cfg(windows)]
+fn is_conpty_environment() -> bool {
+    use std::collections::HashMap;
+
+    const INVALID_HANDLE: isize = -1isize; // INVALID_HANDLE_VALUE
+    const TH32CS_SNAPPROCESS: u32 = 0x00000002;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateToolhelp32Snapshot(dw_flags: u32, th32_process_id: u32) -> isize;
+        fn CloseHandle(h_object: isize) -> i32;
+        fn GetCurrentProcessId() -> u32;
+    }
+
+    // Known ConPTY-based terminals → needs VT input mode.
+    const CONPTY_TERMINALS: &[&str] = &[
+        "alacritty.exe",
+        "wezterm-gui.exe",
+        "wezterm.exe",
+        "kitty.exe",
+        "mintty.exe",
+        "msys2-terminal.exe",
+    ];
+
+    // Known native console hosts → does NOT need VT input mode.
+    const NATIVE_TERMINALS: &[&str] = &[
+        "windowsterminal.exe",
+        "openconsole.exe",
+        "conhost.exe",
+    ];
+
+    // Build a pid→(ppid, exe_name) map from a single snapshot.
+    // Process32FirstW / Process32NextW are declared at module level with
+    // #[link_name] aliases (ssh_input_process32_first / _next) to avoid
+    // clashing_extern_declarations with the identical declarations in
+    // platform::process_kill.
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == INVALID_HANDLE || snapshot == 0 {
+        // Snapshot failed — fall back to env-var heuristics.
+        return is_conpty_by_env();
+    }
+
+    let mut map: HashMap<u32, (u32, String)> = HashMap::new();
+    let mut entry: ProcessEntry32W = unsafe { std::mem::zeroed() };
+    entry.dw_size = std::mem::size_of::<ProcessEntry32W>() as u32;
+
+    let mut ok = unsafe { ssh_input_process32_first(snapshot, &mut entry) };
+    while ok != 0 {
+        // Convert the null-terminated UTF-16 exe name to a lowercase String.
+        let len = entry.sz_exe_file.iter().position(|&c| c == 0).unwrap_or(260);
+        let name = String::from_utf16_lossy(&entry.sz_exe_file[..len]).to_lowercase();
+        map.insert(entry.th32_process_id, (entry.th32_parent_process_id, name));
+        entry = unsafe { std::mem::zeroed() };
+        entry.dw_size = std::mem::size_of::<ProcessEntry32W>() as u32;
+        ok = unsafe { ssh_input_process32_next(snapshot, &mut entry) };
+    }
+    unsafe { CloseHandle(snapshot) };
+
+    // Walk upward from the current process.
+    let mut pid = unsafe { GetCurrentProcessId() };
+    let mut depth = 0u32;
+    loop {
+        depth += 1;
+        if depth > 32 {
+            // Guard against cycles / very deep trees.
+            break;
+        }
+        let Some((ppid, ref name)) = map.get(&pid).cloned() else {
+            break;
+        };
+        if CONPTY_TERMINALS.contains(&name.as_str()) {
+            return true;
+        }
+        if NATIVE_TERMINALS.contains(&name.as_str()) {
+            return false;
+        }
+        if ppid == 0 || ppid == pid {
+            break;
+        }
+        pid = ppid;
+    }
+
+    // No known terminal found in the tree — fall back to env-var heuristics
+    // for forward-compatibility with terminals we don't know about yet.
+    is_conpty_by_env()
+}
+
+/// Env-var fallback: detect ConPTY-based terminals by well-known variables
+/// they set.  Used when the process-tree walk finds no known terminal.
+#[cfg(windows)]
+fn is_conpty_by_env() -> bool {
+    // Alacritty sets ALACRITTY_LOG (or ALACRITTY_SOCKET on newer versions).
+    if std::env::var_os("ALACRITTY_LOG").is_some()
+        || std::env::var_os("ALACRITTY_SOCKET").is_some()
+    {
         return true;
     }
-    if std::env::var_os("WEZTERM_LOG").is_some() {
+    // WezTerm sets WEZTERM_EXECUTABLE.
+    // Intentionally NOT checking WEZTERM_LOG — that is a debug variable that
+    // can be inherited by child processes launched from WezTerm, causing false
+    // positives when the user later opens Windows Terminal.
+    if std::env::var_os("WEZTERM_EXECUTABLE").is_some() {
         return true;
     }
-    if let Ok(term_program) = std::env::var("TERM_PROGRAM") {
-        let tp = term_program.to_lowercase();
-        if tp.contains("alacritty") || tp.contains("wezterm") {
+    // TERM_PROGRAM is set by some ConPTY-based terminals.
+    if let Ok(tp) = std::env::var("TERM_PROGRAM") {
+        let tp = tp.to_lowercase();
+        if tp.contains("wezterm") || tp.contains("alacritty") {
             return true;
         }
     }

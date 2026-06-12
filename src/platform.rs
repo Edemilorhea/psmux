@@ -103,7 +103,7 @@ pub(crate) fn escape_arg_msvcrt(arg: &str) -> String {
 /// window remains invisible.  This replicates the behaviour of
 /// `Start-Process -WindowStyle Hidden` in PowerShell.
 #[cfg(windows)]
-pub fn spawn_server_hidden(exe: &std::path::Path, args: &[String]) -> std::io::Result<()> {
+pub fn spawn_server_hidden(exe: &std::path::Path, args: &[String]) -> std::io::Result<u32> {
     #[repr(C)]
     #[allow(non_snake_case)]
     struct STARTUPINFOW {
@@ -224,13 +224,70 @@ pub fn spawn_server_hidden(exe: &std::path::Path, args: &[String]) -> std::io::R
         return Err(std::io::Error::last_os_error());
     }
 
+    // Capture the server PID before closing handles so callers can poll the
+    // process for liveness (used by the new-session readiness gate to fail fast
+    // if the server dies, instead of waiting out the readiness deadline).
+    let server_pid = pi.dwProcessId;
+
     // Close handles – we don't need to wait for the child.
     unsafe {
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
     }
 
-    Ok(())
+    Ok(server_pid)
+}
+
+/// Return true while the process with `pid` is still running.
+///
+/// Used by the new-session readiness gate as a fast-fail signal: if the freshly
+/// spawned server process dies (hard kill, abrupt exit, or any path that skips
+/// the server's panic hook and therefore does NOT remove the .port file), the
+/// client stops waiting immediately rather than blocking until the readiness
+/// deadline.
+///
+/// Conservative by design: only reports "dead" on a positive signal. The PID
+/// belongs to a server we just spawned as the SAME user, so OpenProcess with
+/// SYNCHRONIZE access is granted while it is alive; a failure to open the
+/// (still very young) PID is the exit signal. WaitForSingleObject(0) avoids the
+/// classic GetExitCodeProcess/STILL_ACTIVE(259) ambiguity. Callers only consult
+/// this AFTER a readiness check fails for the current iteration, so a healthy,
+/// reachable server is never declared dead.
+#[cfg(windows)]
+pub fn process_is_alive(pid: u32) -> bool {
+    // OpenProcess / CloseHandle use the isize handle convention shared by the
+    // rest of platform.rs; WaitForSingleObject uses the *mut c_void handle to
+    // match ssh_input.rs's declaration of the same symbol (avoids a cross-module
+    // clashing-extern warning). The two are ABI-identical, so we cast at the
+    // call site.
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn OpenProcess(dwDesiredAccess: u32, bInheritHandle: i32, dwProcessId: u32) -> isize;
+        fn WaitForSingleObject(hHandle: *mut std::ffi::c_void, dwMilliseconds: u32) -> u32;
+        fn CloseHandle(handle: isize) -> i32;
+    }
+    const SYNCHRONIZE: u32 = 0x0010_0000;
+    const WAIT_TIMEOUT: u32 = 0x0000_0102;
+    unsafe {
+        let h = OpenProcess(SYNCHRONIZE, 0, pid);
+        if h == 0 {
+            // PID no longer openable -> the process has exited.
+            return false;
+        }
+        let r = WaitForSingleObject(h as *mut std::ffi::c_void, 0);
+        CloseHandle(h);
+        // WAIT_TIMEOUT => handle not signaled => still running.
+        // WAIT_OBJECT_0 (0) => signaled => the process has exited.
+        r == WAIT_TIMEOUT
+    }
+}
+
+#[cfg(not(windows))]
+pub fn process_is_alive(_pid: u32) -> bool {
+    // Non-Windows builds do not plumb the server PID into the readiness gate;
+    // treat as alive so the gate falls back to the .port-vanish + deadline
+    // signals rather than ever false-failing.
+    true
 }
 
 /// Enable virtual terminal processing on Windows Console Host.
@@ -1127,6 +1184,23 @@ pub mod mouse_inject {
                 std::ptr::null(),
             );
 
+            // If we temporarily flip ENABLE_PROCESSED_INPUT on to make
+            // GenerateConsoleCtrlEvent fire, remember the handle + original mode
+            // so we can restore the shell's raw console state afterwards.
+            //
+            // Leaving PROCESSED_INPUT permanently ON corrupts PSReadLine, which
+            // deliberately runs the console RAW (PROCESSED_INPUT cleared) so it
+            // can read Ctrl+C as a key event and cancel the input line.  Once the
+            // flag is stuck on, the raw 0x03 byte the caller writes is swallowed
+            // by the console as a no-op CTRL_C_EVENT at a bare prompt instead of
+            // reaching PSReadLine as a key, so only the *first* Ctrl+C cancels the
+            // line and every subsequent press is silently dropped (repeated-Ctrl+C
+            // regression).
+            // By the time we reach the GenerateConsoleCtrlEvent below, the
+            // foreground console is either already in cooked mode
+            // (ENABLE_PROCESSED_INPUT set) or we could not inspect it.  Both
+            // raw-mode branches (TUI and shell) detach early via `return false`
+            // above, so there is never a temporarily-flipped mode to restore.
             if handle != INVALID_HANDLE && handle != 0 {
                 let mut mode: u32 = 0;
                 if GetConsoleMode(handle as *mut c_void, &mut mode) != 0 {
@@ -1147,11 +1221,32 @@ pub mod mouse_inject {
                             if had_console { AttachConsole(ATTACH_PARENT_PROCESS); }
                             return false;
                         }
-                        log(&format!("re-enabling ENABLE_PROCESSED_INPUT for pid={}", child_pid));
-                        SetConsoleMode(handle as *mut c_void, mode | ENABLE_PROCESSED_INPUT);
+                        // Raw-mode shell prompt (e.g. PSReadLine).  Like the
+                        // raw-mode TUI case above, the shell deliberately cleared
+                        // ENABLE_PROCESSED_INPUT so it can read Ctrl+C as a raw
+                        // 0x03 key event and cancel the current input line itself.
+                        // The call site already writes raw 0x03 to the PTY, which
+                        // is sufficient to cancel the line.  Firing an additional
+                        // GenerateConsoleCtrlEvent here is both redundant and
+                        // harmful: to make the signal fire we would have to flip
+                        // PROCESSED_INPUT on temporarily, and the extra async
+                        // CTRL_C_EVENT interrupts PSReadLine's ReadConsole loop
+                        // after it has already handled the raw 0x03, leaving the
+                        // shell half-wedged so that subsequent Enter (\r) bytes
+                        // are written to the PTY but never processed as a line.
+                        // Skip the signal entirely and detach cleanly; the raw
+                        // 0x03 byte carries the interrupt on its own.
+                        log(&format!("raw-mode shell foreground pid={}: deliver raw 0x03, skip CTRL_C_EVENT", child_pid));
+                        CloseHandle(handle);
+                        FreeConsole();
+                        if had_console { AttachConsole(ATTACH_PARENT_PROCESS); }
+                        return false;
+                    } else {
+                        CloseHandle(handle);
                     }
+                } else {
+                    CloseHandle(handle);
                 }
-                CloseHandle(handle);
             }
 
             // Ignore CTRL_C in our own process so GenerateConsoleCtrlEvent

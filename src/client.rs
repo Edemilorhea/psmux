@@ -1269,7 +1269,8 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
     let mut prefix2_raw_char: Option<char> = None;
     // Status bar style from server (parsed from tmux status-style format)
     let mut status_fg: Color = Color::Black;
-    let mut status_bg: Color = Color::Green;
+    // #372: terminal default until the server sends a parseable status-style.
+    let mut status_bg: Color = Color::Reset;
     let mut status_bold: bool = false;
     let mut custom_status_left: Option<String> = None;
     let mut custom_status_right: Option<String> = None;
@@ -1542,6 +1543,11 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
         /// mode-style for copy mode selection highlighting
         #[serde(default)]
         mode_style: Option<String>,
+        /// message-style for the status-line message bar (display-message,
+        /// command prompt). #372: previously never sent, so the client
+        /// hard-coded bg=yellow,fg=black and ignored the user's option.
+        #[serde(default)]
+        message_style: Option<String>,
         /// status-position: "top" or "bottom"
         #[serde(default)]
         status_position: Option<String>,
@@ -2737,10 +2743,11 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                 popup_rect_last = None;
                                 if choose_tree_preview_default { preview_enabled = true; }
                                 let dir = format!("{}\\.psmux", home);
-                                // Collect (label, addr, key) for every reachable port file first,
-                                // then fan out the per-session AUTH+session-info fetches in parallel.
-                                // Sequential fetches made the picker open in O(N * read_timeout);
-                                // parallelism keeps it bounded by the single-fetch timeout.
+                                // Collect (label, addr, key) for every port file, then run ONE
+                                // bounded liveness probe per session in parallel. This both lists
+                                // and prunes: total wall time is ~one probe window regardless of
+                                // how many sessions exist, so the picker stays responsive (no
+                                // sequential O(N * timeout) cleanup pass).
                                 let mut targets: Vec<(String, String, String)> = Vec::new();
                                 if let Ok(entries) = std::fs::read_dir(&dir) {
                                     for e in entries.flatten() {
@@ -2760,13 +2767,35 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                         }
                                     }
                                 }
-                                let fetched = crate::session::fetch_session_infos_parallel(
+                                let verdicts = crate::session::classify_sessions_parallel(
                                     targets,
-                                    Duration::from_millis(25),
-                                    Duration::from_millis(150),
-                                    |label| format!("{}: (not responding)", label),
+                                    Duration::from_millis(50),
+                                    Duration::from_millis(250),
                                 );
-                                session_entries.extend(fetched);
+                                for (label, liveness) in verdicts {
+                                    match liveness {
+                                        crate::session::SessionLiveness::Alive(info) => {
+                                            session_entries.push((label, info));
+                                        }
+                                        crate::session::SessionLiveness::Dead => {
+                                            // Server gone (crashed, killed by a reboot, or its
+                                            // port reused by another server). Reap it so it never
+                                            // shows as a "(not responding)" zombie. A live-but-slow
+                                            // server self-heals on its next 5s registry tick.
+                                            if crate::debug_log::session_log_enabled() {
+                                                crate::debug_log::session_log("picker",
+                                                    &format!("reaping dead session '{}' from chooser", label));
+                                            }
+                                            crate::session::remove_session_registry(&label);
+                                        }
+                                        crate::session::SessionLiveness::Unreachable => {
+                                            // Could not connect (transient, non-refused). Keep it
+                                            // and show the honest "(not responding)" rather than
+                                            // deleting on an ambiguous failure.
+                                            session_entries.push((label.clone(), format!("{}: (not responding)", label)));
+                                        }
+                                    }
+                                }
                                 if session_entries.is_empty() {
                                     session_entries.push((current_session.clone(), format!("{}: (current)", current_session)));
                                 }
@@ -3466,7 +3495,16 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                     cmd_batch.push("send-key C-v\n".to_string());
                                 }
                                 KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                    cmd_batch.push(format!("send-key C-{}\n", c.to_ascii_lowercase()));
+                                    // Preserve a held Shift so Ctrl+Shift+<letter> is not
+                                    // silently collapsed to a plain Ctrl+<letter> on the wire
+                                    // (issue #368).  tmux-style name: C-S-x.  The server
+                                    // injects a native KEY_EVENT carrying both modifiers so
+                                    // console-input apps can tell the two apart.
+                                    if key.modifiers.contains(KeyModifiers::SHIFT) {
+                                        cmd_batch.push(format!("send-key C-S-{}\n", c.to_ascii_lowercase()));
+                                    } else {
+                                        cmd_batch.push(format!("send-key C-{}\n", c.to_ascii_lowercase()));
+                                    }
                                 }
                                 KeyCode::Char(c) if (c as u32) >= 0x01 && (c as u32) <= 0x1A => {
                                     let ctrl_letter = ((c as u8) + b'a' - 1) as char;
@@ -4213,6 +4251,24 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
             }
         }
 
+        // Timer-driven repeat-window expiry (issue #371).
+        // A repeatable (-r) prefix binding arms `prefix_repeating` but does NOT
+        // send `prefix-end` — it stays armed so a follow-up repeat key is caught.
+        // The key-event path (above) only expires this on the NEXT keystroke, so
+        // with no further key the prefix-active state (and #{client_prefix}) would
+        // stay stuck on indefinitely. This runs every poll tick, so once
+        // repeat-time elapses with no repeat key we disarm and emit prefix-end,
+        // matching tmux where the indicator clears when the repeat window closes.
+        if prefix_armed && prefix_repeating
+            && prefix_armed_at.elapsed().as_millis() >= repeat_time_ms as u128
+        {
+            prefix_armed = false;
+            prefix_repeating = false;
+            #[cfg(windows)]
+            if ime_was_open { crate::platform::ime_restore(); ime_was_open = false; }
+            cmd_batch.push("prefix-end\n".into());
+        }
+
         // Send all batched commands immediately — keys reach the server
         // without waiting for a dump-state round-trip
         let sent_keys_this_iter = !cmd_batch.is_empty();
@@ -4438,7 +4494,10 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
             if !ss.is_empty() {
                 let (fg, bg, bold) = parse_tmux_style_components(ss);
                 status_fg = fg.unwrap_or(Color::Black);
-                status_bg = bg.unwrap_or(Color::Green);
+                // #372: fall back to the terminal default rather than bright
+                // green when a bg fails to parse, so any future parse miss is
+                // invisible instead of alarming.
+                status_bg = bg.unwrap_or(Color::Reset);
                 status_bold = bold;
             }
         }
@@ -5329,7 +5388,15 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
             // instead of the normal status content (tmux parity).
             // Uses message-style (default: bg=yellow,fg=black) matching tmux.
             let status_bar = if let Some(ref msg) = state.status_message {
-                let msg_style = crate::rendering::parse_tmux_style("bg=yellow,fg=black");
+                // #372: honor the configured message-style (sent expanded by the
+                // server) instead of a hard-coded colour. Falls back to tmux's
+                // default bg=yellow,fg=black when unset/empty.
+                let msg_style = crate::rendering::parse_tmux_style(
+                    match state.message_style.as_deref() {
+                        Some(s) if !s.is_empty() => s,
+                        _ => "bg=yellow,fg=black",
+                    }
+                );
                 let padded = if msg.len() < status_chunk.width as usize {
                     format!("{}{}", msg, " ".repeat(status_chunk.width as usize - msg.len()))
                 } else {

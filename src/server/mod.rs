@@ -520,6 +520,127 @@ pub(crate) fn write_startup_error_log(err: &dyn std::fmt::Display) {
     let _ = std::fs::write(&path, body);
 }
 
+/// Absolute path to `~/.psmux/server-startup.log`, or None if no home dir.
+pub(crate) fn startup_error_log_path() -> Option<String> {
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_default();
+    if home.is_empty() {
+        return None;
+    }
+    Some(format!("{}\\.psmux\\server-startup.log", home))
+}
+
+/// Read the real failure reason out of a *fresh* `server-startup.log`.
+///
+/// Issue #370: when the initial pane spawn fails (e.g. a `default-shell`
+/// pointing at a non-existent path), the detached server records the concrete
+/// error here and exits, but the client the user is actually looking at only
+/// printed a generic "failed to create session". This lets the client echo the
+/// real cause to the terminal instead of leaving it buried in a log file.
+///
+/// `since_epoch` is the wall-clock second the current startup attempt began;
+/// logs whose `when (epoch s)` predate it are stale (from an earlier run or an
+/// adopted warm server) and are ignored. Returns `(error_text, log_path)`.
+pub(crate) fn read_fresh_startup_error(since_epoch: u64) -> Option<(String, String)> {
+    let path = startup_error_log_path()?;
+    read_fresh_startup_error_at(&path, since_epoch)
+}
+
+/// Path-injectable core of [`read_fresh_startup_error`] — kept separate so unit
+/// tests can exercise the freshness/parsing logic against a temp file without
+/// mutating the process-global USERPROFILE/HOME env (which would race the
+/// issue-167 log tests sharing this binary).
+fn read_fresh_startup_error_at(path: &str, since_epoch: u64) -> Option<(String, String)> {
+    let content = std::fs::read_to_string(path).ok()?;
+
+    // Freshness gate: only surface a log written during this attempt.
+    let when = content
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("when (epoch s):"))
+        .and_then(|v| v.trim().parse::<u64>().ok())?;
+    // Allow 2s of slack so clock granularity / pre-spawn timing never hides a
+    // genuinely-current failure.
+    if when + 2 < since_epoch {
+        return None;
+    }
+
+    // Extract the indented error block: the lines after the "error:" marker up
+    // to the next blank line.
+    let mut lines = content.lines();
+    let mut err_lines: Vec<String> = Vec::new();
+    while let Some(l) = lines.next() {
+        if l.trim() == "error:" {
+            for body_line in lines.by_ref() {
+                if body_line.trim().is_empty() {
+                    break;
+                }
+                err_lines.push(body_line.trim().to_string());
+            }
+            break;
+        }
+    }
+    if err_lines.is_empty() {
+        return None;
+    }
+    Some((err_lines.join(" "), path.to_string()))
+}
+
+/// Absolute path to `~/.psmux/config-warnings.log`, or None if no home dir.
+pub(crate) fn config_warnings_log_path() -> Option<String> {
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_default();
+    if home.is_empty() {
+        return None;
+    }
+    Some(format!("{}\\.psmux\\config-warnings.log", home))
+}
+
+/// Persist non-fatal config parse warnings so the attaching client can echo
+/// them to the user's terminal (issue #370 follow-up). The detached server has
+/// no visible stderr, so an unknown option / malformed value / unknown command
+/// would otherwise be silently dropped. A leading `when (epoch s)` line lets
+/// the client ignore a stale file from an earlier run. Writing an empty list
+/// removes any prior log so resolved configs don't keep re-reporting.
+pub(crate) fn write_config_warnings_log(warnings: &[String]) {
+    let Some(path) = config_warnings_log_path() else { return };
+    if warnings.is_empty() {
+        let _ = std::fs::remove_file(&path);
+        return;
+    }
+    if let Some(parent) = std::path::Path::new(&path).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mut body = format!("when (epoch s): {}\n", now);
+    for w in warnings {
+        body.push_str(w);
+        body.push('\n');
+    }
+    let _ = std::fs::write(&path, body);
+}
+
+/// Read fresh config warnings written during the current startup attempt.
+/// `since_epoch` is when the attempt began; a log older than that (minus 2s of
+/// clock slack) is stale and ignored. Returns the warning lines.
+pub(crate) fn read_fresh_config_warnings(since_epoch: u64) -> Vec<String> {
+    let Some(path) = config_warnings_log_path() else { return Vec::new() };
+    let Ok(content) = std::fs::read_to_string(&path) else { return Vec::new() };
+    let mut lines = content.lines();
+    let when = lines
+        .next()
+        .and_then(|l| l.trim().strip_prefix("when (epoch s):").map(|v| v.trim().to_string()))
+        .and_then(|v| v.parse::<u64>().ok());
+    match when {
+        Some(w) if w + 2 >= since_epoch => lines.map(|l| l.to_string()).filter(|l| !l.is_empty()).collect(),
+        _ => Vec::new(),
+    }
+}
+
 pub fn run_server(session_name: String, socket_name: Option<String>, initial_command: Option<String>, raw_command: Option<Vec<String>>, start_dir: Option<String>, window_name: Option<String>, init_size: Option<(u16, u16)>, group_target: Option<String>, env_vars: Vec<(String, String)>) -> io::Result<()> {
     // Write crash info to a log file when stderr is unavailable (detached server)
     // and clean up port/key files so stale entries do not linger (issue #204).
@@ -581,7 +702,36 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
 
     app.session_key = session_key.clone();
 
+    // TEST-ONLY fault injection — compiled out of release builds entirely
+    // (gated on debug_assertions); inert in debug unless the env var is set.
+    // Delays the .port file write (which happens inside
+    // ensure_session_registry_files below) while the server is otherwise
+    // healthy, to deterministically reproduce a SLOW server startup under load.
+    // The client's readiness gate must wait for the eventually-reachable server
+    // rather than give up and orphan it. See tests/test_new_session_no_orphan.ps1.
+    #[cfg(debug_assertions)]
+    {
+        if let Ok(ms) = env::var("PSMUX_TEST_PORTFILE_DELAY_MS") {
+            if let Ok(ms) = ms.parse::<u64>() {
+                thread::sleep(Duration::from_millis(ms));
+            }
+        }
+    }
+
     ensure_session_registry_files(&home, &app);
+
+    // TEST-ONLY fault injection — compiled out of release builds entirely.
+    // Simulates the server dying AFTER writing its .port file but WITHOUT the
+    // panic hook running (a hard exit / kill that leaves a stale .port behind).
+    // The client's readiness gate must detect the dead server PID and fail fast
+    // instead of blocking until the 15s deadline. See tests/test_new_session_hang.ps1.
+    #[cfg(debug_assertions)]
+    {
+        if env::var("PSMUX_TEST_DIE_AFTER_PORTFILE").is_ok() {
+            std::process::exit(3);
+        }
+    }
+
     let regpath = format!("{}\\{}.port", dir, app.port_file_base());
     let keypath = format!("{}\\{}.key", dir, app.port_file_base());
 
@@ -655,6 +805,9 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
 
     crate::config::populate_default_bindings(&mut app);
     load_config(&mut app);
+    // Surface any non-fatal config parse warnings to the attaching client
+    // (issue #370 follow-up) instead of silently dropping them.
+    write_config_warnings_log(&app.config_warnings);
     // Config may set pane-border-status which changes content height (#288)
     resize_all_panes(&mut app);
 
@@ -724,6 +877,23 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
     // Update shared aliases now that config has been loaded
     if let Ok(mut w) = shared_aliases_main.write() {
         *w = app.command_aliases.clone();
+    }
+
+    // TEST-ONLY fault injection — compiled out of release builds entirely.
+    // Widens the new-session readiness race deterministically: the .port file
+    // and accept thread are already up (the client's connect check passes), but
+    // the initial window does not yet exist and the main request loop is not yet
+    // answering. A large value (e.g. 60000) also simulates a server that is
+    // ALIVE but whose create_window hangs forever, exercising the client's
+    // bounded 15s deadline (it must return ~15s, never block indefinitely).
+    // See tests/test_new_session_readiness.ps1 and tests/test_new_session_hang.ps1.
+    #[cfg(debug_assertions)]
+    {
+        if let Ok(ms) = env::var("PSMUX_TEST_WINDOW_DELAY_MS") {
+            if let Ok(ms) = ms.parse::<u64>() {
+                thread::sleep(Duration::from_millis(ms));
+            }
+        }
     }
 
     // Create initial window — if a warm pane was pre-spawned above,
@@ -1563,18 +1733,26 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
                     let layout_json = dump_layout_json_fast(&mut app)?;
                     let _layout_ms = _t_layout.elapsed().as_micros();
                     combined_buf.clear();
-                    let ss_escaped = json_escape_string(&cached_status_style);
+                    // #372: style options must be format-expanded too, so a
+                    // #{@var} colour reference resolves before the client's
+                    // colour parser sees it (otherwise status-style falls back
+                    // to bright green). wsf/wscf stay raw: they are per-window
+                    // formats the client expands with each window's own context.
+                    let ss_escaped = json_escape_string(&expand_format(&cached_status_style, &app));
                     let sl_expanded = json_escape_string(&expand_format(&app.status_left, &app));
                     let sr_expanded = json_escape_string(&expand_format(&app.status_right, &app));
-                    let pbs_escaped = json_escape_string(&app.pane_border_style);
-                    let pabs_escaped = json_escape_string(&app.pane_active_border_style);
-                    let pbhs_escaped = json_escape_string(&app.pane_border_hover_style);
+                    let pbs_escaped = json_escape_string(&expand_format(&app.pane_border_style, &app));
+                    let pabs_escaped = json_escape_string(&expand_format(&app.pane_active_border_style, &app));
+                    let pbhs_escaped = json_escape_string(&expand_format(&app.pane_border_hover_style, &app));
                     let wsf_escaped = json_escape_string(&app.window_status_format);
                     let wscf_escaped = json_escape_string(&app.window_status_current_format);
-                    let wss_escaped = json_escape_string(&app.window_status_separator);
-                    let ws_style_escaped = json_escape_string(&app.window_status_style);
-                    let wsc_style_escaped = json_escape_string(&app.window_status_current_style);
-                    let mode_style_escaped = json_escape_string(&app.mode_style);
+                    let wss_escaped = json_escape_string(&expand_format(&app.window_status_separator, &app));
+                    let ws_style_escaped = json_escape_string(&expand_format(&app.window_status_style, &app));
+                    let wsc_style_escaped = json_escape_string(&expand_format(&app.window_status_current_style, &app));
+                    let mode_style_escaped = json_escape_string(&expand_format(&app.mode_style, &app));
+                    // #372: message-style was never sent to the client (it
+                    // hard-coded bg=yellow,fg=black). Send it, format-expanded.
+                    let message_style_escaped = json_escape_string(&expand_format(&app.message_style, &app));
                     let status_position_escaped = json_escape_string(&app.status_position);
                     let status_justify_escaped = json_escape_string(&app.status_justify);
                     // Build status_format JSON array for multi-line status bar
@@ -1591,11 +1769,11 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
                     };
                     let cursor_style_code = crate::rendering::configured_cursor_code();
                     let _ = std::fmt::Write::write_fmt(&mut combined_buf, format_args!(
-                        "{{\"layout\":{},\"windows\":{},\"prefix\":\"{}\",\"prefix2\":\"{}\",\"tree\":{},\"base_index\":{},\"pane_base_index\":{},\"prediction_dimming\":{},\"status_style\":\"{}\",\"status_left\":\"{}\",\"status_right\":\"{}\",\"pane_border_style\":\"{}\",\"pane_active_border_style\":\"{}\",\"pane_border_hover_style\":\"{}\",\"wsf\":\"{}\",\"wscf\":\"{}\",\"wss\":\"{}\",\"ws_style\":\"{}\",\"wsc_style\":\"{}\",\"clock_mode\":{},\"bindings\":{},\"status_left_length\":{},\"status_right_length\":{},\"status_lines\":{},\"status_format\":{},\"mode_style\":\"{}\",\"status_position\":\"{}\",\"status_justify\":\"{}\",\"cursor_style_code\":{},\"status_visible\":{},\"repeat_time\":{},\"zoomed\":{},\"defaults_suppressed\":{},\"pwsh_mouse_selection\":{},\"mouse_selection\":{},\"paste_detection\":{},\"choose_tree_preview\":{},\"scroll_enter_copy_mode\":{}}}",
+                        "{{\"layout\":{},\"windows\":{},\"prefix\":\"{}\",\"prefix2\":\"{}\",\"tree\":{},\"base_index\":{},\"pane_base_index\":{},\"prediction_dimming\":{},\"status_style\":\"{}\",\"status_left\":\"{}\",\"status_right\":\"{}\",\"pane_border_style\":\"{}\",\"pane_active_border_style\":\"{}\",\"pane_border_hover_style\":\"{}\",\"wsf\":\"{}\",\"wscf\":\"{}\",\"wss\":\"{}\",\"ws_style\":\"{}\",\"wsc_style\":\"{}\",\"clock_mode\":{},\"bindings\":{},\"status_left_length\":{},\"status_right_length\":{},\"status_lines\":{},\"status_format\":{},\"mode_style\":\"{}\",\"message_style\":\"{}\",\"status_position\":\"{}\",\"status_justify\":\"{}\",\"cursor_style_code\":{},\"status_visible\":{},\"repeat_time\":{},\"zoomed\":{},\"defaults_suppressed\":{},\"pwsh_mouse_selection\":{},\"mouse_selection\":{},\"paste_detection\":{},\"choose_tree_preview\":{},\"scroll_enter_copy_mode\":{}}}",
                         layout_json, cached_windows_json, cached_prefix_str, cached_prefix2_str, cached_tree_json, cached_base_index, app.pane_base_index, cached_pred_dim, ss_escaped, sl_expanded, sr_expanded, pbs_escaped, pabs_escaped, pbhs_escaped, wsf_escaped, wscf_escaped, wss_escaped, ws_style_escaped, wsc_style_escaped,
                         matches!(app.mode, Mode::ClockMode), cached_bindings_json,
                         app.status_left_length, app.status_right_length, app.status_lines, status_format_json,
-                        mode_style_escaped, status_position_escaped, status_justify_escaped,
+                        mode_style_escaped, message_style_escaped, status_position_escaped, status_justify_escaped,
                         cursor_style_code, app.status_visible, app.repeat_time_ms,
                         app.windows.get(app.active_idx).map_or(false, |w| w.zoom_saved.is_some()),
                         app.defaults_suppressed,
@@ -2615,6 +2793,8 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
                     app.defaults_suppressed = false;
                     crate::config::populate_default_bindings(&mut app);
                     load_config(&mut app);
+                    // Surface config warnings to the claiming client (#370 follow-up).
+                    write_config_warnings_log(&app.config_warnings);
                     // Config may set pane-border-status (#288)
                     resize_all_panes(&mut app);
                     // Update shared aliases after config reload
@@ -4579,18 +4759,24 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
             }
             let layout_json = dump_layout_json_fast(&mut app)?;
             combined_buf.clear();
-            let ss_escaped = json_escape_string(&cached_status_style);
+            // #372: style options must be format-expanded too (see persistent
+            // path above). wsf/wscf stay raw: per-window formats the client
+            // expands with each window's own context.
+            let ss_escaped = json_escape_string(&expand_format(&cached_status_style, &app));
             let sl_expanded = json_escape_string(&expand_format(&app.status_left, &app));
             let sr_expanded = json_escape_string(&expand_format(&app.status_right, &app));
-            let pbs_escaped = json_escape_string(&app.pane_border_style);
-            let pabs_escaped = json_escape_string(&app.pane_active_border_style);
-            let pbhs_escaped = json_escape_string(&app.pane_border_hover_style);
+            let pbs_escaped = json_escape_string(&expand_format(&app.pane_border_style, &app));
+            let pabs_escaped = json_escape_string(&expand_format(&app.pane_active_border_style, &app));
+            let pbhs_escaped = json_escape_string(&expand_format(&app.pane_border_hover_style, &app));
             let wsf_escaped = json_escape_string(&app.window_status_format);
             let wscf_escaped = json_escape_string(&app.window_status_current_format);
-            let wss_escaped = json_escape_string(&app.window_status_separator);
-            let ws_style_escaped = json_escape_string(&app.window_status_style);
-            let wsc_style_escaped = json_escape_string(&app.window_status_current_style);
-            let mode_style_escaped = json_escape_string(&app.mode_style);
+            let wss_escaped = json_escape_string(&expand_format(&app.window_status_separator, &app));
+            let ws_style_escaped = json_escape_string(&expand_format(&app.window_status_style, &app));
+            let wsc_style_escaped = json_escape_string(&expand_format(&app.window_status_current_style, &app));
+            let mode_style_escaped = json_escape_string(&expand_format(&app.mode_style, &app));
+            // #372: message-style was never sent to the client (it hard-coded
+            // bg=yellow,fg=black). Send it, format-expanded.
+            let message_style_escaped = json_escape_string(&expand_format(&app.message_style, &app));
             let status_position_escaped = json_escape_string(&app.status_position);
             let status_justify_escaped = json_escape_string(&app.status_justify);
             let status_format_json = {
@@ -4606,11 +4792,11 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
             };
             let cursor_style_code = crate::rendering::configured_cursor_code();
             let _ = std::fmt::Write::write_fmt(&mut combined_buf, format_args!(
-                "{{\"layout\":{},\"windows\":{},\"prefix\":\"{}\",\"prefix2\":\"{}\",\"tree\":{},\"base_index\":{},\"pane_base_index\":{},\"prediction_dimming\":{},\"status_style\":\"{}\",\"status_left\":\"{}\",\"status_right\":\"{}\",\"pane_border_style\":\"{}\",\"pane_active_border_style\":\"{}\",\"pane_border_hover_style\":\"{}\",\"wsf\":\"{}\",\"wscf\":\"{}\",\"wss\":\"{}\",\"ws_style\":\"{}\",\"wsc_style\":\"{}\",\"clock_mode\":{},\"bindings\":{},\"status_left_length\":{},\"status_right_length\":{},\"status_lines\":{},\"status_format\":{},\"mode_style\":\"{}\",\"status_position\":\"{}\",\"status_justify\":\"{}\",\"cursor_style_code\":{},\"status_visible\":{},\"repeat_time\":{},\"zoomed\":{},\"pwsh_mouse_selection\":{},\"mouse_selection\":{},\"paste_detection\":{},\"choose_tree_preview\":{},\"scroll_enter_copy_mode\":{}}}",
+                "{{\"layout\":{},\"windows\":{},\"prefix\":\"{}\",\"prefix2\":\"{}\",\"tree\":{},\"base_index\":{},\"pane_base_index\":{},\"prediction_dimming\":{},\"status_style\":\"{}\",\"status_left\":\"{}\",\"status_right\":\"{}\",\"pane_border_style\":\"{}\",\"pane_active_border_style\":\"{}\",\"pane_border_hover_style\":\"{}\",\"wsf\":\"{}\",\"wscf\":\"{}\",\"wss\":\"{}\",\"ws_style\":\"{}\",\"wsc_style\":\"{}\",\"clock_mode\":{},\"bindings\":{},\"status_left_length\":{},\"status_right_length\":{},\"status_lines\":{},\"status_format\":{},\"mode_style\":\"{}\",\"message_style\":\"{}\",\"status_position\":\"{}\",\"status_justify\":\"{}\",\"cursor_style_code\":{},\"status_visible\":{},\"repeat_time\":{},\"zoomed\":{},\"pwsh_mouse_selection\":{},\"mouse_selection\":{},\"paste_detection\":{},\"choose_tree_preview\":{},\"scroll_enter_copy_mode\":{}}}",
                 layout_json, cached_windows_json, cached_prefix_str, cached_prefix2_str, cached_tree_json, cached_base_index, app.pane_base_index, cached_pred_dim, ss_escaped, sl_expanded, sr_expanded, pbs_escaped, pabs_escaped, pbhs_escaped, wsf_escaped, wscf_escaped, wss_escaped, ws_style_escaped, wsc_style_escaped,
                 matches!(app.mode, Mode::ClockMode), cached_bindings_json,
                 app.status_left_length, app.status_right_length, app.status_lines, status_format_json,
-                mode_style_escaped, status_position_escaped, status_justify_escaped,
+                mode_style_escaped, message_style_escaped, status_position_escaped, status_justify_escaped,
                 cursor_style_code, app.status_visible, app.repeat_time_ms,
                 app.windows.get(app.active_idx).map_or(false, |w| w.zoom_saved.is_some()),
                 app.pwsh_mouse_selection,
@@ -4954,3 +5140,7 @@ mod test_new_session_env;
 #[cfg(test)]
 #[path = "../../tests-rs/test_issue167_startup_log.rs"]
 mod test_issue167_startup_log;
+
+#[cfg(test)]
+#[path = "../../tests-rs/test_issue370_startup_error_passthrough.rs"]
+mod test_issue370_startup_error_passthrough;

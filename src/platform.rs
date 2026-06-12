@@ -1183,8 +1183,11 @@ pub mod mouse_inject {
             // reaching PSReadLine as a key, so only the *first* Ctrl+C cancels the
             // line and every subsequent press is silently dropped (repeated-Ctrl+C
             // regression).
-            let mut restore_mode: Option<(isize, u32)> = None;
-
+            // By the time we reach the GenerateConsoleCtrlEvent below, the
+            // foreground console is either already in cooked mode
+            // (ENABLE_PROCESSED_INPUT set) or we could not inspect it.  Both
+            // raw-mode branches (TUI and shell) detach early via `return false`
+            // above, so there is never a temporarily-flipped mode to restore.
             if handle != INVALID_HANDLE && handle != 0 {
                 let mut mode: u32 = 0;
                 if GetConsoleMode(handle as *mut c_void, &mut mode) != 0 {
@@ -1205,14 +1208,26 @@ pub mod mouse_inject {
                             if had_console { AttachConsole(ATTACH_PARENT_PROCESS); }
                             return false;
                         }
-                        // Raw-mode shell prompt (e.g. PSReadLine).  Flip
-                        // PROCESSED_INPUT on *only* for the duration of the
-                        // signal, then restore the original raw mode below so the
-                        // NEXT Ctrl+C is still delivered to the shell as a key
-                        // event.  Keep the handle open until the restore.
-                        log(&format!("re-enabling ENABLE_PROCESSED_INPUT (temporary) for pid={}", child_pid));
-                        SetConsoleMode(handle as *mut c_void, mode | ENABLE_PROCESSED_INPUT);
-                        restore_mode = Some((handle, mode));
+                        // Raw-mode shell prompt (e.g. PSReadLine).  Like the
+                        // raw-mode TUI case above, the shell deliberately cleared
+                        // ENABLE_PROCESSED_INPUT so it can read Ctrl+C as a raw
+                        // 0x03 key event and cancel the current input line itself.
+                        // The call site already writes raw 0x03 to the PTY, which
+                        // is sufficient to cancel the line.  Firing an additional
+                        // GenerateConsoleCtrlEvent here is both redundant and
+                        // harmful: to make the signal fire we would have to flip
+                        // PROCESSED_INPUT on temporarily, and the extra async
+                        // CTRL_C_EVENT interrupts PSReadLine's ReadConsole loop
+                        // after it has already handled the raw 0x03, leaving the
+                        // shell half-wedged so that subsequent Enter (\r) bytes
+                        // are written to the PTY but never processed as a line.
+                        // Skip the signal entirely and detach cleanly; the raw
+                        // 0x03 byte carries the interrupt on its own.
+                        log(&format!("raw-mode shell foreground pid={}: deliver raw 0x03, skip CTRL_C_EVENT", child_pid));
+                        CloseHandle(handle);
+                        FreeConsole();
+                        if had_console { AttachConsole(ATTACH_PARENT_PROCESS); }
+                        return false;
                     } else {
                         CloseHandle(handle);
                     }
@@ -1237,17 +1252,6 @@ pub mod mouse_inject {
             // to propagate through the console subsystem before we detach.
             // psmux is protected by the preceding SetConsoleCtrlHandler(None, 1).
             std::thread::sleep(std::time::Duration::from_millis(5));
-
-            // Restore the shell's original (raw) console input mode now that the
-            // signal has been delivered.  This is what keeps *repeated* Ctrl+C
-            // working: PSReadLine left PROCESSED_INPUT cleared so it could read
-            // Ctrl+C as a key, and the next press must still arrive that way.
-            // Leaving it cooked makes every Ctrl+C after the first a silent
-            // no-op at a bare prompt.
-            if let Some((h, orig)) = restore_mode {
-                SetConsoleMode(h as *mut c_void, orig);
-                CloseHandle(h);
-            }
 
             // Detach from the child's console BEFORE restoring Ctrl+C handling.
             // If we restore the default handler while still attached, the async

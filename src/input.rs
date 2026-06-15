@@ -3136,10 +3136,20 @@ pub fn send_key_to_active(app: &mut AppState, k: &str, force_signal: bool) -> io
         // This replaces per-key VT hacks and preserves modifier flags.
         #[cfg(windows)]
         {
-            if let Some(seq) = crate::win32_input::encode_key_name_win32(k) {
-                let _ = p.writer.write_all(&seq);
-                let _ = p.writer.flush();
-                return;
+            // `send-keys -f C-c` must raise a real CTRL_C_EVENT (SIGINT parity),
+            // not merely deliver a Ctrl+C *keypress* via win32-input encoding.
+            // Raw-mode TUIs (e.g. opencode) consume a Ctrl+C key event without
+            // terminating; only the forced CTRL_C_EVENT signal interrupts them.
+            // Skip the win32 early-return for forced Ctrl+C so control flow
+            // reaches the dedicated Ctrl+C handler below, which writes the raw
+            // 0x03 byte AND calls send_ctrl_c_event(pid, false, force_signal).
+            let is_forced_ctrl_c = force_signal && matches!(k, "c-c" | "C-c");
+            if !is_forced_ctrl_c {
+                if let Some(seq) = crate::win32_input::encode_key_name_win32(k) {
+                    let _ = p.writer.write_all(&seq);
+                    let _ = p.writer.flush();
+                    return;
+                }
             }
         }
         match k {

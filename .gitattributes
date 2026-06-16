@@ -1,3 +1,33 @@
+# Normalize all text files to LF in the repository.
+# The existing blobs are already LF, so this keeps the repo consistent
+# and prevents CRLF<->LF churn regardless of each contributor's local
+# core.autocrlf setting. Binary files are auto-detected and left untouched.
+* text=auto eol=lf
 
-# Binary fixtures for tests (must preserve exact bytes)
-*.bin binary
+# Explicit text types (kept LF to match existing repo blobs).
+*.rs    text eol=lf
+*.toml  text eol=lf
+*.md    text eol=lf
+*.json  text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.sh    text eol=lf
+*.ps1   text eol=lf
+*.psm1  text eol=lf
+*.bat   text eol=lf
+*.cmd   text eol=lf
+*.cs    text eol=lf
+*.py    text eol=lf
+*.nuspec text eol=lf
+*.nsi   text eol=lf
+
+# Text-but-special: SVG is XML (text); lockfiles are text and benefit
+# from diffs. Keep them LF like the rest of the repo.
+*.svg   text eol=lf
+*.lock  text eol=lf
+
+# Binary files: never apply text/eol conversion.
+*.bin   binary
+*.png   binary
+*.gif   binary
+*.pyc   binary

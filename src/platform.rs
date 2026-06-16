@@ -1137,8 +1137,12 @@ pub mod mouse_inject {
         }
 
         // Always log to file for Ctrl+C events (critical signal path).
+        // Mirror to input_debug.log too so the full key->signal chain is
+        // visible with a single PSMUX_INPUT_DEBUG=1 (mouse_debug.log requires
+        // the separate PSMUX_MOUSE_DEBUG=1 flag).
         fn log(msg: &str) {
             debug_log(&format!("ctrl_c: {}", msg));
+            crate::debug_log::input_log("ctrl_c", msg);
         }
 
         // Decide up-front whether the pane's foreground process wants a console
@@ -1149,11 +1153,18 @@ pub mod mouse_inject {
         // process-tree walk does not touch our console, so it is done before
         // the FreeConsole/AttachConsole dance below.
         //
-        // When `force=true` the caller is an explicit user command (e.g. a
-        // keybinding that runs `send-keys -f C-c` to kill the foreground app);
-        // skip the heuristic and always deliver the signal.
-        let fg_is_shell = force || crate::platform::process_info::foreground_is_shell(child_pid)
-            .unwrap_or(true);
+        // `force=true` is an explicit user command (e.g. `bind -n C-F12
+        // send-keys -f C-c` to kill the foreground app).  Its contract is:
+        // ALWAYS raise a real CTRL_C_EVENT, bypassing every raw-mode heuristic
+        // below.  We therefore do NOT inspect the foreground process here when
+        // forcing — the whole console-mode short-circuit block is skipped and
+        // control flow goes straight to GenerateConsoleCtrlEvent.  The heuristic
+        // value is only meaningful on the non-forced keyboard pass-through path.
+        let fg_is_shell = if force {
+            true
+        } else {
+            crate::platform::process_info::foreground_is_shell(child_pid).unwrap_or(true)
+        };
 
         unsafe {
             let had_console = reattach && GetConsoleWindow() != 0;
@@ -1201,7 +1212,19 @@ pub mod mouse_inject {
             // (ENABLE_PROCESSED_INPUT set) or we could not inspect it.  Both
             // raw-mode branches (TUI and shell) detach early via `return false`
             // above, so there is never a temporarily-flipped mode to restore.
-            if handle != INVALID_HANDLE && handle != 0 {
+            //
+            // `force=true` bypasses this entire heuristic: an explicit
+            // `send-keys -f C-c` must terminate even a live raw-mode TUI that
+            // cleared ENABLE_PROCESSED_INPUT to swallow Ctrl+C itself, so we do
+            // not inspect the mode and never short-circuit via `return false`.
+            // We still close the CONIN$ handle to avoid leaking it, then fall
+            // through to GenerateConsoleCtrlEvent unconditionally.
+            if force {
+                if handle != INVALID_HANDLE && handle != 0 {
+                    CloseHandle(handle);
+                }
+                log(&format!("force=true pid={}: bypass raw-mode heuristic, deliver CTRL_C_EVENT", child_pid));
+            } else if handle != INVALID_HANDLE && handle != 0 {
                 let mut mode: u32 = 0;
                 if GetConsoleMode(handle as *mut c_void, &mut mode) != 0 {
                     log(&format!("console mode=0x{:04X} PROCESSED_INPUT={} fg_is_shell={}", mode, mode & ENABLE_PROCESSED_INPUT != 0, fg_is_shell));

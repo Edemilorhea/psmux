@@ -3143,8 +3143,44 @@ pub fn send_key_to_active(app: &mut AppState, k: &str, force_signal: bool) -> io
             // Skip the win32 early-return for forced Ctrl+C so control flow
             // reaches the dedicated Ctrl+C handler below, which writes the raw
             // 0x03 byte AND calls send_ctrl_c_event(pid, false, force_signal).
+            //
+            // EXCEPTION — VT bridge children (wsl.exe / ssh.exe): these read
+            // KEY_EVENT records via ReadConsoleInputW and do NOT consume a raw
+            // 0x03 byte, and the Linux/remote foreground process is not in our
+            // Win32 console group, so GenerateConsoleCtrlEvent never reaches it.
+            // Forcing the signal path therefore delivers NOTHING to the remote
+            // app (e.g. `cat -v` in WSL shows no ^C). For these panes the forced
+            // Ctrl+C must still go through the win32-input-mode sequence, which
+            // the bridge relays into the remote PTY as a real 0x03. (Regression
+            // from 3a783b9, which unconditionally skipped win32 for forced C-c.)
             let is_forced_ctrl_c = force_signal && matches!(k, "c-c" | "C-c");
-            if !is_forced_ctrl_c {
+            let is_vt_bridge = is_forced_ctrl_c && {
+                // Reuse the 2s-TTL cache so repeated Ctrl+C doesn't trigger a
+                // CreateToolhelp32Snapshot process-tree walk on every press.
+                let cached = p.vt_bridge_cache
+                    .and_then(|(ts, v)| (ts.elapsed().as_secs() < 2).then_some(v));
+                match cached {
+                    Some(v) => v,
+                    None => {
+                        if p.child_pid.is_none() {
+                            p.child_pid = crate::platform::mouse_inject::get_child_pid(&*p.child);
+                        }
+                        let v = p.child_pid
+                            .map(crate::platform::process_info::has_vt_bridge_descendant)
+                            .unwrap_or(false);
+                        p.vt_bridge_cache = Some((std::time::Instant::now(), v));
+                        v
+                    }
+                }
+            };
+            let takes_win32_path = !is_forced_ctrl_c || is_vt_bridge;
+            if crate::debug_log::input_log_enabled() {
+                crate::debug_log::input_log("sendkey", &format!(
+                    "k={:?} force_signal={} is_forced_ctrl_c={} is_vt_bridge={} child_pid={:?} -> {}",
+                    k, force_signal, is_forced_ctrl_c, is_vt_bridge, p.child_pid,
+                    if takes_win32_path { "win32-input encode (key only)" } else { "fall through to CTRL_C_EVENT signal path" }));
+            }
+            if takes_win32_path {
                 if let Some(seq) = crate::win32_input::encode_key_name_win32(k) {
                     let _ = p.writer.write_all(&seq);
                     let _ = p.writer.flush();
@@ -3222,7 +3258,13 @@ pub fn send_key_to_active(app: &mut AppState, k: &str, force_signal: bool) -> io
                     let _ = p.writer.write_all(&[ctrl_char]);
                 }
             }
-            s if s.starts_with("C-") && s.len() == 3 => {
+            // Match BOTH cases: the server lowercases key names before calling
+            // send_key_to_active (server/mod.rs `key.to_lowercase()`), so a
+            // forced `send-keys -f C-c` arrives here as "c-c".  Matching only
+            // uppercase "C-" let "c-c" fall through to the `_ => {}` no-op,
+            // silently dropping the raw 0x03 AND skipping send_ctrl_c_event —
+            // the reason forced Ctrl+C never interrupted the foreground app.
+            s if (s.starts_with("C-") || s.starts_with("c-")) && s.len() == 3 => {
                 let c = s.chars().nth(2).unwrap_or('c');
                 let ctrl_char = ctrl_char_send_keys_byte(c)
                     .unwrap_or((c.to_ascii_lowercase() as u8) & 0x1F);

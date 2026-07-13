@@ -96,6 +96,19 @@ impl PaneLabelRow {
     }
 }
 
+/// Compute pane rectangles for mouse routing.
+///
+/// A zoomed window renders only its active pane across the full window area.
+/// Returning the pre-zoom split rectangles here would offset pane-relative
+/// coordinates and could route clicks near the top/left edge to a hidden pane.
+fn compute_mouse_rects(win: &Window, area: Rect, out: &mut Vec<(Vec<usize>, Rect)>) {
+    if win.zoom_saved.is_some() {
+        out.push((win.active_path.clone(), area));
+    } else {
+        compute_rects(&win.root, area, out);
+    }
+}
+
 /// Convert screen coordinates to 1-based pane-local coordinates.
 fn pane_inner_cell(area: Rect, abs_x: u16, abs_y: u16) -> (u16, u16) {
     let col = abs_x.saturating_sub(area.x) + 1;
@@ -1141,7 +1154,7 @@ pub fn remote_mouse_down(app: &mut AppState, x: u16, y: u16) {
     let label = PaneLabelRow::from_options(app);
     let win = &mut app.windows[app.active_idx];
     let mut rects: Vec<(Vec<usize>, Rect)> = Vec::new();
-    compute_rects(&win.root, app.last_window_area, &mut rects);
+    compute_mouse_rects(win, app.last_window_area, &mut rects);
     let mut active_area: Option<Rect> = None;
     for (path, area) in rects.iter() {
         if area.contains(ratatui::layout::Position { x, y }) {
@@ -1242,7 +1255,7 @@ pub fn remote_mouse_drag(app: &mut AppState, x: u16, y: u16) {
     let label = PaneLabelRow::from_options(app);
     let win = &mut app.windows[app.active_idx];
     let mut rects: Vec<(Vec<usize>, Rect)> = Vec::new();
-    compute_rects(&win.root, app.last_window_area, &mut rects);
+    compute_mouse_rects(win, app.last_window_area, &mut rects);
 
     if matches!(app.mode, Mode::CopyMode | Mode::CopySearch { .. }) {
         // Prefer the pane under the pointer; fall back to the active
@@ -1311,7 +1324,7 @@ pub fn remote_mouse_up(app: &mut AppState, x: u16, y: u16) {
     let label = PaneLabelRow::from_options(app);
     let win = &mut app.windows[app.active_idx];
     let mut rects: Vec<(Vec<usize>, Rect)> = Vec::new();
-    compute_rects(&win.root, app.last_window_area, &mut rects);
+    compute_mouse_rects(win, app.last_window_area, &mut rects);
 
     if matches!(app.mode, Mode::CopyMode | Mode::CopySearch { .. }) {
         // The release cell, kept for the #199 click guard only.  It must not
@@ -1403,7 +1416,7 @@ pub fn remote_mouse_button(app: &mut AppState, x: u16, y: u16, button: u8, press
     let label = PaneLabelRow::from_options(app);
     let win = &mut app.windows[app.active_idx];
     let mut rects: Vec<(Vec<usize>, Rect)> = Vec::new();
-    compute_rects(&win.root, app.last_window_area, &mut rects);
+    compute_mouse_rects(win, app.last_window_area, &mut rects);
     if let Some(area) = rects.iter().find(|(path, _)| *path == win.active_path).map(|(_, a)| *a) {
         let (col, row) = label.cell_0based(area, x, y);
         let win_name = win.name.clone();
@@ -1458,7 +1471,7 @@ pub fn remote_mouse_motion(app: &mut AppState, x: u16, y: u16) -> bool {
     let label = PaneLabelRow::from_options(app);
     let win = &mut app.windows[app.active_idx];
     let mut rects: Vec<(Vec<usize>, Rect)> = Vec::new();
-    compute_rects(&win.root, app.last_window_area, &mut rects);
+    compute_mouse_rects(win, app.last_window_area, &mut rects);
 
     // Forward hover only when the child explicitly enabled motion tracking.
     // This avoids leaking raw SGR motion bytes (ESC[<35;...) into shell-style
@@ -1531,7 +1544,7 @@ fn remote_scroll_wheel(app: &mut AppState, x: u16, y: u16, up: bool) {
     let (child_in_alt_screen, target_area_opt, sgr_btn, button_state) = {
         let win = &mut app.windows[app.active_idx];
         let mut rects: Vec<(Vec<usize>, Rect)> = Vec::new();
-        compute_rects(&win.root, app.last_window_area, &mut rects);
+        compute_mouse_rects(win, app.last_window_area, &mut rects);
 
         let mut target_area: Option<Rect> = None;
         for (path, area) in &rects {
@@ -1603,7 +1616,7 @@ pub fn handle_pane_mouse(app: &mut AppState, pane_id: usize, button: u8, col: i1
     let win = &mut app.windows[app.active_idx];
     let mut found_path: Option<Vec<usize>> = None;
     let mut rects: Vec<(Vec<usize>, Rect)> = Vec::new();
-    compute_rects(&win.root, app.last_window_area, &mut rects);
+    compute_mouse_rects(win, app.last_window_area, &mut rects);
     for (path, _area) in &rects {
         if let Some(pid) = crate::tree::get_active_pane_id(&win.root, path) {
             if pid == pane_id {
@@ -1914,7 +1927,7 @@ pub fn handle_pane_scroll(app: &mut AppState, pane_id: usize, up: bool, at: Opti
     // Focus the target pane
     let win = &mut app.windows[app.active_idx];
     let mut rects: Vec<(Vec<usize>, Rect)> = Vec::new();
-    compute_rects(&win.root, app.last_window_area, &mut rects);
+    compute_mouse_rects(win, app.last_window_area, &mut rects);
     for (path, _area) in &rects {
         if let Some(pid) = crate::tree::get_active_pane_id(&win.root, path) {
             if pid == pane_id {

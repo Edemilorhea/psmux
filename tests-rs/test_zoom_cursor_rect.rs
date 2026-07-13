@@ -85,3 +85,72 @@ fn zoomed_nested_non_first_active_does_not_compound_offsets() {
     );
     assert_eq!(zoomed, area, "zoom-aware traversal should avoid cumulative nested offsets");
 }
+
+#[test]
+fn zoomed_mouse_rect_for_horizontal_non_first_pane_uses_full_area() {
+    let area = Rect::new(0, 0, 60, 20);
+    let layout = LayoutJson::Split {
+        kind: "Horizontal".to_string(),
+        sizes: vec![0, 100],
+        children: vec![leaf(0, false), leaf(1, true)],
+    };
+    let mut rects = Vec::new();
+
+    crate::client::collect_pane_rects(&layout, area, true, &mut rects);
+
+    assert_eq!(rects, vec![(1, area)]);
+}
+
+#[test]
+fn zoomed_mouse_rect_for_vertical_non_first_pane_uses_full_area() {
+    let area = Rect::new(0, 0, 60, 20);
+    let layout = LayoutJson::Split {
+        kind: "Vertical".to_string(),
+        sizes: vec![0, 100],
+        children: vec![leaf(0, false), leaf(1, true)],
+    };
+    let mut rects = Vec::new();
+
+    crate::client::collect_pane_rects(&layout, area, true, &mut rects);
+
+    assert_eq!(rects, vec![(1, area)]);
+}
+
+#[test]
+fn zoomed_mouse_rect_for_nested_non_first_pane_uses_full_area() {
+    let area = Rect::new(0, 0, 100, 40);
+    let layout = LayoutJson::Split {
+        kind: "Horizontal".to_string(),
+        sizes: vec![0, 100],
+        children: vec![
+            leaf(0, false),
+            LayoutJson::Split {
+                kind: "Vertical".to_string(),
+                sizes: vec![0, 100],
+                children: vec![leaf(1, false), leaf(2, true)],
+            },
+        ],
+    };
+    let mut rects = Vec::new();
+
+    crate::client::collect_pane_rects(&layout, area, true, &mut rects);
+
+    assert_eq!(rects, vec![(2, area)]);
+}
+
+#[test]
+fn unzoomed_mouse_rects_still_include_all_panes() {
+    let area = Rect::new(0, 0, 60, 20);
+    let layout = LayoutJson::Split {
+        kind: "Horizontal".to_string(),
+        sizes: vec![50, 50],
+        children: vec![leaf(0, true), leaf(1, false)],
+    };
+    let mut rects = Vec::new();
+
+    crate::client::collect_pane_rects(&layout, area, false, &mut rects);
+
+    assert_eq!(rects.len(), 2);
+    assert_eq!(rects[0].0, 0);
+    assert_eq!(rects[1].0, 1);
+}

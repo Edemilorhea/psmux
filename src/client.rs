@@ -515,8 +515,17 @@ fn is_on_separator(layout: &LayoutJson, area: Rect, x: u16, y: u16) -> bool {
     }
 }
 
-/// Collect all leaf pane IDs and their absolute rects from a LayoutJson tree.
-fn collect_pane_rects(node: &LayoutJson, area: Rect, out: &mut Vec<(usize, Rect)>) {
+/// Collect visible leaf pane IDs and their absolute rects from a LayoutJson tree.
+///
+/// In zoom mode this must mirror `render_layout_json`: only the visible child
+/// is traversed, and it keeps the full parent area. Mouse hit-testing and
+/// pane-relative coordinates would otherwise retain the pre-zoom split offset.
+pub(crate) fn collect_pane_rects(
+    node: &LayoutJson,
+    area: Rect,
+    zoomed: bool,
+    out: &mut Vec<(usize, Rect)>,
+) {
     match node {
         LayoutJson::Leaf { id, .. } => {
             out.push((*id, area));
@@ -527,11 +536,19 @@ fn collect_pane_rects(node: &LayoutJson, area: Rect, out: &mut Vec<(usize, Rect)
             } else {
                 vec![(100 / children.len().max(1)) as u16; children.len()]
             };
-            let is_horizontal = kind == "Horizontal";
-            let rects = split_with_gaps(is_horizontal, &effective_sizes, area);
-            for (i, child) in children.iter().enumerate() {
-                if i < rects.len() {
-                    collect_pane_rects(child, rects[i], out);
+            if zoomed {
+                if let Some(i) = effective_sizes.iter().position(|&s| s != 0) {
+                    if let Some(child) = children.get(i) {
+                        collect_pane_rects(child, area, zoomed, out);
+                    }
+                }
+            } else {
+                let is_horizontal = kind == "Horizontal";
+                let rects = split_with_gaps(is_horizontal, &effective_sizes, area);
+                for (i, child) in children.iter().enumerate() {
+                    if i < rects.len() {
+                        collect_pane_rects(child, rects[i], zoomed, out);
+                    }
                 }
             }
         }
@@ -4880,7 +4897,7 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
 
             client_content_area = content_chunk;
             client_pane_rects.clear();
-            collect_pane_rects(&root, content_chunk, &mut client_pane_rects);
+            collect_pane_rects(&root, content_chunk, state.zoomed, &mut client_pane_rects);
             client_borders.clear();
             let mut border_path = Vec::new();
             collect_layout_borders(&root, content_chunk, &mut border_path, &mut client_borders);

@@ -72,11 +72,7 @@ fn fix_border_intersections_leaves_pane_content_table_untouched() {
     // Markdown-table-like block: header separator row uses '┼', straight
     // lines use '│' and '─'. Written into rows 2..5, cols 2..9 — inside the
     // left pane (cols 0..~19), far from the separator column (~19-20).
-    let table_rows: [&str; 3] = [
-        "a│b─┼c─",
-        "──┼────",
-        "d│e─┼f─",
-    ];
+    let table_rows: [&str; 3] = ["a│b─┼c─", "──┼────", "d│e─┼f─"];
 
     let mut snapshot: Vec<(usize, char, Style)> = Vec::new();
 
@@ -84,12 +80,19 @@ fn fix_border_intersections_leaves_pane_content_table_untouched() {
         let area = Rect::new(0, 0, 40, 12);
         let active_rect = crate::client::compute_active_rect_json(&layout, area);
         crate::client::render_layout_json(
-            f, &layout, area,
+            f,
+            &layout,
+            area,
             false,
-            border_fg, active_border_fg,
-            false, Color::Reset,
+            border_fg,
+            active_border_fg,
+            false,
+            Color::Reset,
             active_rect,
-            "", false, "off", "",
+            "",
+            false,
+            "off",
+            "",
             total,
             bchars,
             None,
@@ -119,7 +122,11 @@ fn fix_border_intersections_leaves_pane_content_table_untouched() {
                 let idx = y * w + x;
                 if idx < buf.content.len() {
                     let cell = &buf.content[idx];
-                    snapshot.push((idx, cell.symbol().chars().next().unwrap_or(' '), cell.style()));
+                    snapshot.push((
+                        idx,
+                        cell.symbol().chars().next().unwrap_or(' '),
+                        cell.style(),
+                    ));
                 }
             }
         }
@@ -129,20 +136,44 @@ fn fix_border_intersections_leaves_pane_content_table_untouched() {
         // Sanity: the mask must be false for every injected content cell,
         // otherwise this test isn't exercising the guard.
         for &(idx, _, _) in &snapshot {
-            assert!(border_mask.binary_search(&idx).is_err(), "content cell idx {} unexpectedly marked as a separator", idx);
+            assert!(
+                border_mask.binary_search(&idx).is_err(),
+                "content cell idx {} unexpectedly marked as a separator",
+                idx
+            );
         }
 
         crate::rendering::fix_border_intersections(f.buffer_mut(), bchars, &border_mask);
-    }).unwrap();
+    })
+    .unwrap();
 
     let buf = term.backend().buffer().clone();
     for (idx, expected_ch, expected_style) in snapshot {
         let cell = &buf.content[idx];
         let actual_ch = cell.symbol().chars().next().unwrap_or(' ');
-        assert_eq!(actual_ch, expected_ch, "content cell idx {} glyph changed", idx);
-        assert_eq!(cell.style(), expected_style, "content cell idx {} style changed", idx);
-        assert_ne!(cell.style().fg, Some(border_fg), "content cell idx {} recolored to border fg", idx);
-        assert_ne!(cell.style().fg, Some(active_border_fg), "content cell idx {} recolored to active border fg", idx);
+        assert_eq!(
+            actual_ch, expected_ch,
+            "content cell idx {} glyph changed",
+            idx
+        );
+        assert_eq!(
+            cell.style(),
+            expected_style,
+            "content cell idx {} style changed",
+            idx
+        );
+        assert_ne!(
+            cell.style().fg,
+            Some(border_fg),
+            "content cell idx {} recolored to border fg",
+            idx
+        );
+        assert_ne!(
+            cell.style().fg,
+            Some(active_border_fg),
+            "content cell idx {} recolored to active border fg",
+            idx
+        );
     }
 }
 
@@ -180,11 +211,7 @@ fn fix_border_intersections_leaves_zoomed_pane_content_untouched() {
     // Box-drawing content straddling column 78 (the phantom separator column
     // for the equivalent UNZOOMED [78, 1] split geometry), including a
     // junction glyph '┼' at that exact column.
-    let table_rows: [&str; 3] = [
-        "a─┼b",
-        "──┼─",
-        "c─┼d",
-    ];
+    let table_rows: [&str; 3] = ["a─┼b", "──┼─", "c─┼d"];
     let start_x: usize = 76; // columns 76..79; column 78 is the 3rd char (index 2)
 
     let mut snapshot: Vec<(usize, char, Style)> = Vec::new();
@@ -196,12 +223,19 @@ fn fix_border_intersections_leaves_zoomed_pane_content_untouched() {
         // Production sets total_panes = 1 when zoomed (client.rs: `if state.zoomed { 1 } else { root.count_leaves() }`).
         let total_panes = 1;
         crate::client::render_layout_json(
-            f, &layout, area,
+            f,
+            &layout,
+            area,
             false,
-            border_fg, active_border_fg,
-            false, Color::Reset,
+            border_fg,
+            active_border_fg,
+            false,
+            Color::Reset,
             active_rect,
-            "", true, "off", "",
+            "",
+            true,
+            "off",
+            "",
             total_panes,
             bchars,
             None,
@@ -230,7 +264,11 @@ fn fix_border_intersections_leaves_zoomed_pane_content_untouched() {
                 let idx = y * w + x;
                 if idx < buf.content.len() {
                     let cell = &buf.content[idx];
-                    snapshot.push((idx, cell.symbol().chars().next().unwrap_or(' '), cell.style()));
+                    snapshot.push((
+                        idx,
+                        cell.symbol().chars().next().unwrap_or(' '),
+                        cell.style(),
+                    ));
                 }
             }
         }
@@ -245,19 +283,43 @@ fn fix_border_intersections_leaves_zoomed_pane_content_untouched() {
             phantom_col_idx
         );
         for &(idx, _, _) in &snapshot {
-            assert!(border_mask.binary_search(&idx).is_err(), "content cell idx {} unexpectedly marked as a separator under zoom", idx);
+            assert!(
+                border_mask.binary_search(&idx).is_err(),
+                "content cell idx {} unexpectedly marked as a separator under zoom",
+                idx
+            );
         }
 
         crate::rendering::fix_border_intersections(f.buffer_mut(), bchars, &border_mask);
-    }).unwrap();
+    })
+    .unwrap();
 
     let buf = term.backend().buffer().clone();
     for (idx, expected_ch, expected_style) in snapshot {
         let cell = &buf.content[idx];
         let actual_ch = cell.symbol().chars().next().unwrap_or(' ');
-        assert_eq!(actual_ch, expected_ch, "zoomed content cell idx {} glyph changed", idx);
-        assert_eq!(cell.style(), expected_style, "zoomed content cell idx {} style changed", idx);
-        assert_ne!(cell.style().fg, Some(border_fg), "zoomed content cell idx {} recolored to border fg", idx);
-        assert_ne!(cell.style().fg, Some(active_border_fg), "zoomed content cell idx {} recolored to active border fg", idx);
+        assert_eq!(
+            actual_ch, expected_ch,
+            "zoomed content cell idx {} glyph changed",
+            idx
+        );
+        assert_eq!(
+            cell.style(),
+            expected_style,
+            "zoomed content cell idx {} style changed",
+            idx
+        );
+        assert_ne!(
+            cell.style().fg,
+            Some(border_fg),
+            "zoomed content cell idx {} recolored to border fg",
+            idx
+        );
+        assert_ne!(
+            cell.style().fg,
+            Some(active_border_fg),
+            "zoomed content cell idx {} recolored to active border fg",
+            idx
+        );
     }
 }

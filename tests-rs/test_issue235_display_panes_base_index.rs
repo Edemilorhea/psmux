@@ -57,7 +57,10 @@ fn mock_app_with_window() -> AppState {
 #[test]
 fn pane_base_index_default_is_zero() {
     let app = mock_app();
-    assert_eq!(app.pane_base_index, 0, "Default pane_base_index should be 0");
+    assert_eq!(
+        app.pane_base_index, 0,
+        "Default pane_base_index should be 0"
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -67,7 +70,10 @@ fn pane_base_index_default_is_zero() {
 fn set_option_pane_base_index() {
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, "set-option -g pane-base-index 1").unwrap();
-    assert_eq!(app.pane_base_index, 1, "pane-base-index should be 1 after set-option");
+    assert_eq!(
+        app.pane_base_index, 1,
+        "pane-base-index should be 1 after set-option"
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -82,7 +88,11 @@ fn digit_computation_with_base_index_1() {
     let base = 1usize;
     // Simulate 4 panes
     let digits: Vec<usize> = (0..4).map(|i| (i + base) % 10).collect();
-    assert_eq!(digits, vec![1, 2, 3, 4], "With pane_base_index=1, panes should be 1,2,3,4");
+    assert_eq!(
+        digits,
+        vec![1, 2, 3, 4],
+        "With pane_base_index=1, panes should be 1,2,3,4"
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -92,7 +102,11 @@ fn digit_computation_with_base_index_1() {
 fn digit_computation_with_base_index_0() {
     let base = 0usize;
     let digits: Vec<usize> = (0..4).map(|i| (i + base) % 10).collect();
-    assert_eq!(digits, vec![0, 1, 2, 3], "With pane_base_index=0, panes should be 0,1,2,3");
+    assert_eq!(
+        digits,
+        vec![0, 1, 2, 3],
+        "With pane_base_index=0, panes should be 0,1,2,3"
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -101,11 +115,19 @@ fn digit_computation_with_base_index_0() {
 #[test]
 fn display_panes_enters_pane_chooser_mode() {
     let mut app = mock_app_with_window();
-    app.last_window_area = ratatui::prelude::Rect { x: 0, y: 0, width: 120, height: 30 };
+    app.last_window_area = ratatui::prelude::Rect {
+        x: 0,
+        y: 0,
+        width: 120,
+        height: 30,
+    };
     execute_action(&mut app, &Action::DisplayPanes).unwrap();
     match &app.mode {
         Mode::PaneChooser { .. } => {}
-        other => panic!("Expected PaneChooser mode, got {:?}", std::mem::discriminant(other)),
+        other => panic!(
+            "Expected PaneChooser mode, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
@@ -116,7 +138,11 @@ fn display_panes_enters_pane_chooser_mode() {
 fn digit_computation_with_base_index_5() {
     let base = 5usize;
     let digits: Vec<usize> = (0..4).map(|i| (i + base) % 10).collect();
-    assert_eq!(digits, vec![5, 6, 7, 8], "With pane_base_index=5, panes should be 5,6,7,8");
+    assert_eq!(
+        digits,
+        vec![5, 6, 7, 8],
+        "With pane_base_index=5, panes should be 5,6,7,8"
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -126,7 +152,10 @@ fn digit_computation_with_base_index_5() {
 fn config_parse_sets_pane_base_index() {
     let mut app = mock_app_with_window();
     crate::config::parse_config_content(&mut app, "set -g pane-base-index 1\n");
-    assert_eq!(app.pane_base_index, 1, "Config parsing should set pane_base_index to 1");
+    assert_eq!(
+        app.pane_base_index, 1,
+        "Config parsing should set pane_base_index to 1"
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -137,7 +166,11 @@ fn format_variable_pane_base_index() {
     let mut app = mock_app_with_window();
     app.pane_base_index = 1;
     let result = crate::format::expand_format("#{pane-base-index}", &app);
-    assert_eq!(result, "1", "Format variable pane-base-index should return 1, got '{}'", result);
+    assert_eq!(
+        result, "1",
+        "Format variable pane-base-index should return 1, got '{}'",
+        result
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -148,17 +181,28 @@ fn format_variable_pane_base_index() {
 fn display_panes_single_pane_with_base_index_1() {
     let mut app = mock_app_with_window();
     app.pane_base_index = 1;
-    app.last_window_area = ratatui::prelude::Rect { x: 0, y: 0, width: 120, height: 30 };
+    app.last_window_area = ratatui::prelude::Rect {
+        x: 0,
+        y: 0,
+        width: 120,
+        height: 30,
+    };
     execute_action(&mut app, &Action::DisplayPanes).unwrap();
     match &app.mode {
-        Mode::PaneChooser { .. } => {},
-        other => panic!("Expected PaneChooser, got {:?}", std::mem::discriminant(other)),
+        Mode::PaneChooser { .. } => {}
+        other => panic!(
+            "Expected PaneChooser, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
     // With a single-leaf window, display_map should have 0 or 1 entry
     // depending on whether the empty split yields any leaves
     // The key point: if there IS an entry, its digit should use pane_base_index
     if !app.display_map.is_empty() {
-        assert_eq!(app.display_map[0].0, 1, "First pane digit should be 1 with pane_base_index=1");
+        assert_eq!(
+            app.display_map[0].0, 1,
+            "First pane digit should be 1 with pane_base_index=1"
+        );
     }
 }
 
@@ -172,7 +216,11 @@ fn show_options_pane_base_index() {
     execute_command_string(&mut app, "show-options -g -v pane-base-index").unwrap();
     match &app.mode {
         Mode::PopupMode { output, .. } => {
-            assert!(output.contains("1"), "show-options should show pane-base-index=1, got: {}", output);
+            assert!(
+                output.contains("1"),
+                "show-options should show pane-base-index=1, got: {}",
+                output
+            );
         }
         _ => {
             // show-options with -v might return via status message or popup
@@ -190,5 +238,9 @@ fn show_options_pane_base_index() {
 fn digit_computation_wraps_modulo_10() {
     let base = 9usize;
     let digits: Vec<usize> = (0..4).map(|i| (i + base) % 10).collect();
-    assert_eq!(digits, vec![9, 0, 1, 2], "With pane_base_index=9, panes should wrap: 9,0,1,2");
+    assert_eq!(
+        digits,
+        vec![9, 0, 1, 2],
+        "With pane_base_index=9, panes should wrap: 9,0,1,2"
+    );
 }

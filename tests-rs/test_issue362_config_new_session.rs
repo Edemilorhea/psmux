@@ -31,7 +31,12 @@ fn new_session_with_args_preserved() {
     with_config("new-session -s work -c C:/tmp\n", || {
         assert_eq!(
             crate::config::config_new_session_args(),
-            Some(vec!["-s".to_string(), "work".to_string(), "-c".to_string(), "C:/tmp".to_string()])
+            Some(vec![
+                "-s".to_string(),
+                "work".to_string(),
+                "-c".to_string(),
+                "C:/tmp".to_string()
+            ])
         );
     });
 }

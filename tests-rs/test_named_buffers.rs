@@ -20,7 +20,11 @@ fn mock_app() -> AppState {
 
 fn make_window(name: &str, id: usize) -> crate::types::Window {
     crate::types::Window {
-        root: Node::Split { kind: LayoutKind::Horizontal, sizes: vec![], children: vec![] },
+        root: Node::Split {
+            kind: LayoutKind::Horizontal,
+            sizes: vec![],
+            children: vec![],
+        },
         active_path: vec![],
         name: name.to_string(),
         id,
@@ -47,8 +51,13 @@ fn mock_app_with_window() -> AppState {
 
 fn extract_popup(app: &AppState) -> (String, String) {
     match &app.mode {
-        Mode::PopupMode { command, output, .. } => (command.clone(), output.clone()),
-        other => panic!("Expected PopupMode, got {:?}", std::mem::discriminant(other)),
+        Mode::PopupMode {
+            command, output, ..
+        } => (command.clone(), output.clone()),
+        other => panic!(
+            "Expected PopupMode, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
@@ -61,9 +70,15 @@ fn set_buffer_named_stores_in_hashmap() {
     let mut app = mock_app_with_window();
     app.control_port = None;
     let _ = execute_command_string(&mut app, "set-buffer -b myname HELLO");
-    assert!(app.named_buffers.contains_key("myname"), "Named buffer 'myname' should exist");
+    assert!(
+        app.named_buffers.contains_key("myname"),
+        "Named buffer 'myname' should exist"
+    );
     assert_eq!(app.named_buffers["myname"], "HELLO");
-    assert!(app.paste_buffers.is_empty(), "Positional stack should stay empty");
+    assert!(
+        app.paste_buffers.is_empty(),
+        "Positional stack should stay empty"
+    );
 }
 
 #[test]
@@ -85,8 +100,14 @@ fn set_buffer_named_overwrite_replaces_only_that_name() {
     let _ = execute_command_string(&mut app, "set-buffer -b buf1 ORIGINAL");
     let _ = execute_command_string(&mut app, "set-buffer -b buf2 OTHER");
     let _ = execute_command_string(&mut app, "set-buffer -b buf1 UPDATED");
-    assert_eq!(app.named_buffers["buf1"], "UPDATED", "buf1 should be overwritten");
-    assert_eq!(app.named_buffers["buf2"], "OTHER", "buf2 should be untouched");
+    assert_eq!(
+        app.named_buffers["buf1"], "UPDATED",
+        "buf1 should be overwritten"
+    );
+    assert_eq!(
+        app.named_buffers["buf2"], "OTHER",
+        "buf2 should be untouched"
+    );
 }
 
 #[test]
@@ -132,12 +153,16 @@ fn setb_alias_named() {
 fn show_buffer_named_retrieves_correct_content() {
     let mut app = mock_app_with_window();
     app.control_port = None;
-    app.named_buffers.insert("test_buf".to_string(), "TEST_CONTENT".to_string());
+    app.named_buffers
+        .insert("test_buf".to_string(), "TEST_CONTENT".to_string());
     app.paste_buffers.insert(0, "STACK_TOP".to_string());
     let _ = execute_command_string(&mut app, "show-buffer -b test_buf");
     let (cmd, out) = extract_popup(&app);
     assert_eq!(cmd, "show-buffer");
-    assert_eq!(out, "TEST_CONTENT", "Should show named buffer, not stack top");
+    assert_eq!(
+        out, "TEST_CONTENT",
+        "Should show named buffer, not stack top"
+    );
 }
 
 #[test]
@@ -145,7 +170,8 @@ fn show_buffer_without_name_shows_stack_top() {
     let mut app = mock_app_with_window();
     app.control_port = None;
     app.paste_buffers.insert(0, "STACK_TOP".to_string());
-    app.named_buffers.insert("other".to_string(), "OTHER_CONTENT".to_string());
+    app.named_buffers
+        .insert("other".to_string(), "OTHER_CONTENT".to_string());
     let _ = execute_command_string(&mut app, "show-buffer");
     let (_, out) = extract_popup(&app);
     assert_eq!(out, "STACK_TOP", "No -b should show stack top");
@@ -181,10 +207,15 @@ fn show_buffer_numeric_index_shows_stack_position() {
 fn delete_buffer_named_removes_only_that_name() {
     let mut app = mock_app_with_window();
     app.control_port = None;
-    app.named_buffers.insert("keep".to_string(), "KEEP_DATA".to_string());
-    app.named_buffers.insert("remove".to_string(), "REMOVE_DATA".to_string());
+    app.named_buffers
+        .insert("keep".to_string(), "KEEP_DATA".to_string());
+    app.named_buffers
+        .insert("remove".to_string(), "REMOVE_DATA".to_string());
     let _ = execute_command_string(&mut app, "delete-buffer -b remove");
-    assert!(!app.named_buffers.contains_key("remove"), "remove should be deleted");
+    assert!(
+        !app.named_buffers.contains_key("remove"),
+        "remove should be deleted"
+    );
     assert!(app.named_buffers.contains_key("keep"), "keep should remain");
     assert_eq!(app.named_buffers["keep"], "KEEP_DATA");
 }
@@ -194,10 +225,14 @@ fn delete_buffer_without_name_removes_stack_top() {
     let mut app = mock_app_with_window();
     app.control_port = None;
     app.paste_buffers = vec!["A".into(), "B".into()];
-    app.named_buffers.insert("named".to_string(), "NAMED".to_string());
+    app.named_buffers
+        .insert("named".to_string(), "NAMED".to_string());
     let _ = execute_command_string(&mut app, "delete-buffer");
     assert_eq!(app.paste_buffers, vec!["B"], "Should remove stack top");
-    assert!(app.named_buffers.contains_key("named"), "Named buffers should be untouched");
+    assert!(
+        app.named_buffers.contains_key("named"),
+        "Named buffers should be untouched"
+    );
 }
 
 #[test]
@@ -213,7 +248,8 @@ fn delete_buffer_numeric_index_removes_stack_position() {
 fn deleteb_alias_named() {
     let mut app = mock_app_with_window();
     app.control_port = None;
-    app.named_buffers.insert("target".to_string(), "DATA".to_string());
+    app.named_buffers
+        .insert("target".to_string(), "DATA".to_string());
     let _ = execute_command_string(&mut app, "deleteb -b target");
     assert!(!app.named_buffers.contains_key("target"));
 }
@@ -227,13 +263,17 @@ fn list_buffers_shows_both_stack_and_named() {
     let mut app = mock_app_with_window();
     app.control_port = None;
     app.paste_buffers = vec!["STACK_DATA".into()];
-    app.named_buffers.insert("custom".to_string(), "CUSTOM_DATA".to_string());
+    app.named_buffers
+        .insert("custom".to_string(), "CUSTOM_DATA".to_string());
     let _ = execute_command_string(&mut app, "list-buffers");
     let (_, out) = extract_popup(&app);
     assert!(out.contains("buffer0"), "Should show positional buffer0");
     assert!(out.contains("STACK_DATA"), "Should show stack data preview");
     assert!(out.contains("custom"), "Should show named buffer");
-    assert!(out.contains("CUSTOM_DATA"), "Should show named data preview");
+    assert!(
+        out.contains("CUSTOM_DATA"),
+        "Should show named data preview"
+    );
 }
 
 #[test]
@@ -242,16 +282,22 @@ fn list_buffers_empty_shows_no_buffers() {
     app.control_port = None;
     let _ = execute_command_string(&mut app, "list-buffers");
     let (_, out) = extract_popup(&app);
-    assert!(out.contains("no buffers"), "Should show 'no buffers' when empty");
+    assert!(
+        out.contains("no buffers"),
+        "Should show 'no buffers' when empty"
+    );
 }
 
 #[test]
 fn list_buffers_named_sorted_alphabetically() {
     let mut app = mock_app_with_window();
     app.control_port = None;
-    app.named_buffers.insert("zebra".to_string(), "Z_DATA".to_string());
-    app.named_buffers.insert("alpha".to_string(), "A_DATA".to_string());
-    app.named_buffers.insert("middle".to_string(), "M_DATA".to_string());
+    app.named_buffers
+        .insert("zebra".to_string(), "Z_DATA".to_string());
+    app.named_buffers
+        .insert("alpha".to_string(), "A_DATA".to_string());
+    app.named_buffers
+        .insert("middle".to_string(), "M_DATA".to_string());
     let _ = execute_command_string(&mut app, "list-buffers");
     let (_, out) = extract_popup(&app);
     let alpha_pos = out.find("alpha").unwrap();
@@ -320,7 +366,11 @@ fn mixed_named_and_positional_independent() {
     let _ = execute_command_string(&mut app, "delete-buffer");
     assert_eq!(app.paste_buffers.len(), 1);
     assert_eq!(app.paste_buffers[0], "POS_A");
-    assert_eq!(app.named_buffers.len(), 2, "Named buffers should be untouched");
+    assert_eq!(
+        app.named_buffers.len(),
+        2,
+        "Named buffers should be untouched"
+    );
     // Delete named should not affect positional
     let _ = execute_command_string(&mut app, "delete-buffer -b named1");
     assert_eq!(app.paste_buffers.len(), 1, "Positional should be untouched");
@@ -341,8 +391,10 @@ fn set_buffer_named_empty_content() {
     let _ = execute_command_string(&mut app, "set-buffer -b empty_buf");
     // With no content, set-buffer should not create a named buffer
     // (the content is None since there's no positional arg)
-    assert!(!app.named_buffers.contains_key("empty_buf"),
-        "set-buffer with no content should not create entry");
+    assert!(
+        !app.named_buffers.contains_key("empty_buf"),
+        "set-buffer with no content should not create entry"
+    );
 }
 
 #[test]
@@ -350,8 +402,10 @@ fn set_buffer_named_content_with_spaces() {
     let mut app = mock_app_with_window();
     app.control_port = None;
     let _ = execute_command_string(&mut app, "set-buffer -b spaced hello world test");
-    assert_eq!(app.named_buffers["spaced"], "hello world test",
-        "Content after -b name should be joined with spaces");
+    assert_eq!(
+        app.named_buffers["spaced"], "hello world test",
+        "Content after -b name should be joined with spaces"
+    );
 }
 
 #[test]
@@ -362,8 +416,11 @@ fn named_buffers_not_subject_to_10_cap() {
     for i in 0..15 {
         let _ = execute_command_string(&mut app, &format!("set-buffer -b nb{} content{}", i, i));
     }
-    assert_eq!(app.named_buffers.len(), 15,
-        "Named buffers should NOT be capped at 10 (unlike positional stack)");
+    assert_eq!(
+        app.named_buffers.len(),
+        15,
+        "Named buffers should NOT be capped at 10 (unlike positional stack)"
+    );
     // Verify all exist
     for i in 0..15 {
         assert!(app.named_buffers.contains_key(&format!("nb{}", i)));

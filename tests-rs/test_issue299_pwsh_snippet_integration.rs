@@ -86,8 +86,7 @@ output\n\
 // byte stream, so psmux's parser surfaces Screen::path() (from OSC 7) and
 // Screen::shell_command() (from OSC 133;C;cmdline_url=) together.
 
-const OMP_SNIPPET_E2E_STREAM: &[u8] =
-    include_bytes!("fixtures/issue299-omp-snippet-e2e.bin");
+const OMP_SNIPPET_E2E_STREAM: &[u8] = include_bytes!("fixtures/issue299-omp-snippet-e2e.bin");
 
 #[test]
 fn e2e_omp_cwd_and_command_marks_coexist() {

@@ -72,7 +72,7 @@ fn off_skips_trailing_blanks() {
     p.screen_mut().set_allow_alternate_screen(false);
 
     p.process(b"\x1b[?1049h");
-    p.process(b"X\r\n");                // one row of content, 7 blanks below
+    p.process(b"X\r\n"); // one row of content, 7 blanks below
     p.process(b"\x1b[?1049l");
 
     let filled = p.screen().scrollback_filled();

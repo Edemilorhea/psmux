@@ -16,7 +16,7 @@
 // regression flips them red without needing the full TCP harness.
 
 use super::*;
-use crate::types::{AppState, Node, LayoutKind};
+use crate::types::{AppState, LayoutKind, Node};
 
 fn mock_app_with_two_windows() -> AppState {
     let mut app = AppState::new("issue266".to_string());
@@ -33,7 +33,11 @@ fn mock_app_with_two_windows() -> AppState {
 
 fn make_window(name: &str, id: usize) -> crate::types::Window {
     crate::types::Window {
-        root: Node::Split { kind: LayoutKind::Horizontal, sizes: vec![], children: vec![] },
+        root: Node::Split {
+            kind: LayoutKind::Horizontal,
+            sizes: vec![],
+            children: vec![],
+        },
         active_path: vec![],
         name: name.to_string(),
         id,
@@ -89,7 +93,10 @@ fn target_none_falls_back_to_active_window() {
     let mut app = mock_app_with_two_windows();
     app.active_idx = 0;
     let v = get_window_option_value_for(&app, "automatic-rename", None);
-    assert_eq!(v, "off", "Active window with manual_rename should report off");
+    assert_eq!(
+        v, "off",
+        "Active window with manual_rename should report off"
+    );
 }
 
 #[test]

@@ -76,9 +76,7 @@ pub fn copy_to_system_clipboard(text: &str) {
             // EmptyClipboard immediately followed by SetClipboardData is the
             // documented Win32 pattern for replacing contents. The window
             // between these calls is the unavoidable race described above.
-            if EmptyClipboard() != 0
-                && !SetClipboardData(CF_UNICODETEXT, hmem).is_null()
-            {
+            if EmptyClipboard() != 0 && !SetClipboardData(CF_UNICODETEXT, hmem).is_null() {
                 // Ownership of hmem transferred to the OS; do NOT free.
                 transferred = true;
             }
@@ -127,8 +125,7 @@ pub fn read_from_system_clipboard() -> Option<String> {
                 // cannot trigger an OOB read. Also cap at 1M u16s as a
                 // latency guard against pathologically huge clipboards.
                 let alloc_bytes = GlobalSize(hmem) as usize;
-                let max_u16s =
-                    (alloc_bytes / std::mem::size_of::<u16>()).min(1_000_000);
+                let max_u16s = (alloc_bytes / std::mem::size_of::<u16>()).min(1_000_000);
 
                 // If no terminator is found within the allocation, treat
                 // the payload as malformed and fail closed by returning
@@ -154,4 +151,6 @@ pub fn read_from_system_clipboard() -> Option<String> {
 }
 
 #[cfg(not(windows))]
-pub fn read_from_system_clipboard() -> Option<String> { None }
+pub fn read_from_system_clipboard() -> Option<String> {
+    None
+}

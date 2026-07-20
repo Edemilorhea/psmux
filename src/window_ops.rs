@@ -1,34 +1,53 @@
 use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
 
-use portable_pty::{PtySize, native_pty_system};
+use portable_pty::{native_pty_system, PtySize};
 use ratatui::prelude::*;
 
-use crate::types::{AppState, Mode, Pane, Node, LayoutKind, DragState, Window, FocusDir};
-use crate::tree::{active_pane, active_pane_mut, compute_rects, compute_split_borders,
-    split_sizes_at, adjust_split_sizes, get_split_mut, resize_all_panes};
-use crate::pane::{detect_shell, build_default_shell, set_tmux_env};
-use crate::copy_mode::{enter_copy_mode, exit_copy_mode, scroll_copy_up, scroll_copy_down, scroll_pane_scrollback, yank_selection};
+use crate::copy_mode::{
+    enter_copy_mode, exit_copy_mode, scroll_copy_down, scroll_copy_up, scroll_pane_scrollback,
+    yank_selection,
+};
+use crate::pane::{build_default_shell, detect_shell, set_tmux_env};
 use crate::platform::mouse_inject;
+use crate::tree::{
+    active_pane, active_pane_mut, adjust_split_sizes, compute_rects, compute_split_borders,
+    get_split_mut, resize_all_panes, split_sizes_at,
+};
+use crate::types::{AppState, DragState, FocusDir, LayoutKind, Mode, Node, Pane, Window};
 
 /// Mouse debug logger — writes to ~/.psmux/mouse_debug.log when
 /// PSMUX_MOUSE_DEBUG=1 is set.
 fn mouse_log(msg: &str) {
     use std::sync::LazyLock;
-    static ENABLED: LazyLock<bool> = LazyLock::new(|| {
-        std::env::var("PSMUX_MOUSE_DEBUG").unwrap_or_default() == "1"
-    });
-    if !*ENABLED { return; }
+    static ENABLED: LazyLock<bool> =
+        LazyLock::new(|| std::env::var("PSMUX_MOUSE_DEBUG").unwrap_or_default() == "1");
+    if !*ENABLED {
+        return;
+    }
 
     use std::sync::atomic::{AtomicU32, Ordering};
     static COUNT: AtomicU32 = AtomicU32::new(0);
     let n = COUNT.fetch_add(1, Ordering::Relaxed);
-    if n > 2000 { return; }
+    if n > 2000 {
+        return;
+    }
 
-    let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or_default();
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_default();
     let path = format!("{}/.psmux/mouse_debug.log", home);
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-        let _ = writeln!(f, "[{}] {}", chrono::Local::now().format("%H:%M:%S%.3f"), msg);
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = writeln!(
+            f,
+            "[{}] {}",
+            chrono::Local::now().format("%H:%M:%S%.3f"),
+            msg
+        );
     }
 }
 
@@ -79,13 +98,28 @@ fn map_client_coords(app: &AppState, x: u16, y: u16) -> (u16, u16) {
     if cw == ew && ch == eh {
         return (x, y);
     }
-    let mx = if cw > 0 { ((x as u32) * (ew as u32) / (cw as u32)) as u16 } else { x };
-    let my = if ch > 0 { ((y as u32) * (eh as u32) / (ch as u32)) as u16 } else { y };
+    let mx = if cw > 0 {
+        ((x as u32) * (ew as u32) / (cw as u32)) as u16
+    } else {
+        x
+    };
+    let my = if ch > 0 {
+        ((y as u32) * (eh as u32) / (ch as u32)) as u16
+    } else {
+        y
+    };
     (mx.min(ew.saturating_sub(1)), my.min(eh.saturating_sub(1)))
 }
 
 /// Write a mouse event to the child PTY using the encoding the child requested.
-pub fn write_mouse_event_remote(master: &mut dyn std::io::Write, button: u8, col: u16, row: u16, press: bool, enc: vt100::MouseProtocolEncoding) {
+pub fn write_mouse_event_remote(
+    master: &mut dyn std::io::Write,
+    button: u8,
+    col: u16,
+    row: u16,
+    press: bool,
+    enc: vt100::MouseProtocolEncoding,
+) {
     match enc {
         vt100::MouseProtocolEncoding::Sgr => {
             let ch = if press { 'M' } else { 'm' };
@@ -201,7 +235,9 @@ pub(crate) fn is_fullscreen_tui(pane: &Pane) -> bool {
         // cursor sits at the current prompt line — not necessarily at the
         // bottom — and the rows below the cursor are blank.
         let rows = pane.last_rows;
-        if rows < 3 { return false; }
+        if rows < 3 {
+            return false;
+        }
         let (cursor_row, _) = screen.cursor_position();
         let last_row = rows.saturating_sub(1);
         // Cursor must be in the bottom 3 rows for a fullscreen TUI
@@ -213,7 +249,8 @@ pub(crate) fn is_fullscreen_tui(pane: &Pane) -> bool {
         let mut filled = 0u16;
         for r in (last_row + 1 - check_rows)..=last_row {
             let mut has_content = false;
-            for col in 0..pane.last_cols.min(40) { // only check first 40 cols
+            for col in 0..pane.last_cols.min(40) {
+                // only check first 40 cols
                 if let Some(cell) = screen.cell(r, col) {
                     let t = cell.contents();
                     if !t.is_empty() && t != " " {
@@ -222,7 +259,9 @@ pub(crate) fn is_fullscreen_tui(pane: &Pane) -> bool {
                     }
                 }
             }
-            if has_content { filled += 1; }
+            if has_content {
+                filled += 1;
+            }
         }
         return filled >= 3;
     }
@@ -299,8 +338,10 @@ pub(crate) fn pane_wants_scroll_forward(pane: &Pane) -> bool {
 pub(crate) fn pane_wants_hover(pane: &Pane) -> bool {
     if let Ok(parser) = pane.term.lock() {
         let screen = parser.screen();
-        matches!(screen.mouse_protocol_mode(),
-            vt100::MouseProtocolMode::ButtonMotion | vt100::MouseProtocolMode::AnyMotion)
+        matches!(
+            screen.mouse_protocol_mode(),
+            vt100::MouseProtocolMode::ButtonMotion | vt100::MouseProtocolMode::AnyMotion
+        )
     } else {
         false
     }
@@ -363,7 +404,10 @@ fn inject_sgr_mouse(pane: &mut Pane, col: i16, row: i16, vt_button: u8, press: b
     let vt_row = (row + 1).max(1) as u16;
     let ch = if press { 'M' } else { 'm' };
     let sgr_seq = format!("\x1b[<{};{};{}{}", vt_button, vt_col, vt_row, ch);
-    mouse_log(&format!("  -> Console VT injection (KEY_EVENTs): seq={:?}", sgr_seq));
+    mouse_log(&format!(
+        "  -> Console VT injection (KEY_EVENTs): seq={:?}",
+        sgr_seq
+    ));
     if pane.child_pid.is_none() {
         pane.child_pid = mouse_inject::get_child_pid(&*pane.child);
     }
@@ -397,10 +441,17 @@ fn write_mouse_to_pty(pane: &mut Pane, col: i16, row: i16, vt_button: u8, press:
     let mut buf = [0u8; 32];
     let len = {
         let mut cursor = std::io::Cursor::new(&mut buf[..]);
-        let _ = write!(cursor, "\x1b[<{};{};{}{}", vt_button, vt_col, vt_row, ch as char);
+        let _ = write!(
+            cursor,
+            "\x1b[<{};{};{}{}",
+            vt_button, vt_col, vt_row, ch as char
+        );
         cursor.position() as usize
     };
-    mouse_log(&format!("  -> PTY pipe SGR mouse: seq={:?}", std::str::from_utf8(&buf[..len]).unwrap_or("?")));
+    mouse_log(&format!(
+        "  -> PTY pipe SGR mouse: seq={:?}",
+        std::str::from_utf8(&buf[..len]).unwrap_or("?")
+    ));
     let _ = pane.writer.write_all(&buf[..len]);
     let _ = pane.writer.flush();
 }
@@ -422,8 +473,16 @@ fn write_mouse_to_pty(pane: &mut Pane, col: i16, row: i16, vt_button: u8, press:
 ///   At shell prompts (no TUI), no mouse forwarding is needed — the shell
 ///   doesn't handle mouse events.  Callers should handle shell-level
 ///   behavior (right-click=paste, scroll=copy-mode) before calling this.
-pub(crate) fn inject_mouse_combined(pane: &mut Pane, col: i16, row: i16, vt_button: u8, press: bool,
-                          _button_state: u32, _event_flags: u32, win_name: &str) {
+pub(crate) fn inject_mouse_combined(
+    pane: &mut Pane,
+    col: i16,
+    row: i16,
+    vt_button: u8,
+    press: bool,
+    _button_state: u32,
+    _event_flags: u32,
+    win_name: &str,
+) {
     let vt_bridge = detect_vt_bridge(pane);
 
     if vt_bridge {
@@ -442,8 +501,9 @@ pub(crate) fn inject_mouse_combined(pane: &mut Pane, col: i16, row: i16, vt_butt
         // remote shell prints raw escape sequences at the prompt.
         // This is the root cause of issue #77 (mouse events leak as raw
         // text into SSH panes).
-        let wants = pane.term.lock().ok()
-            .map_or(false, |t| t.screen().mouse_protocol_mode() != vt100::MouseProtocolMode::None);
+        let wants = pane.term.lock().ok().map_or(false, |t| {
+            t.screen().mouse_protocol_mode() != vt100::MouseProtocolMode::None
+        });
         if !wants {
             mouse_log(&format!("inject_mouse_combined: col={} row={} vt_btn={} press={} win={} vt_bridge=true -> SUPPRESSED (remote has no mouse tracking)",
                 col, row, vt_button, press, win_name));
@@ -478,7 +538,9 @@ pub(crate) fn inject_mouse_combined(pane: &mut Pane, col: i16, row: i16, vt_butt
         // converts SGR to MOUSE_EVENT (e.g. crossterm with VTI off).
         // (fixes #277)
         if _event_flags & mouse_inject::MOUSE_WHEELED != 0 {
-            mouse_log(&format!("  -> also injecting Win32 MOUSE_EVENT (wheel, fixes #277)"));
+            mouse_log(&format!(
+                "  -> also injecting Win32 MOUSE_EVENT (wheel, fixes #277)"
+            ));
             inject_mouse(pane, col, row, _button_state, _event_flags);
         }
     }
@@ -512,7 +574,9 @@ pub fn unzoom_if_zoomed(app: &mut AppState) -> bool {
     if let Some(saved) = app.windows[app.active_idx].zoom_saved.take() {
         let win = &mut app.windows[app.active_idx];
         for (p, sz) in saved.into_iter() {
-            if let Some(Node::Split { sizes, .. }) = get_split_mut(&mut win.root, &p) { *sizes = sz; }
+            if let Some(Node::Split { sizes, .. }) = get_split_mut(&mut win.root, &p) {
+                *sizes = sz;
+            }
         }
         resize_all_panes(app);
         true
@@ -530,7 +594,9 @@ pub fn toggle_zoom(app: &mut AppState) {
             if let Some(Node::Split { sizes, .. }) = get_split_mut(&mut win.root, &p) {
                 let idx = win.active_path.get(depth).copied().unwrap_or(0);
                 saved.push((p.clone(), sizes.clone()));
-                for i in 0..sizes.len() { sizes[i] = if i == idx { 100 } else { 0 }; }
+                for i in 0..sizes.len() {
+                    sizes[i] = if i == idx { 100 } else { 0 };
+                }
             }
         }
         win.zoom_saved = Some(saved);
@@ -538,7 +604,9 @@ pub fn toggle_zoom(app: &mut AppState) {
         if let Some(saved) = app.windows[app.active_idx].zoom_saved.take() {
             let win = &mut app.windows[app.active_idx];
             for (p, sz) in saved.into_iter() {
-                if let Some(Node::Split { sizes, .. }) = get_split_mut(&mut win.root, &p) { *sizes = sz; }
+                if let Some(Node::Split { sizes, .. }) = get_split_mut(&mut win.root, &p) {
+                    *sizes = sz;
+                }
             }
         }
     }
@@ -588,10 +656,13 @@ pub fn remote_mouse_down(app: &mut AppState, x: u16, y: u16) {
         let hit = {
             let win = &app.windows[app.active_idx];
             win.floating.iter().enumerate().rev().find_map(|(i, fp)| {
-                let x0 = ox + fp.x; let y0 = oy + fp.y;
+                let x0 = ox + fp.x;
+                let y0 = oy + fp.y;
                 if x >= x0 && x < x0 + fp.w && y >= y0 && y < y0 + fp.h {
                     Some((i, x0, y0, fp.w, fp.h))
-                } else { None }
+                } else {
+                    None
+                }
             })
         };
         if let Some((i, x0, y0, w, h)) = hit {
@@ -599,7 +670,10 @@ pub fn remote_mouse_down(app: &mut AppState, x: u16, y: u16) {
             let mode = if on_edge {
                 crate::types::FloatDragMode::Resize
             } else {
-                crate::types::FloatDragMode::Move { dx: x - x0, dy: y - y0 }
+                crate::types::FloatDragMode::Move {
+                    dx: x - x0,
+                    dy: y - y0,
+                }
             };
             app.windows[app.active_idx].floating_focus = Some(i);
             app.float_drag = Some(crate::types::FloatDrag { index: i, mode });
@@ -642,10 +716,40 @@ pub fn remote_mouse_down(app: &mut AppState, x: u16, y: u16) {
     for (path, kind, idx, pos, total_px) in borders.iter() {
         match kind {
             LayoutKind::Horizontal => {
-                if x >= pos.saturating_sub(tol) && x <= pos + tol { if let Some((left,right)) = split_sizes_at(&win.root, path.clone(), *idx) { app.drag = Some(DragState { split_path: path.clone(), kind: *kind, index: *idx, start_x: *pos, start_y: y, left_initial: left, _right_initial: right, total_pixels: *total_px }); } on_border = true; break; }
+                if x >= pos.saturating_sub(tol) && x <= pos + tol {
+                    if let Some((left, right)) = split_sizes_at(&win.root, path.clone(), *idx) {
+                        app.drag = Some(DragState {
+                            split_path: path.clone(),
+                            kind: *kind,
+                            index: *idx,
+                            start_x: *pos,
+                            start_y: y,
+                            left_initial: left,
+                            _right_initial: right,
+                            total_pixels: *total_px,
+                        });
+                    }
+                    on_border = true;
+                    break;
+                }
             }
             LayoutKind::Vertical => {
-                if y >= pos.saturating_sub(tol) && y <= pos + tol { if let Some((left,right)) = split_sizes_at(&win.root, path.clone(), *idx) { app.drag = Some(DragState { split_path: path.clone(), kind: *kind, index: *idx, start_x: x, start_y: *pos, left_initial: left, _right_initial: right, total_pixels: *total_px }); } on_border = true; break; }
+                if y >= pos.saturating_sub(tol) && y <= pos + tol {
+                    if let Some((left, right)) = split_sizes_at(&win.root, path.clone(), *idx) {
+                        app.drag = Some(DragState {
+                            split_path: path.clone(),
+                            kind: *kind,
+                            index: *idx,
+                            start_x: x,
+                            start_y: *pos,
+                            left_initial: left,
+                            _right_initial: right,
+                            total_pixels: *total_px,
+                        });
+                    }
+                    on_border = true;
+                    break;
+                }
             }
         }
     }
@@ -657,8 +761,16 @@ pub fn remote_mouse_down(app: &mut AppState, x: u16, y: u16) {
             let win_name = win.name.clone();
             if let Some(active) = active_pane_mut(&mut win.root, &win.active_path) {
                 if pane_wants_mouse(active) {
-                    inject_mouse_combined(active, col, row, 0, true,
-                        mouse_inject::FROM_LEFT_1ST_BUTTON_PRESSED, 0, &win_name);
+                    inject_mouse_combined(
+                        active,
+                        col,
+                        row,
+                        0,
+                        true,
+                        mouse_inject::FROM_LEFT_1ST_BUTTON_PRESSED,
+                        0,
+                        &win_name,
+                    );
                 }
             }
         }
@@ -682,20 +794,30 @@ pub fn remote_mouse_drag(app: &mut AppState, x: u16, y: u16) {
                     let nx = x.saturating_sub(ox).saturating_sub(dx);
                     let ny = y.saturating_sub(oy).saturating_sub(dy);
                     let (cx, cy) = crate::floating::clamp_into(nx, ny, fp.w, fp.h, win_w, win_h);
-                    fp.x = cx; fp.y = cy;
+                    fp.x = cx;
+                    fp.y = cy;
                 }
                 crate::types::FloatDragMode::Resize => {
                     let x0 = ox + fp.x;
                     let y0 = oy + fp.y;
                     fp.w = (x.saturating_sub(x0) + 1).max(3).min(win_w);
                     fp.h = (y.saturating_sub(y0) + 1).max(3).min(win_h);
-                    let (cx, cy) = crate::floating::clamp_into(fp.x, fp.y, fp.w, fp.h, win_w, win_h);
-                    fp.x = cx; fp.y = cy;
+                    let (cx, cy) =
+                        crate::floating::clamp_into(fp.x, fp.y, fp.w, fp.h, win_w, win_h);
+                    fp.x = cx;
+                    fp.y = cy;
                     let inner_h = fp.h.saturating_sub(2).max(1);
                     let inner_w = fp.w.saturating_sub(2).max(1);
                     if fp.pane.last_rows != inner_h || fp.pane.last_cols != inner_w {
-                        let _ = fp.pane.master.resize(portable_pty::PtySize { rows: inner_h, cols: inner_w, pixel_width: 0, pixel_height: 0 });
-                        if let Ok(mut parser) = fp.pane.term.lock() { parser.screen_mut().set_size(inner_h, inner_w); }
+                        let _ = fp.pane.master.resize(portable_pty::PtySize {
+                            rows: inner_h,
+                            cols: inner_w,
+                            pixel_width: 0,
+                            pixel_height: 0,
+                        });
+                        if let Ok(mut parser) = fp.pane.term.lock() {
+                            parser.screen_mut().set_size(inner_h, inner_w);
+                        }
                         fp.pane.last_rows = inner_h;
                         fp.pane.last_cols = inner_w;
                     }
@@ -710,7 +832,10 @@ pub fn remote_mouse_drag(app: &mut AppState, x: u16, y: u16) {
     compute_mouse_rects(win, app.last_window_area, &mut rects);
 
     if matches!(app.mode, Mode::CopyMode | Mode::CopySearch { .. }) {
-        if let Some((path, area)) = rects.iter().find(|(_, area)| area.contains(ratatui::layout::Position { x, y })) {
+        if let Some((path, area)) = rects
+            .iter()
+            .find(|(_, area)| area.contains(ratatui::layout::Position { x, y }))
+        {
             win.active_path = path.clone();
             let (row, col) = copy_cell_for_area(*area, x, y);
             if app.copy_anchor.is_none() {
@@ -732,13 +857,25 @@ pub fn remote_mouse_drag(app: &mut AppState, x: u16, y: u16) {
         adjust_split_sizes(&mut win.root, d, x, y);
     } else {
         // Forward drag only when active pane wants mouse input.
-        if let Some(area) = rects.iter().find(|(path, _)| *path == win.active_path).map(|(_, a)| *a) {
+        if let Some(area) = rects
+            .iter()
+            .find(|(path, _)| *path == win.active_path)
+            .map(|(_, a)| *a)
+        {
             let (col, row) = pane_inner_cell_0based(area, x, y);
             let win_name = win.name.clone();
             if let Some(active) = active_pane_mut(&mut win.root, &win.active_path) {
                 if pane_wants_mouse(active) {
-                    inject_mouse_combined(active, col, row, 32, true,
-                        mouse_inject::FROM_LEFT_1ST_BUTTON_PRESSED, mouse_inject::MOUSE_MOVED, &win_name);
+                    inject_mouse_combined(
+                        active,
+                        col,
+                        row,
+                        32,
+                        true,
+                        mouse_inject::FROM_LEFT_1ST_BUTTON_PRESSED,
+                        mouse_inject::MOUSE_MOVED,
+                        &win_name,
+                    );
                 }
             }
         }
@@ -757,7 +894,10 @@ pub fn remote_mouse_up(app: &mut AppState, x: u16, y: u16) {
     compute_mouse_rects(win, app.last_window_area, &mut rects);
 
     if matches!(app.mode, Mode::CopyMode | Mode::CopySearch { .. }) {
-        if let Some((path, area)) = rects.iter().find(|(_, area)| area.contains(ratatui::layout::Position { x, y })) {
+        if let Some((path, area)) = rects
+            .iter()
+            .find(|(_, area)| area.contains(ratatui::layout::Position { x, y }))
+        {
             win.active_path = path.clone();
             let (row, col) = copy_cell_for_area(*area, x, y);
             app.copy_pos = Some((row, col));
@@ -795,13 +935,16 @@ pub fn remote_mouse_up(app: &mut AppState, x: u16, y: u16) {
     }
 
     // Forward mouse release only when active pane wants mouse input.
-    if let Some(area) = rects.iter().find(|(path, _)| *path == win.active_path).map(|(_, a)| *a) {
+    if let Some(area) = rects
+        .iter()
+        .find(|(path, _)| *path == win.active_path)
+        .map(|(_, a)| *a)
+    {
         let (col, row) = pane_inner_cell_0based(area, x, y);
         let win_name = win.name.clone();
         if let Some(active) = active_pane_mut(&mut win.root, &win.active_path) {
             if pane_wants_mouse(active) {
-                inject_mouse_combined(active, col, row, 0, false,
-                    0, 0, &win_name);
+                inject_mouse_combined(active, col, row, 0, false, 0, 0, &win_name);
             }
         }
     }
@@ -813,7 +956,11 @@ pub fn remote_mouse_button(app: &mut AppState, x: u16, y: u16, button: u8, press
     let win = &mut app.windows[app.active_idx];
     let mut rects: Vec<(Vec<usize>, Rect)> = Vec::new();
     compute_mouse_rects(win, app.last_window_area, &mut rects);
-    if let Some(area) = rects.iter().find(|(path, _)| *path == win.active_path).map(|(_, a)| *a) {
+    if let Some(area) = rects
+        .iter()
+        .find(|(path, _)| *path == win.active_path)
+        .map(|(_, a)| *a)
+    {
         let (col, row) = pane_inner_cell_0based(area, x, y);
         let win_name = win.name.clone();
         if let Some(active) = active_pane_mut(&mut win.root, &win.active_path) {
@@ -832,8 +979,7 @@ pub fn remote_mouse_button(app: &mut AppState, x: u16, y: u16, button: u8, press
                 } else {
                     0
                 };
-                inject_mouse_combined(active, col, row, sgr_btn, press,
-                    button_state, 0, &win_name);
+                inject_mouse_combined(active, col, row, sgr_btn, press, button_state, 0, &win_name);
             }
         }
     }
@@ -871,13 +1017,25 @@ pub fn remote_mouse_motion(app: &mut AppState, x: u16, y: u16) {
     // prompts such as claudecode input boxes and container ttys (#349).
     mouse_log(&format!("remote_mouse_motion: x={} y={}", x, y));
 
-    if let Some(area) = rects.iter().find(|(path, _)| *path == win.active_path).map(|(_, a)| *a) {
+    if let Some(area) = rects
+        .iter()
+        .find(|(path, _)| *path == win.active_path)
+        .map(|(_, a)| *a)
+    {
         let (col, row) = pane_inner_cell_0based(area, x, y);
         let win_name = win.name.clone();
         if let Some(active) = active_pane_mut(&mut win.root, &win.active_path) {
             if pane_wants_hover(active) {
-                inject_mouse_combined(active, col, row, 35, true,
-                    0, mouse_inject::MOUSE_MOVED, &win_name);
+                inject_mouse_combined(
+                    active,
+                    col,
+                    row,
+                    35,
+                    true,
+                    0,
+                    mouse_inject::MOUSE_MOVED,
+                    &win_name,
+                );
             }
         }
     }
@@ -885,8 +1043,14 @@ pub fn remote_mouse_motion(app: &mut AppState, x: u16, y: u16) {
 
 fn wheel_cell_for_area(area: Rect, x: u16, y: u16) -> (u16, u16) {
     // Convert global terminal coordinates to 1-based pane-local coordinates (no border offset).
-    let col = x.saturating_sub(area.x).min(area.width.saturating_sub(1)).saturating_add(1);
-    let row = y.saturating_sub(area.y).min(area.height.saturating_sub(1)).saturating_add(1);
+    let col = x
+        .saturating_sub(area.x)
+        .min(area.width.saturating_sub(1))
+        .saturating_add(1);
+    let row = y
+        .saturating_sub(area.y)
+        .min(area.height.saturating_sub(1))
+        .saturating_add(1);
     (col, row)
 }
 
@@ -905,7 +1069,10 @@ fn remote_scroll_wheel(app: &mut AppState, x: u16, y: u16, up: bool) {
         Mode::CopySearch { .. } => "CopySearch",
         _ => "Other",
     };
-    mouse_log(&format!("remote_scroll_wheel: x={} y={} up={} mode={}", x, y, up, mode_str));
+    mouse_log(&format!(
+        "remote_scroll_wheel: x={} y={} up={} mode={}",
+        x, y, up, mode_str
+    ));
 
     // Ignore scroll in popup mode — don't enter copy-mode (#110)
     if matches!(app.mode, Mode::PopupMode { .. }) {
@@ -960,8 +1127,7 @@ fn remote_scroll_wheel(app: &mut AppState, x: u16, y: u16, up: bool) {
                 .map(|(_, area)| *area);
         }
 
-        let alt = active_pane(&win.root, &win.active_path)
-            .map_or(false, |p| pane_wants_mouse(p));
+        let alt = active_pane(&win.root, &win.active_path).map_or(false, |p| pane_wants_mouse(p));
         let sgr_btn: u8 = if up { 64 } else { 65 };
         let wheel_delta: i16 = if up { 120 } else { -120 };
         let bs = ((wheel_delta as i32) << 16) as u32;
@@ -977,8 +1143,16 @@ fn remote_scroll_wheel(app: &mut AppState, x: u16, y: u16, up: bool) {
         let (col, row) = target_area_opt.map_or((0, 0), |area| pane_inner_cell_0based(area, x, y));
         let win_name = win.name.clone();
         if let Some(p) = active_pane_mut(&mut win.root, &win.active_path) {
-            inject_mouse_combined(p, col, row, sgr_btn, true,
-                button_state, mouse_inject::MOUSE_WHEELED, &win_name);
+            inject_mouse_combined(
+                p,
+                col,
+                row,
+                sgr_btn,
+                true,
+                button_state,
+                mouse_inject::MOUSE_WHEELED,
+                &win_name,
+            );
         }
     } else if up && app.scroll_enter_copy_mode {
         // Shell prompt — auto-enter copy mode and scroll up (tmux parity)
@@ -994,13 +1168,24 @@ fn remote_scroll_wheel(app: &mut AppState, x: u16, y: u16, up: bool) {
     }
 }
 
-pub fn remote_scroll_up(app: &mut AppState, x: u16, y: u16) { remote_scroll_wheel(app, x, y, true); }
-pub fn remote_scroll_down(app: &mut AppState, x: u16, y: u16) { remote_scroll_wheel(app, x, y, false); }
+pub fn remote_scroll_up(app: &mut AppState, x: u16, y: u16) {
+    remote_scroll_wheel(app, x, y, true);
+}
+pub fn remote_scroll_down(app: &mut AppState, x: u16, y: u16) {
+    remote_scroll_wheel(app, x, y, false);
+}
 
 /// Handle a semantic mouse event from the client.
 /// The client has already determined the target pane and computed pane-relative
 /// coordinates, so no coordinate translation is needed.
-pub fn handle_pane_mouse(app: &mut AppState, pane_id: usize, button: u8, col: i16, row: i16, press: bool) {
+pub fn handle_pane_mouse(
+    app: &mut AppState,
+    pane_id: usize,
+    button: u8,
+    col: i16,
+    row: i16,
+    press: bool,
+) {
     // Find the pane by ID and focus it
     let win = &mut app.windows[app.active_idx];
     let mut found_path: Option<Vec<usize>> = None;
@@ -1015,7 +1200,9 @@ pub fn handle_pane_mouse(app: &mut AppState, pane_id: usize, button: u8, col: i1
         }
     }
 
-    let Some(path) = found_path else { return; };
+    let Some(path) = found_path else {
+        return;
+    };
 
     // Focus the target pane only on actual clicks (not drag/hover).
     // tmux behavior: click-to-focus, not focus-follows-mouse.
@@ -1062,7 +1249,9 @@ pub fn handle_pane_mouse(app: &mut AppState, pane_id: usize, button: u8, col: i1
             }
             // Auto-yank if real selection exists (anchor != pos)
             if let (Some(a), Some(p)) = (app.copy_anchor, app.copy_pos) {
-                if a != p { let _ = yank_selection(app); }
+                if a != p {
+                    let _ = yank_selection(app);
+                }
             }
         }
         return;
@@ -1081,7 +1270,11 @@ pub fn handle_pane_mouse(app: &mut AppState, pane_id: usize, button: u8, col: i1
     let win = &mut app.windows[app.active_idx];
     let win_name = win.name.clone();
     if let Some(pane) = active_pane_mut(&mut win.root, &win.active_path) {
-        let wants = if button == 35 { pane_wants_hover(pane) } else { pane_wants_mouse(pane) };
+        let wants = if button == 35 {
+            pane_wants_hover(pane)
+        } else {
+            pane_wants_mouse(pane)
+        };
         if wants {
             let button_state = match (button, press) {
                 (0, true) => mouse_inject::FROM_LEFT_1ST_BUTTON_PRESSED,
@@ -1089,8 +1282,21 @@ pub fn handle_pane_mouse(app: &mut AppState, pane_id: usize, button: u8, col: i1
                 (2, true) => mouse_inject::RIGHTMOST_BUTTON_PRESSED,
                 _ => 0,
             };
-            let event_flags = if button == 32 || button == 35 { mouse_inject::MOUSE_MOVED } else { 0 };
-            inject_mouse_combined(pane, col, row, button, press, button_state, event_flags, &win_name);
+            let event_flags = if button == 32 || button == 35 {
+                mouse_inject::MOUSE_MOVED
+            } else {
+                0
+            };
+            inject_mouse_combined(
+                pane,
+                col,
+                row,
+                button,
+                press,
+                button_state,
+                event_flags,
+                &win_name,
+            );
         }
     }
 }
@@ -1098,7 +1304,9 @@ pub fn handle_pane_mouse(app: &mut AppState, pane_id: usize, button: u8, col: i1
 /// Handle a semantic scroll event targeted at a specific pane.
 pub fn handle_pane_scroll(app: &mut AppState, pane_id: usize, up: bool) {
     // Ignore scroll in popup mode (#110)
-    if matches!(app.mode, Mode::PopupMode { .. }) { return; }
+    if matches!(app.mode, Mode::PopupMode { .. }) {
+        return;
+    }
 
     // Handle scroll while already in copy mode (coordinates irrelevant)
     if matches!(app.mode, Mode::CopyMode | Mode::CopySearch { .. }) {
@@ -1131,8 +1339,8 @@ pub fn handle_pane_scroll(app: &mut AppState, pane_id: usize, up: bool) {
     // a normal shell that has filled the screen (prompt at the bottom) as a TUI
     // app, so the wheel was forwarded to the shell instead of entering copy
     // mode (#360).
-    let alt = active_pane(&win.root, &win.active_path)
-        .map_or(false, |p| pane_wants_scroll_forward(p));
+    let alt =
+        active_pane(&win.root, &win.active_path).map_or(false, |p| pane_wants_scroll_forward(p));
 
     if alt {
         // Forward scroll to TUI app
@@ -1144,15 +1352,23 @@ pub fn handle_pane_scroll(app: &mut AppState, pane_id: usize, up: bool) {
         // Use center of pane for coordinates — some TUI frameworks
         // (Bubble Tea) may ignore events at position (0,0) if it's
         // outside the scrollable viewport.
-        let pane_area = rects.iter()
+        let pane_area = rects
+            .iter()
             .find(|(p, _)| *p == win.active_path)
             .map(|(_, a)| *a);
-        let (col, row) = pane_area.map_or((5, 5), |a| {
-            ((a.width / 2) as i16, (a.height / 2) as i16)
-        });
+        let (col, row) =
+            pane_area.map_or((5, 5), |a| ((a.width / 2) as i16, (a.height / 2) as i16));
         if let Some(pane) = active_pane_mut(&mut win.root, &win.active_path) {
-            inject_mouse_combined(pane, col, row, sgr_btn, true,
-                button_state, mouse_inject::MOUSE_WHEELED, &win_name);
+            inject_mouse_combined(
+                pane,
+                col,
+                row,
+                sgr_btn,
+                true,
+                button_state,
+                mouse_inject::MOUSE_WHEELED,
+                &win_name,
+            );
         }
     } else if up && app.scroll_enter_copy_mode {
         // Shell prompt — enter copy mode and scroll
@@ -1180,7 +1396,12 @@ pub fn handle_split_set_sizes(app: &mut AppState, path: &[usize], sizes: &[u16])
             Node::Leaf(_) => return,
         }
     }
-    if let Node::Split { sizes: node_sizes, children, .. } = cur {
+    if let Node::Split {
+        sizes: node_sizes,
+        children,
+        ..
+    } = cur
+    {
         if sizes.len() == children.len() && sizes.len() == node_sizes.len() {
             *node_sizes = sizes.to_vec();
         }
@@ -1196,18 +1417,24 @@ pub fn swap_pane(app: &mut AppState, dir: FocusDir) -> bool {
     let win = &mut app.windows[app.active_idx];
     let mut rects: Vec<(Vec<usize>, Rect)> = Vec::new();
     compute_rects(&win.root, app.last_window_area, &mut rects);
-    
+
     let mut active_idx = None;
-    for (i, (path, _)) in rects.iter().enumerate() { 
-        if *path == win.active_path { active_idx = Some(i); break; } 
+    for (i, (path, _)) in rects.iter().enumerate() {
+        if *path == win.active_path {
+            active_idx = Some(i);
+            break;
+        }
     }
-    let Some(ai) = active_idx else { return false; };
+    let Some(ai) = active_idx else {
+        return false;
+    };
     let (_, arect) = &rects[ai];
-    
+
     // Collect pane IDs for MRU-based tie-breaking (issue #70)
-    let pane_ids: Vec<usize> = rects.iter().map(|(path, _)| {
-        crate::tree::get_active_pane_id(&win.root, path).unwrap_or(usize::MAX)
-    }).collect();
+    let pane_ids: Vec<usize> = rects
+        .iter()
+        .map(|(path, _)| crate::tree::get_active_pane_id(&win.root, path).unwrap_or(usize::MAX))
+        .collect();
     // Pick the pane to swap with.  tmux defines `swap-pane -U`/`-D` by pane
     // *index* order, not spatial geometry: -U swaps with the previous pane and
     // -D with the next pane in the window's pane list, wrapping at the ends
@@ -1218,11 +1445,21 @@ pub fn swap_pane(app: &mut AppState, dir: FocusDir) -> bool {
     // so they keep the spatial neighbour search. (issue #400)
     let n = rects.len();
     let target = match dir {
-        FocusDir::Up   => Some(if ai == 0 { n - 1 } else { ai - 1 }),
+        FocusDir::Up => Some(if ai == 0 { n - 1 } else { ai - 1 }),
         FocusDir::Down => Some(if ai + 1 >= n { 0 } else { ai + 1 }),
-        _ => crate::input::find_best_pane_in_direction(&rects, ai, arect, dir, &pane_ids, &win.pane_mru)
-            .or_else(|| crate::input::find_wrap_target(&rects, ai, arect, dir, &pane_ids, &win.pane_mru)),
-    }.filter(|&ni| ni != ai); // single-pane window: nothing to swap with
+        _ => crate::input::find_best_pane_in_direction(
+            &rects,
+            ai,
+            arect,
+            dir,
+            &pane_ids,
+            &win.pane_mru,
+        )
+        .or_else(|| {
+            crate::input::find_wrap_target(&rects, ai, arect, dir, &pane_ids, &win.pane_mru)
+        }),
+    }
+    .filter(|&ni| ni != ai); // single-pane window: nothing to swap with
     let mut swapped = false;
     if let Some(ni) = target {
         let active_path = rects[ai].0.clone();
@@ -1241,7 +1478,9 @@ pub fn swap_pane(app: &mut AppState, dir: FocusDir) -> bool {
     }
     // Resize the moved panes' PTYs to fit their new slots (tmux re-lays-out
     // after a swap).  Without this the program keeps its old terminal size.
-    if swapped { crate::tree::resize_all_panes(app); }
+    if swapped {
+        crate::tree::resize_all_panes(app);
+    }
     swapped
 }
 
@@ -1252,19 +1491,26 @@ pub fn swap_pane_with_path(app: &mut AppState, target_path: Vec<usize>) -> bool 
     let swapped = {
         let win = &mut app.windows[app.active_idx];
         let active_path = win.active_path.clone();
-        if active_path == target_path { false }
-        else {
+        if active_path == target_path {
+            false
+        } else {
             if crate::tree::swap_nodes(&mut win.root, &active_path, &target_path) {
                 win.active_path = target_path;
-                if let Some(focused_id) = crate::tree::get_active_pane_id(&win.root, &win.active_path) {
+                if let Some(focused_id) =
+                    crate::tree::get_active_pane_id(&win.root, &win.active_path)
+                {
                     crate::tree::touch_mru(&mut win.pane_mru, focused_id);
                 }
                 true
-            } else { false }
+            } else {
+                false
+            }
         }
     };
     // Resize moved panes to fit their new slots (see swap_pane).
-    if swapped { crate::tree::resize_all_panes(app); }
+    if swapped {
+        crate::tree::resize_all_panes(app);
+    }
     swapped
 }
 
@@ -1274,11 +1520,17 @@ pub fn swap_pane_with_path(app: &mut AppState, target_path: Vec<usize>) -> bool 
 /// `cmd-swap-pane.c`: without `-d` the `-t` (dst) pane becomes active — after
 /// the swap it occupies the src slot, so focus lands on `src_path`.  With `-d`
 /// the previously active pane keeps focus, following it to its new slot.
-pub fn swap_pane_between(app: &mut AppState, src_path: Vec<usize>, dst_path: Vec<usize>, detach: bool) -> bool {
+pub fn swap_pane_between(
+    app: &mut AppState,
+    src_path: Vec<usize>,
+    dst_path: Vec<usize>,
+    detach: bool,
+) -> bool {
     let swapped = {
         let win = &mut app.windows[app.active_idx];
-        if src_path == dst_path { false }
-        else {
+        if src_path == dst_path {
+            false
+        } else {
             // Remember the focused pane id so `-d` can keep focus on it even if
             // it was one of the two panes being swapped.
             let active_id = crate::tree::get_active_pane_id(&win.root, &win.active_path);
@@ -1298,11 +1550,15 @@ pub fn swap_pane_between(app: &mut AppState, src_path: Vec<usize>, dst_path: Vec
                     crate::tree::touch_mru(&mut win.pane_mru, fid);
                 }
                 true
-            } else { false }
+            } else {
+                false
+            }
         }
     };
     // Resize moved panes to fit their new slots (see swap_pane).
-    if swapped { crate::tree::resize_all_panes(app); }
+    if swapped {
+        crate::tree::resize_all_panes(app);
+    }
     swapped
 }
 
@@ -1310,7 +1566,9 @@ pub fn swap_pane_between(app: &mut AppState, src_path: Vec<usize>, dst_path: Vec
 /// pane occupying that corner/edge of the current window.  Layout-independent:
 /// always finds whatever pane currently sits there.
 pub fn pane_path_at_position(app: &AppState, token: &str) -> Option<Vec<usize>> {
-    if app.windows.is_empty() { return None; }
+    if app.windows.is_empty() {
+        return None;
+    }
     let area = app.last_window_area;
     let win = &app.windows[app.active_idx];
     let mut rects: Vec<(Vec<usize>, Rect)> = Vec::new();
@@ -1320,8 +1578,14 @@ pub fn pane_path_at_position(app: &AppState, token: &str) -> Option<Vec<usize>> 
 
 /// Map a tmux-style position token to the path of the pane covering that
 /// corner/edge point.  Pure geometry, separated out so it can be unit-tested.
-pub fn resolve_position_token(token: &str, area: Rect, rects: &[(Vec<usize>, Rect)]) -> Option<Vec<usize>> {
-    if area.width == 0 || area.height == 0 { return None; }
+pub fn resolve_position_token(
+    token: &str,
+    area: Rect,
+    rects: &[(Vec<usize>, Rect)],
+) -> Option<Vec<usize>> {
+    if area.width == 0 || area.height == 0 {
+        return None;
+    }
     let x0 = area.x;
     let y0 = area.y;
     let xmax = area.x + area.width - 1;
@@ -1329,17 +1593,18 @@ pub fn resolve_position_token(token: &str, area: Rect, rects: &[(Vec<usize>, Rec
     let xmid = area.x + area.width / 2;
     let ymid = area.y + area.height / 2;
     let (px, py) = match token {
-        "{top-left}"     => (x0, y0),
-        "{top-right}"    => (xmax, y0),
-        "{bottom-left}"  => (x0, ymax),
+        "{top-left}" => (x0, y0),
+        "{top-right}" => (xmax, y0),
+        "{bottom-left}" => (x0, ymax),
         "{bottom-right}" => (xmax, ymax),
-        "{top}"          => (xmid, y0),
-        "{bottom}"       => (xmid, ymax),
-        "{left}"         => (x0, ymid),
-        "{right}"        => (xmax, ymid),
+        "{top}" => (xmid, y0),
+        "{bottom}" => (xmid, ymax),
+        "{left}" => (x0, ymid),
+        "{right}" => (xmax, ymid),
         _ => return None,
     };
-    rects.iter()
+    rects
+        .iter()
         .find(|(_, r)| px >= r.x && px < r.x + r.width && py >= r.y && py < r.y + r.height)
         .map(|(p, _)| p.clone())
 }
@@ -1350,26 +1615,70 @@ mod position_token_tests {
     use ratatui::layout::Rect;
     fn layout() -> (Rect, Vec<(Vec<usize>, Rect)>) {
         // ABTOP top-left, SMALL bottom-left, BIG right (mirrors the user's panel).
-        let area = Rect { x: 0, y: 0, width: 160, height: 40 };
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 160,
+            height: 40,
+        };
         let rects = vec![
-            (vec![0, 0], Rect { x: 0,  y: 0,  width: 79, height: 19 }),
-            (vec![0, 1], Rect { x: 0,  y: 20, width: 79, height: 20 }),
-            (vec![1],    Rect { x: 80, y: 0,  width: 80, height: 40 }),
+            (
+                vec![0, 0],
+                Rect {
+                    x: 0,
+                    y: 0,
+                    width: 79,
+                    height: 19,
+                },
+            ),
+            (
+                vec![0, 1],
+                Rect {
+                    x: 0,
+                    y: 20,
+                    width: 79,
+                    height: 20,
+                },
+            ),
+            (
+                vec![1],
+                Rect {
+                    x: 80,
+                    y: 0,
+                    width: 80,
+                    height: 40,
+                },
+            ),
         ];
         (area, rects)
     }
     #[test]
     fn top_right_finds_big_pane() {
         let (area, rects) = layout();
-        assert_eq!(resolve_position_token("{top-right}", area, &rects), Some(vec![1]));
-        assert_eq!(resolve_position_token("{bottom-right}", area, &rects), Some(vec![1]));
-        assert_eq!(resolve_position_token("{right}", area, &rects), Some(vec![1]));
+        assert_eq!(
+            resolve_position_token("{top-right}", area, &rects),
+            Some(vec![1])
+        );
+        assert_eq!(
+            resolve_position_token("{bottom-right}", area, &rects),
+            Some(vec![1])
+        );
+        assert_eq!(
+            resolve_position_token("{right}", area, &rects),
+            Some(vec![1])
+        );
     }
     #[test]
     fn corners_left() {
         let (area, rects) = layout();
-        assert_eq!(resolve_position_token("{top-left}", area, &rects), Some(vec![0, 0]));
-        assert_eq!(resolve_position_token("{bottom-left}", area, &rects), Some(vec![0, 1]));
+        assert_eq!(
+            resolve_position_token("{top-left}", area, &rects),
+            Some(vec![0, 0])
+        );
+        assert_eq!(
+            resolve_position_token("{bottom-left}", area, &rects),
+            Some(vec![0, 1])
+        );
     }
     #[test]
     fn unknown_token_is_none() {
@@ -1411,7 +1720,8 @@ mod swap_mru_tests {
             cols,
             id,
             None,
-        ).expect("create proxy pane")
+        )
+        .expect("create proxy pane")
     }
 
     fn make_window_with_two_panes(left_id: usize, right_id: usize) -> Window {
@@ -1419,7 +1729,10 @@ mod swap_mru_tests {
             root: Node::Split {
                 kind: LayoutKind::Horizontal,
                 sizes: vec![1, 1],
-                children: vec![Node::Leaf(proxy_pane(left_id, 10, 5)), Node::Leaf(proxy_pane(right_id, 10, 5))],
+                children: vec![
+                    Node::Leaf(proxy_pane(left_id, 10, 5)),
+                    Node::Leaf(proxy_pane(right_id, 10, 5)),
+                ],
             },
             active_path: vec![0],
             name: "w0".to_string(),
@@ -1442,21 +1755,36 @@ mod swap_mru_tests {
     #[test]
     fn swap_with_path_updates_mru_for_focused_pane_after_swap() {
         let mut app = AppState::new("swap-mru".to_string());
-        app.last_window_area = Rect { x: 0, y: 0, width: 10, height: 10 };
+        app.last_window_area = Rect {
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 10,
+        };
         app.windows.push(make_window_with_two_panes(11, 22));
         app.active_idx = 0;
 
         let swapped = swap_pane_with_path(&mut app, vec![1]);
         assert!(swapped, "swap should succeed");
-        assert_eq!(app.windows[0].active_path, vec![1], "focus should follow moved active pane");
-        assert_eq!(app.windows[0].pane_mru.first().copied(), Some(11), "MRU should be the focused pane id after swap");
+        assert_eq!(
+            app.windows[0].active_path,
+            vec![1],
+            "focus should follow moved active pane"
+        );
+        assert_eq!(
+            app.windows[0].pane_mru.first().copied(),
+            Some(11),
+            "MRU should be the focused pane id after swap"
+        );
     }
 }
 
 pub fn resize_pane_vertical(app: &mut AppState, amount: i16) {
     let win = &mut app.windows[app.active_idx];
-    if win.active_path.is_empty() { return; }
-    
+    if win.active_path.is_empty() {
+        return;
+    }
+
     for depth in (0..win.active_path.len()).rev() {
         let parent_path = win.active_path[..depth].to_vec();
         if let Some(Node::Split { kind, sizes, .. }) = get_split_mut(&mut win.root, &parent_path) {
@@ -1486,8 +1814,10 @@ pub fn resize_pane_vertical(app: &mut AppState, amount: i16) {
 
 pub fn resize_pane_horizontal(app: &mut AppState, amount: i16) {
     let win = &mut app.windows[app.active_idx];
-    if win.active_path.is_empty() { return; }
-    
+    if win.active_path.is_empty() {
+        return;
+    }
+
     for depth in (0..win.active_path.len()).rev() {
         let parent_path = win.active_path[..depth].to_vec();
         if let Some(Node::Split { kind, sizes, .. }) = get_split_mut(&mut win.root, &parent_path) {
@@ -1519,8 +1849,14 @@ pub fn resize_pane_horizontal(app: &mut AppState, amount: i16) {
 /// axis is "x" (width/horizontal) or "y" (height/vertical).
 pub fn resize_pane_absolute(app: &mut AppState, axis: &str, target: u16) {
     let win = &mut app.windows[app.active_idx];
-    if win.active_path.is_empty() { return; }
-    let target_kind = if axis == "x" { LayoutKind::Horizontal } else { LayoutKind::Vertical };
+    if win.active_path.is_empty() {
+        return;
+    }
+    let target_kind = if axis == "x" {
+        LayoutKind::Horizontal
+    } else {
+        LayoutKind::Vertical
+    };
     for depth in (0..win.active_path.len()).rev() {
         let parent_path = win.active_path[..depth].to_vec();
         if let Some(Node::Split { kind, sizes, .. }) = get_split_mut(&mut win.root, &parent_path) {
@@ -1565,25 +1901,32 @@ pub fn rotate_panes(app: &mut AppState, reverse: bool) {
 pub fn break_pane_to_window(app: &mut AppState) {
     let src_idx = app.active_idx;
     let src_path = app.windows[src_idx].active_path.clone();
-    
+
     // Extract the active pane from the current window using tree operations
-    let src_root = std::mem::replace(&mut app.windows[src_idx].root,
-        Node::Split { kind: LayoutKind::Horizontal, sizes: vec![], children: vec![] });
+    let src_root = std::mem::replace(
+        &mut app.windows[src_idx].root,
+        Node::Split {
+            kind: LayoutKind::Horizontal,
+            sizes: vec![],
+            children: vec![],
+        },
+    );
     let (remaining, extracted) = crate::tree::extract_node(src_root, &src_path);
-    
+
     if let Some(pane_node) = extracted {
         let src_empty = remaining.is_none();
         if let Some(rem) = remaining {
             app.windows[src_idx].root = rem;
-            app.windows[src_idx].active_path = crate::tree::first_leaf_path(&app.windows[src_idx].root);
+            app.windows[src_idx].active_path =
+                crate::tree::first_leaf_path(&app.windows[src_idx].root);
         }
-        
+
         // Determine the window name from the pane
         let win_name = match &pane_node {
             Node::Leaf(p) => p.title.clone(),
             _ => format!("win {}", app.windows.len() + 1),
         };
-        
+
         // Create new window containing the extracted pane
         let initial_mru = crate::tree::collect_pane_ids(&pane_node);
         app.windows.push(Window {
@@ -1622,7 +1965,14 @@ pub fn break_pane_to_window(app: &mut AppState) {
     }
 }
 
-pub fn respawn_active_pane(app: &mut AppState, pty_system_ref: Option<&dyn portable_pty::PtySystem>, workdir: Option<&str>, kill: bool, command: Option<&str>, empty: bool) -> io::Result<()> {
+pub fn respawn_active_pane(
+    app: &mut AppState,
+    pty_system_ref: Option<&dyn portable_pty::PtySystem>,
+    workdir: Option<&str>,
+    kill: bool,
+    command: Option<&str>,
+    empty: bool,
+) -> io::Result<()> {
     // tmux semantics: without -k, respawn only works on dead panes.
     // With -k, kill the running process first and respawn.
     {
@@ -1671,11 +2021,20 @@ pub fn respawn_active_pane(app: &mut AppState, pty_system_ref: Option<&dyn porta
     let expanded_shell = crate::format::expand_format(&app.default_shell, &app);
 
     let win = &mut app.windows[app.active_idx];
-    let Some(pane) = active_pane_mut(&mut win.root, &win.active_path) else { return Ok(()); };
+    let Some(pane) = active_pane_mut(&mut win.root, &win.active_path) else {
+        return Ok(());
+    };
     let pane_id = pane.id;
-    
-    let size = PtySize { rows: pane.last_rows, cols: pane.last_cols, pixel_width: 0, pixel_height: 0 };
-    let pair = pty_system.openpty(size).map_err(|e| io::Error::new(io::ErrorKind::Other, format!("openpty error: {e}")))?;
+
+    let size = PtySize {
+        rows: pane.last_rows,
+        cols: pane.last_cols,
+        pixel_width: 0,
+        pixel_height: 0,
+    };
+    let pair = pty_system
+        .openpty(size)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("openpty error: {e}")))?;
     // Issue #399: honor an explicit `-- <command>` (e.g. Claude Code agent-teams
     // respawning a pane with the teammate launch command). Without a command,
     // fall back to the configured default shell (original behavior).
@@ -1686,38 +2045,71 @@ pub fn respawn_active_pane(app: &mut AppState, pty_system_ref: Option<&dyn porta
     } else {
         detect_shell()
     };
-    set_tmux_env(&mut shell_cmd, pane_id, app.control_port, app.socket_name.as_deref(), &app.session_name, app.claude_code_fix_tty, app.claude_code_force_interactive);
+    set_tmux_env(
+        &mut shell_cmd,
+        pane_id,
+        app.control_port,
+        app.socket_name.as_deref(),
+        &app.session_name,
+        app.claude_code_fix_tty,
+        app.claude_code_force_interactive,
+    );
     crate::pane::apply_user_environment(&mut shell_cmd, &app.environment);
     if let Some(dir) = workdir {
         let home = std::env::var("USERPROFILE")
             .or_else(|_| std::env::var("HOME"))
             .unwrap_or_default();
-        let expanded = dir.replace("~/", &format!("{}/", home))
+        let expanded = dir
+            .replace("~/", &format!("{}/", home))
             .replace("~\\", &format!("{}\\", home));
         shell_cmd.cwd(std::path::Path::new(&expanded));
     }
-    let child = pair.slave.spawn_command(shell_cmd).map_err(|e| io::Error::new(io::ErrorKind::Other, format!("spawn shell error: {e}")))?;
+    let child = pair
+        .slave
+        .spawn_command(shell_cmd)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("spawn shell error: {e}")))?;
     // Close the slave handle immediately – required for ConPTY.
     drop(pair.slave);
-    let term: Arc<Mutex<vt100::Parser>> = Arc::new(Mutex::new(vt100::Parser::new(size.rows, size.cols, app.history_limit)));
+    let term: Arc<Mutex<vt100::Parser>> = Arc::new(Mutex::new(vt100::Parser::new(
+        size.rows,
+        size.cols,
+        app.history_limit,
+    )));
     let term_reader = term.clone();
-    let reader = pair.master.try_clone_reader().map_err(|e| io::Error::new(io::ErrorKind::Other, format!("clone reader error: {e}")))?;
-    
+    let reader = pair
+        .master
+        .try_clone_reader()
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("clone reader error: {e}")))?;
+
     let data_version = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let dv_writer = data_version.clone();
-    let cursor_shape = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(crate::pane::CURSOR_SHAPE_UNSET));
+    let cursor_shape = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
+        crate::pane::CURSOR_SHAPE_UNSET,
+    ));
     let cs_writer = cursor_shape.clone();
-    
+
     let bell_pending = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let bell_writer = bell_pending.clone();
     let cpr_pending = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let cpr_writer = cpr_pending.clone();
 
     let output_ring = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
-    crate::pane::spawn_reader_thread(reader, term_reader, dv_writer, cs_writer, bell_writer, cpr_writer, output_ring.clone(), pane_id);
+    crate::pane::spawn_reader_thread(
+        reader,
+        term_reader,
+        dv_writer,
+        cs_writer,
+        bell_writer,
+        cpr_writer,
+        output_ring.clone(),
+        pane_id,
+    );
     pane.output_ring = output_ring;
 
-    let mut pty_writer = pair.master.take_writer().map_err(|e| io::Error::new(io::ErrorKind::Other, format!("take writer error: {e}")))?;
+    let mut pty_writer = pair
+        .master
+        .take_writer()
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("take writer error: {e}")))?;
     crate::pane::conpty_preemptive_dsr_response(&mut *pty_writer);
 
     pane.master = pair.master;
@@ -1753,43 +2145,90 @@ pub fn heal_respawn_pane(
     // Expand format vars (e.g. #{pane_current_path}) before the mutable borrow.
     let expanded_shell = crate::format::expand_format(&app.default_shell, &app);
 
-    let Some(win) = app.windows.get_mut(win_idx) else { return Ok(()); };
-    let Some(pane) = active_pane_mut(&mut win.root, path) else { return Ok(()); };
+    let Some(win) = app.windows.get_mut(win_idx) else {
+        return Ok(());
+    };
+    let Some(pane) = active_pane_mut(&mut win.root, path) else {
+        return Ok(());
+    };
     let pane_id = pane.id;
-    let size = PtySize { rows: pane.last_rows.max(1), cols: pane.last_cols.max(1), pixel_width: 0, pixel_height: 0 };
+    let size = PtySize {
+        rows: pane.last_rows.max(1),
+        cols: pane.last_cols.max(1),
+        pixel_width: 0,
+        pixel_height: 0,
+    };
 
-    let pair = pty_system_ref.openpty(size).map_err(|e| io::Error::new(io::ErrorKind::Other, format!("openpty error: {e}")))?;
+    let pair = pty_system_ref
+        .openpty(size)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("openpty error: {e}")))?;
     let mut shell_cmd = if !expanded_shell.is_empty() {
         build_default_shell(&expanded_shell, app.env_shim, app.allow_predictions)
     } else {
         detect_shell()
     };
-    set_tmux_env(&mut shell_cmd, pane_id, app.control_port, app.socket_name.as_deref(), &app.session_name, app.claude_code_fix_tty, app.claude_code_force_interactive);
+    set_tmux_env(
+        &mut shell_cmd,
+        pane_id,
+        app.control_port,
+        app.socket_name.as_deref(),
+        &app.session_name,
+        app.claude_code_fix_tty,
+        app.claude_code_force_interactive,
+    );
     crate::pane::apply_user_environment(&mut shell_cmd, &app.environment);
-    let child = pair.slave.spawn_command(shell_cmd).map_err(|e| io::Error::new(io::ErrorKind::Other, format!("spawn shell error: {e}")))?;
+    let child = pair
+        .slave
+        .spawn_command(shell_cmd)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("spawn shell error: {e}")))?;
     drop(pair.slave);
     let child_pid = crate::platform::mouse_inject::get_child_pid(&*child);
 
-    let term: Arc<Mutex<vt100::Parser>> = Arc::new(Mutex::new(vt100::Parser::new(size.rows, size.cols, app.history_limit)));
+    let term: Arc<Mutex<vt100::Parser>> = Arc::new(Mutex::new(vt100::Parser::new(
+        size.rows,
+        size.cols,
+        app.history_limit,
+    )));
     let term_reader = term.clone();
-    let reader = pair.master.try_clone_reader().map_err(|e| io::Error::new(io::ErrorKind::Other, format!("clone reader error: {e}")))?;
+    let reader = pair
+        .master
+        .try_clone_reader()
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("clone reader error: {e}")))?;
     let data_version = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let dv_writer = data_version.clone();
-    let cursor_shape = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(crate::pane::CURSOR_SHAPE_UNSET));
+    let cursor_shape = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
+        crate::pane::CURSOR_SHAPE_UNSET,
+    ));
     let cs_writer = cursor_shape.clone();
     let bell_pending = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let bell_writer = bell_pending.clone();
     let cpr_pending = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let cpr_writer = cpr_pending.clone();
     let output_ring = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
-    crate::pane::spawn_reader_thread(reader, term_reader, dv_writer, cs_writer, bell_writer, cpr_writer, output_ring.clone(), pane_id);
+    crate::pane::spawn_reader_thread(
+        reader,
+        term_reader,
+        dv_writer,
+        cs_writer,
+        bell_writer,
+        cpr_writer,
+        output_ring.clone(),
+        pane_id,
+    );
 
-    let mut pty_writer = pair.master.take_writer().map_err(|e| io::Error::new(io::ErrorKind::Other, format!("take writer error: {e}")))?;
+    let mut pty_writer = pair
+        .master
+        .take_writer()
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("take writer error: {e}")))?;
     crate::pane::conpty_preemptive_dsr_response(&mut *pty_writer);
 
     // Re-acquire the pane and swap in the fresh shell.
-    let Some(win) = app.windows.get_mut(win_idx) else { return Ok(()); };
-    let Some(pane) = active_pane_mut(&mut win.root, path) else { return Ok(()); };
+    let Some(win) = app.windows.get_mut(win_idx) else {
+        return Ok(());
+    };
+    let Some(pane) = active_pane_mut(&mut win.root, path) else {
+        return Ok(());
+    };
     pane.master = pair.master;
     pane.writer = pty_writer;
     pane.child = child;

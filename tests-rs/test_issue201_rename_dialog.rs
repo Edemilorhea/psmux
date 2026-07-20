@@ -34,7 +34,12 @@ fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
     let width = (area.width as u32 * percent_x as u32 / 100).min(area.width as u32) as u16;
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 2;
-    Rect { x, y, width, height }
+    Rect {
+        x,
+        y,
+        width,
+        height,
+    }
 }
 
 // ═════════════════════════════════════════════════════════════════════
@@ -48,20 +53,26 @@ fn rename_session_overlay_shows_rename_session_title() {
     let rename_buf = "my_session";
 
     // This is the EXACT logic that client.rs SHOULD use:
-    let title = if session_renaming { "rename session" } else { "rename window" };
+    let title = if session_renaming {
+        "rename session"
+    } else {
+        "rename window"
+    };
 
     let backend = TestBackend::new(80, 24);
     let mut terminal = Terminal::new(backend).unwrap();
 
-    terminal.draw(|f| {
-        let area = f.area();
-        let overlay = Block::default().borders(Borders::ALL).title(title);
-        let oa = centered_rect(60, 3, area);
-        f.render_widget(Clear, oa);
-        f.render_widget(&overlay, oa);
-        let para = Paragraph::new(format!("name: {}", rename_buf));
-        f.render_widget(para, overlay.inner(oa));
-    }).unwrap();
+    terminal
+        .draw(|f| {
+            let area = f.area();
+            let overlay = Block::default().borders(Borders::ALL).title(title);
+            let oa = centered_rect(60, 3, area);
+            f.render_widget(Clear, oa);
+            f.render_widget(&overlay, oa);
+            let para = Paragraph::new(format!("name: {}", rename_buf));
+            f.render_widget(para, overlay.inner(oa));
+        })
+        .unwrap();
 
     let text = buffer_text(terminal.backend());
     assert!(
@@ -86,20 +97,26 @@ fn rename_window_overlay_shows_rename_window_title() {
     let session_renaming = false;
     let rename_buf = "my_window";
 
-    let title = if session_renaming { "rename session" } else { "rename window" };
+    let title = if session_renaming {
+        "rename session"
+    } else {
+        "rename window"
+    };
 
     let backend = TestBackend::new(80, 24);
     let mut terminal = Terminal::new(backend).unwrap();
 
-    terminal.draw(|f| {
-        let area = f.area();
-        let overlay = Block::default().borders(Borders::ALL).title(title);
-        let oa = centered_rect(60, 3, area);
-        f.render_widget(Clear, oa);
-        f.render_widget(&overlay, oa);
-        let para = Paragraph::new(format!("name: {}", rename_buf));
-        f.render_widget(para, overlay.inner(oa));
-    }).unwrap();
+    terminal
+        .draw(|f| {
+            let area = f.area();
+            let overlay = Block::default().borders(Borders::ALL).title(title);
+            let oa = centered_rect(60, 3, area);
+            f.render_widget(Clear, oa);
+            f.render_widget(&overlay, oa);
+            let para = Paragraph::new(format!("name: {}", rename_buf));
+            f.render_widget(para, overlay.inner(oa));
+        })
+        .unwrap();
 
     let text = buffer_text(terminal.backend());
     assert!(
@@ -129,7 +146,11 @@ fn buggy_hardcoded_title_is_wrong_for_session_rename() {
     // BUGGY: always uses "rename window" (what client.rs currently does)
     let buggy_title = "rename window";
     // CORRECT: uses session_renaming to decide
-    let correct_title = if session_renaming { "rename session" } else { "rename window" };
+    let correct_title = if session_renaming {
+        "rename session"
+    } else {
+        "rename window"
+    };
 
     assert_ne!(
         buggy_title, correct_title,
@@ -145,7 +166,11 @@ fn buggy_hardcoded_title_is_wrong_for_session_rename() {
 fn hardcoded_title_correct_for_window_rename() {
     let session_renaming = false;
     let buggy_title = "rename window";
-    let correct_title = if session_renaming { "rename session" } else { "rename window" };
+    let correct_title = if session_renaming {
+        "rename session"
+    } else {
+        "rename window"
+    };
 
     assert_eq!(
         buggy_title, correct_title,

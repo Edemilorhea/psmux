@@ -111,8 +111,16 @@ fn scanner_detects_query_split_at_every_boundary() {
     let q = b"\x1b[6n";
     for cut in 1..q.len() {
         let mut s = CprScanner::new();
-        assert!(!s.scan(&q[..cut]), "prefix alone must not fire (cut={})", cut);
-        assert!(s.scan(&q[cut..]), "suffix must complete the query (cut={})", cut);
+        assert!(
+            !s.scan(&q[..cut]),
+            "prefix alone must not fire (cut={})",
+            cut
+        );
+        assert!(
+            s.scan(&q[cut..]),
+            "suffix must complete the query (cut={})",
+            cut
+        );
     }
 }
 

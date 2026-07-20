@@ -28,7 +28,11 @@ fn resize_pane_absolute_x_changes_horizontal_split_sizes() {
 
     assert_eq!(new_sizes[0], 70, "first pane should be 70");
     assert_eq!(new_sizes[1], 30, "second pane should be 30 (absorbed diff)");
-    assert_eq!(new_sizes.iter().sum::<u16>(), 100, "sizes should still sum to 100");
+    assert_eq!(
+        new_sizes.iter().sum::<u16>(),
+        100,
+        "sizes should still sum to 100"
+    );
 }
 
 #[test]
@@ -64,8 +68,11 @@ fn split_with_gaps_percentage_sizes_are_proportional() {
     // gaps: 1 pixel
     assert_eq!(total_used, 199, "total width should be area.width - gaps");
     // First pane should be approximately 30%
-    assert!(rects[0].width >= 55 && rects[0].width <= 65,
-        "first pane width {} should be ~60 (30% of 199)", rects[0].width);
+    assert!(
+        rects[0].width >= 55 && rects[0].width <= 65,
+        "first pane width {} should be ~60 (30% of 199)",
+        rects[0].width
+    );
 }
 
 #[test]
@@ -129,15 +136,23 @@ fn tiled_layout_builds_balanced_tree_for_4_panes() {
     let base = 100 / n as u16;
     let mut sizes = vec![base; n];
     let rem = 100 - base * n as u16;
-    if let Some(last) = sizes.last_mut() { *last += rem; }
+    if let Some(last) = sizes.last_mut() {
+        *last += rem;
+    }
     assert_eq!(sizes, vec![50, 50], "2-way split should be [50, 50]");
 
     let n3 = 3;
     let base3 = 100 / n3 as u16;
     let mut sizes3 = vec![base3; n3];
     let rem3 = 100 - base3 * n3 as u16;
-    if let Some(last) = sizes3.last_mut() { *last += rem3; }
-    assert_eq!(sizes3, vec![33, 33, 34], "3-way split should be [33, 33, 34]");
+    if let Some(last) = sizes3.last_mut() {
+        *last += rem3;
+    }
+    assert_eq!(
+        sizes3,
+        vec![33, 33, 34],
+        "3-way split should be [33, 33, 34]"
+    );
 }
 
 #[test]
@@ -156,6 +171,15 @@ fn tiled_6_panes_produces_balanced_tree() {
 #[test]
 fn parse_layout_tiled_name_recognized() {
     // Verify "tiled" is a recognized layout name
-    let layout_names = ["even-horizontal", "even-vertical", "main-horizontal", "main-vertical", "tiled"];
-    assert!(layout_names.contains(&"tiled"), "tiled should be in layout names");
+    let layout_names = [
+        "even-horizontal",
+        "even-vertical",
+        "main-horizontal",
+        "main-vertical",
+        "tiled",
+    ];
+    assert!(
+        layout_names.contains(&"tiled"),
+        "tiled should be in layout names"
+    );
 }

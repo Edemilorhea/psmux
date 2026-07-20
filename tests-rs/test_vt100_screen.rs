@@ -4,7 +4,10 @@ use super::*;
 
 #[test]
 fn osc7_full_uri_with_hostname() {
-    assert_eq!(parse_osc7_uri("file://myhost/home/user/project"), "/home/user/project");
+    assert_eq!(
+        parse_osc7_uri("file://myhost/home/user/project"),
+        "/home/user/project"
+    );
 }
 
 #[test]
@@ -24,18 +27,27 @@ fn osc7_bare_path_no_scheme() {
 
 #[test]
 fn osc7_percent_encoded_spaces() {
-    assert_eq!(parse_osc7_uri("file:///home/user/my%20project"), "/home/user/my project");
+    assert_eq!(
+        parse_osc7_uri("file:///home/user/my%20project"),
+        "/home/user/my project"
+    );
 }
 
 #[test]
 fn osc7_percent_encoded_special_chars() {
-    assert_eq!(parse_osc7_uri("file:///path/%23hash%25pct"), "/path/#hash%pct");
+    assert_eq!(
+        parse_osc7_uri("file:///path/%23hash%25pct"),
+        "/path/#hash%pct"
+    );
 }
 
 #[test]
 fn osc7_windows_path_via_uri() {
     // WezTerm-style: file://hostname/C:/Users/foo
-    assert_eq!(parse_osc7_uri("file://DESKTOP-ABC/C:/Users/foo"), "/C:/Users/foo");
+    assert_eq!(
+        parse_osc7_uri("file://DESKTOP-ABC/C:/Users/foo"),
+        "/C:/Users/foo"
+    );
 }
 
 #[test]
@@ -309,10 +321,10 @@ fn squelch_mixed_escape_sequences_before_clear() {
     let mut parser = crate::Parser::new(24, 80, 0);
     parser.screen_mut().set_squelch_clear_pending(true);
     // Cursor move, some text, color, then the clear
-    parser.process(b"\x1b[1;1H");        // cursor home
-    parser.process(b"PS C:\\> cd 'C:\\temp'; cls\r\n");  // injected command echo
-    parser.process(b"\x1b[0m");          // reset attributes
-    // Signal should NOT have fired yet (no CSI 2J/3J)
+    parser.process(b"\x1b[1;1H"); // cursor home
+    parser.process(b"PS C:\\> cd 'C:\\temp'; cls\r\n"); // injected command echo
+    parser.process(b"\x1b[0m"); // reset attributes
+                                // Signal should NOT have fired yet (no CSI 2J/3J)
     assert!(!parser.screen().squelch_cleared());
     // Now the actual clear arrives
     parser.process(b"\x1b[3J");

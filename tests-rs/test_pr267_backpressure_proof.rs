@@ -27,7 +27,10 @@ fn push_frame_slot_holds_only_newest_after_burst() {
     let slot = register_frame_channel(client_id);
 
     // Push a burst of stale frames, then the one we care about.
-    assert!(BURST_SIZE > 1, "precondition: burst must exceed slot capacity (1)");
+    assert!(
+        BURST_SIZE > 1,
+        "precondition: burst must exceed slot capacity (1)"
+    );
     for idx in 0..BURST_SIZE {
         push_frame(&format!("stale-{idx}"));
     }
@@ -59,7 +62,10 @@ fn push_frame_replaces_stale_backlog() {
     shutdown_client_stream(client_id);
 
     let slot = register_frame_channel(client_id);
-    assert!(BURST_SIZE > 1, "precondition: burst must exceed slot capacity (1)");
+    assert!(
+        BURST_SIZE > 1,
+        "precondition: burst must exceed slot capacity (1)"
+    );
     for idx in 0..BURST_SIZE {
         push_frame(&format!("stale-{idx}"));
     }

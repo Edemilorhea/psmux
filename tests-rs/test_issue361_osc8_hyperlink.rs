@@ -36,7 +36,10 @@ fn osc8_uri_with_semicolon_is_rejoined() {
     p.process(b"\x1b]8;;https://x.test/a?b=1;c=2\x1b\\Y\x1b]8;;\x1b\\");
     let s = p.screen();
     let c = s.cell(0, 0).unwrap();
-    assert_eq!(s.hyperlink_uri(c.hyperlink_id()), Some("https://x.test/a?b=1;c=2"));
+    assert_eq!(
+        s.hyperlink_uri(c.hyperlink_id()),
+        Some("https://x.test/a?b=1;c=2")
+    );
 }
 
 #[test]

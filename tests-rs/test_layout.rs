@@ -8,7 +8,13 @@ use super::*;
 fn parse_single_pane() {
     let node = parse_layout_string("34b0,120x30,0,0,0").unwrap();
     match node {
-        LayoutNode::Leaf { width, height, x, y, pane_id } => {
+        LayoutNode::Leaf {
+            width,
+            height,
+            x,
+            y,
+            pane_id,
+        } => {
             assert_eq!(width, 120);
             assert_eq!(height, 30);
             assert_eq!(x, 0);
@@ -23,13 +29,24 @@ fn parse_single_pane() {
 fn parse_two_panes_horizontal() {
     let node = parse_layout_string("5e08,120x30,0,0{60x30,0,0,0,59x30,61,0,1}").unwrap();
     match &node {
-        LayoutNode::Split { kind, width, height, children, .. } => {
+        LayoutNode::Split {
+            kind,
+            width,
+            height,
+            children,
+            ..
+        } => {
             assert_eq!(*kind, LayoutKind::Horizontal);
             assert_eq!(*width, 120);
             assert_eq!(*height, 30);
             assert_eq!(children.len(), 2);
             match &children[0] {
-                LayoutNode::Leaf { width, height, pane_id, .. } => {
+                LayoutNode::Leaf {
+                    width,
+                    height,
+                    pane_id,
+                    ..
+                } => {
                     assert_eq!(*width, 60);
                     assert_eq!(*height, 30);
                     assert_eq!(*pane_id, Some(0));
@@ -37,7 +54,13 @@ fn parse_two_panes_horizontal() {
                 _ => panic!("expected first child to be Leaf"),
             }
             match &children[1] {
-                LayoutNode::Leaf { width, height, x, pane_id, .. } => {
+                LayoutNode::Leaf {
+                    width,
+                    height,
+                    x,
+                    pane_id,
+                    ..
+                } => {
                     assert_eq!(*width, 59);
                     assert_eq!(*height, 30);
                     assert_eq!(*x, 61);
@@ -58,7 +81,13 @@ fn parse_two_panes_vertical() {
             assert_eq!(*kind, LayoutKind::Vertical);
             assert_eq!(children.len(), 2);
             match &children[0] {
-                LayoutNode::Leaf { width, height, y, pane_id, .. } => {
+                LayoutNode::Leaf {
+                    width,
+                    height,
+                    y,
+                    pane_id,
+                    ..
+                } => {
                     assert_eq!(*width, 120);
                     assert_eq!(*height, 15);
                     assert_eq!(*y, 0);
@@ -67,7 +96,13 @@ fn parse_two_panes_vertical() {
                 _ => panic!("expected Leaf"),
             }
             match &children[1] {
-                LayoutNode::Leaf { width, height, y, pane_id, .. } => {
+                LayoutNode::Leaf {
+                    width,
+                    height,
+                    y,
+                    pane_id,
+                    ..
+                } => {
                     assert_eq!(*width, 120);
                     assert_eq!(*height, 14);
                     assert_eq!(*y, 16);
@@ -83,20 +118,36 @@ fn parse_two_panes_vertical() {
 #[test]
 fn parse_nested_layout() {
     // H-split: left leaf + right V-split of two leaves
-    let node = parse_layout_string(
-        "d9e0,120x30,0,0{60x30,0,0,0,59x30,61,0[59x15,61,0,1,59x14,61,16,2]}"
-    ).unwrap();
+    let node =
+        parse_layout_string("d9e0,120x30,0,0{60x30,0,0,0,59x30,61,0[59x15,61,0,1,59x14,61,16,2]}")
+            .unwrap();
     match &node {
         LayoutNode::Split { kind, children, .. } => {
             assert_eq!(*kind, LayoutKind::Horizontal);
             assert_eq!(children.len(), 2);
             assert!(matches!(&children[0], LayoutNode::Leaf { .. }));
             match &children[1] {
-                LayoutNode::Split { kind, children: inner, .. } => {
+                LayoutNode::Split {
+                    kind,
+                    children: inner,
+                    ..
+                } => {
                     assert_eq!(*kind, LayoutKind::Vertical);
                     assert_eq!(inner.len(), 2);
-                    assert!(matches!(&inner[0], LayoutNode::Leaf { pane_id: Some(1), .. }));
-                    assert!(matches!(&inner[1], LayoutNode::Leaf { pane_id: Some(2), .. }));
+                    assert!(matches!(
+                        &inner[0],
+                        LayoutNode::Leaf {
+                            pane_id: Some(1),
+                            ..
+                        }
+                    ));
+                    assert!(matches!(
+                        &inner[1],
+                        LayoutNode::Leaf {
+                            pane_id: Some(2),
+                            ..
+                        }
+                    ));
                 }
                 _ => panic!("expected nested Split"),
             }
@@ -119,9 +170,9 @@ fn count_leaves_two() {
 
 #[test]
 fn count_leaves_three_nested() {
-    let node = parse_layout_string(
-        "d9e0,120x30,0,0{60x30,0,0,0,59x30,61,0[59x15,61,0,1,59x14,61,16,2]}"
-    ).unwrap();
+    let node =
+        parse_layout_string("d9e0,120x30,0,0{60x30,0,0,0,59x30,61,0[59x15,61,0,1,59x14,61,16,2]}")
+            .unwrap();
     assert_eq!(node.count_leaves(), 3);
 }
 
@@ -180,15 +231,22 @@ fn compute_sizes(layout: &LayoutNode) -> Option<Vec<u16>> {
                 let n = children.len().max(1) as u16;
                 return Some(vec![100 / n; children.len()]);
             }
-            let mut szs: Vec<u16> = children.iter().map(|c| {
-                let dim = match kind {
-                    LayoutKind::Horizontal => c.width() as u32,
-                    LayoutKind::Vertical => c.height() as u32,
-                };
-                (dim * 100 / total_size) as u16
-            }).collect();
+            let mut szs: Vec<u16> = children
+                .iter()
+                .map(|c| {
+                    let dim = match kind {
+                        LayoutKind::Horizontal => c.width() as u32,
+                        LayoutKind::Vertical => c.height() as u32,
+                    };
+                    (dim * 100 / total_size) as u16
+                })
+                .collect();
             let sum: u16 = szs.iter().sum();
-            if sum < 100 { if let Some(last) = szs.last_mut() { *last += 100 - sum; } }
+            if sum < 100 {
+                if let Some(last) = szs.last_mut() {
+                    *last += 100 - sum;
+                }
+            }
             Some(szs)
         }
     }
@@ -229,9 +287,8 @@ fn sizes_vertical_split_uses_heights() {
 #[test]
 fn sizes_three_way_split() {
     // 3 even columns: 40 + 39 + 40 = 119
-    let layout = parse_layout_string(
-        "aaaa,120x50,0,0{40x50,0,0,0,39x50,41,0,1,40x50,81,0,2}"
-    ).unwrap();
+    let layout =
+        parse_layout_string("aaaa,120x50,0,0{40x50,0,0,0,39x50,41,0,1,40x50,81,0,2}").unwrap();
     let sizes = compute_sizes(&layout).unwrap();
     assert_eq!(sizes.len(), 3);
     let sum: u16 = sizes.iter().sum();
@@ -264,7 +321,11 @@ fn parse_four_pane_tiled() {
             assert_eq!(children.len(), 2);
             for child in children {
                 match child {
-                    LayoutNode::Split { kind, children: inner, .. } => {
+                    LayoutNode::Split {
+                        kind,
+                        children: inner,
+                        ..
+                    } => {
                         assert_eq!(*kind, LayoutKind::Horizontal);
                         assert_eq!(inner.len(), 2);
                     }

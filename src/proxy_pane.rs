@@ -53,7 +53,12 @@ impl ProxyMasterPty {
             control_key,
             source_session,
             forward_id,
-            size: Arc::new(Mutex::new(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })),
+            size: Arc::new(Mutex::new(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })),
         }
     }
 }
@@ -65,7 +70,9 @@ impl MasterPty for ProxyMasterPty {
             "AUTH {}\npane-forward-resize {} {} {}\n",
             self.control_key, self.forward_id, size.rows, size.cols,
         );
-        let addr: std::net::SocketAddr = self.control_addr.parse()
+        let addr: std::net::SocketAddr = self
+            .control_addr
+            .parse()
             .map_err(|e| anyhow::anyhow!("bad control addr: {}", e))?;
         // Fire-and-forget resize: short timeout since resize is non-critical
         // (local screen updates immediately, source PTY catches up)
@@ -81,21 +88,31 @@ impl MasterPty for ProxyMasterPty {
     }
 
     fn get_size(&self) -> Result<PtySize, anyhow::Error> {
-        Ok(self.size.lock().map_err(|e| anyhow::anyhow!("{}", e))?.clone())
+        Ok(self
+            .size
+            .lock()
+            .map_err(|e| anyhow::anyhow!("{}", e))?
+            .clone())
     }
 
     fn try_clone_reader(&self) -> Result<Box<dyn Read + Send>, anyhow::Error> {
-        let stream = self.reader_stream.lock()
+        let stream = self
+            .reader_stream
+            .lock()
             .map_err(|e| anyhow::anyhow!("{}", e))?;
-        let cloned = stream.try_clone()
+        let cloned = stream
+            .try_clone()
             .map_err(|e| anyhow::anyhow!("clone reader: {}", e))?;
         Ok(Box::new(cloned))
     }
 
     fn take_writer(&self) -> Result<Box<dyn Write + Send>, anyhow::Error> {
-        let mut guard = self.writer_stream.lock()
+        let mut guard = self
+            .writer_stream
+            .lock()
             .map_err(|e| anyhow::anyhow!("{}", e))?;
-        guard.take()
+        guard
+            .take()
             .map(|s| -> Box<dyn Write + Send> { Box::new(s) })
             .ok_or_else(|| anyhow::anyhow!("writer already taken"))
     }
@@ -120,12 +137,20 @@ impl ProxyChild {
         forward_id: u64,
         pid: Option<u32>,
     ) -> Self {
-        Self { control_addr, control_key, forward_id, pid, exited: false }
+        Self {
+            control_addr,
+            control_key,
+            forward_id,
+            pid,
+            exited: false,
+        }
     }
 
     fn send_control(&self, cmd: &str) -> io::Result<String> {
         let msg = format!("AUTH {}\n{}\n", self.control_key, cmd);
-        let addr: std::net::SocketAddr = self.control_addr.parse()
+        let addr: std::net::SocketAddr = self
+            .control_addr
+            .parse()
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, format!("{}", e)))?;
         let mut s = TcpStream::connect_timeout(&addr, Duration::from_millis(200))?;
         let _ = s.set_nodelay(true);
@@ -138,19 +163,29 @@ impl ProxyChild {
             match s.read(&mut tmp) {
                 Ok(0) => break,
                 Ok(n) => buf.extend_from_slice(&tmp[..n]),
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock
-                       || e.kind() == io::ErrorKind::TimedOut => break,
+                Err(e)
+                    if e.kind() == io::ErrorKind::WouldBlock
+                        || e.kind() == io::ErrorKind::TimedOut =>
+                {
+                    break
+                }
                 Err(_) => break,
             }
         }
         let r = String::from_utf8_lossy(&buf).to_string();
-        Ok(if r.starts_with("OK\n") { r[3..].to_string() } else { r })
+        Ok(if r.starts_with("OK\n") {
+            r[3..].to_string()
+        } else {
+            r
+        })
     }
 }
 
 impl portable_pty::Child for ProxyChild {
     fn try_wait(&mut self) -> io::Result<Option<portable_pty::ExitStatus>> {
-        if self.exited { return Ok(Some(portable_pty::ExitStatus::with_exit_code(0))); }
+        if self.exited {
+            return Ok(Some(portable_pty::ExitStatus::with_exit_code(0)));
+        }
         let resp = self.send_control(&format!("pane-forward-status {}", self.forward_id))?;
         if resp.trim() == "exited" {
             self.exited = true;
@@ -162,15 +197,21 @@ impl portable_pty::Child for ProxyChild {
 
     fn wait(&mut self) -> io::Result<portable_pty::ExitStatus> {
         loop {
-            if let Some(st) = self.try_wait()? { return Ok(st); }
+            if let Some(st) = self.try_wait()? {
+                return Ok(st);
+            }
             std::thread::sleep(Duration::from_millis(100));
         }
     }
 
-    fn process_id(&self) -> Option<u32> { self.pid }
+    fn process_id(&self) -> Option<u32> {
+        self.pid
+    }
 
     #[cfg(windows)]
-    fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle> { None }
+    fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle> {
+        None
+    }
 }
 
 impl portable_pty::ChildKiller for ProxyChild {
@@ -198,7 +239,10 @@ struct ProxyChildKiller {
 
 impl portable_pty::ChildKiller for ProxyChildKiller {
     fn kill(&mut self) -> io::Result<()> {
-        let msg = format!("AUTH {}\npane-forward-kill {}\n", self.control_key, self.forward_id);
+        let msg = format!(
+            "AUTH {}\npane-forward-kill {}\n",
+            self.control_key, self.forward_id
+        );
         if let Ok(addr) = self.control_addr.parse::<std::net::SocketAddr>() {
             if let Ok(mut s) = TcpStream::connect_timeout(&addr, Duration::from_millis(200)) {
                 let _ = s.write_all(msg.as_bytes());
@@ -236,8 +280,14 @@ pub fn create_proxy_pane(
     screen_snapshot: Option<Vec<u8>>,
 ) -> io::Result<crate::types::Pane> {
     let proxy_master = ProxyMasterPty::new(
-        reader, writer.try_clone()?, control_addr.clone(),
-        control_key.clone(), source_session, forward_id, rows, cols,
+        reader,
+        writer.try_clone()?,
+        control_addr.clone(),
+        control_key.clone(),
+        source_session,
+        forward_id,
+        rows,
+        cols,
     );
     let proxy_child = ProxyChild::new(control_addr, control_key, forward_id, pid);
     let term = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 10000)));

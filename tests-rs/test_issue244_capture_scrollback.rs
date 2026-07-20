@@ -30,7 +30,10 @@ fn compute_range_negative_s_clamps_to_zero_for_visible_callers() {
 fn compute_range_negative_s_1000_same_as_no_arg() {
     let (s_neg, e_neg) = crate::copy_mode::compute_capture_range(Some(-1000), None, 49);
     let (s_none, e_none) = crate::copy_mode::compute_capture_range(None, None, 49);
-    assert_eq!(s_neg, s_none, "Negative S produces same visible start as None");
+    assert_eq!(
+        s_neg, s_none,
+        "Negative S produces same visible start as None"
+    );
     assert_eq!(e_neg, e_none);
 }
 
@@ -47,8 +50,11 @@ fn compute_range_all_negative_values_map_to_same_start() {
         .iter()
         .map(|&v| crate::copy_mode::compute_capture_range(Some(v), None, 49).0)
         .collect();
-    assert!(starts.iter().all(|&s| s == 0),
-        "All negative S values clamp to 0 in visible-only path. Values: {:?}", starts);
+    assert!(
+        starts.iter().all(|&s| s == 0),
+        "All negative S values clamp to 0 in visible-only path. Values: {:?}",
+        starts
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -60,7 +66,10 @@ fn dash_parses_to_sentinel_i32_min() {
     // Handler 1 now does: Some("-") => Some(i32::MIN)
     // This test verifies the sentinel is distinguishable from any real negative offset.
     let sentinel = i32::MIN;
-    assert!(sentinel < -1_000_000_000, "i32::MIN sentinel is distinguishable from any real scrollback offset");
+    assert!(
+        sentinel < -1_000_000_000,
+        "i32::MIN sentinel is distinguishable from any real scrollback offset"
+    );
     // It must NOT be 0 (the old broken behavior)
     assert_ne!(sentinel, 0, "Sentinel must not be 0 (that was the old bug)");
 }
@@ -74,8 +83,16 @@ fn handler2_dash_now_parses_correctly() {
     assert_eq!(old_parse, None, "Old behavior: parse fails for dash");
 
     // New behavior: explicit check before parse
-    let new_parse: Option<i32> = if dash_str == "-" { Some(i32::MIN) } else { dash_str.parse().ok() };
-    assert_eq!(new_parse, Some(i32::MIN), "New behavior: dash maps to i32::MIN sentinel");
+    let new_parse: Option<i32> = if dash_str == "-" {
+        Some(i32::MIN)
+    } else {
+        dash_str.parse().ok()
+    };
+    assert_eq!(
+        new_parse,
+        Some(i32::MIN),
+        "New behavior: dash maps to i32::MIN sentinel"
+    );
 }
 
 #[test]

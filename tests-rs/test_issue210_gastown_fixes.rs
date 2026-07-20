@@ -64,7 +64,8 @@ fn dup_error_contains_phrase_duplicate_session() {
     let msg = format!("duplicate session: {}", "myapp");
     assert!(
         msg.contains("duplicate session"),
-        "error must contain 'duplicate session' for gastown wrapError: {}", msg
+        "error must contain 'duplicate session' for gastown wrapError: {}",
+        msg
     );
 }
 
@@ -74,7 +75,9 @@ fn dup_error_contains_session_name() {
     let msg = format!("duplicate session: {}", name);
     assert!(
         msg.contains(name),
-        "error must contain the session name '{}': {}", name, msg
+        "error must contain the session name '{}': {}",
+        name,
+        msg
     );
 }
 
@@ -85,11 +88,13 @@ fn dup_error_does_not_use_old_format() {
     // Old broken format that gastown's wrapError couldn't parse
     assert!(
         !msg.contains("already exists"),
-        "must NOT use old 'already exists' phrasing: {}", msg
+        "must NOT use old 'already exists' phrasing: {}",
+        msg
     );
     assert!(
         !msg.starts_with("psmux:"),
-        "must NOT start with 'psmux:': {}", msg
+        "must NOT start with 'psmux:': {}",
+        msg
     );
 }
 
@@ -122,31 +127,49 @@ fn eval_filter_via_production(filter: &str, session_name: &str) -> bool {
 
 #[test]
 fn filter_exact_match_returns_true() {
-    assert!(eval_filter_via_production("#{==:#{session_name},myapp}", "myapp"));
+    assert!(eval_filter_via_production(
+        "#{==:#{session_name},myapp}",
+        "myapp"
+    ));
 }
 
 #[test]
 fn filter_exact_match_different_name_returns_false() {
-    assert!(!eval_filter_via_production("#{==:#{session_name},myapp}", "myapp2"));
-    assert!(!eval_filter_via_production("#{==:#{session_name},myapp}", "notmyapp"));
-    assert!(!eval_filter_via_production("#{==:#{session_name},myapp}", ""));
+    assert!(!eval_filter_via_production(
+        "#{==:#{session_name},myapp}",
+        "myapp2"
+    ));
+    assert!(!eval_filter_via_production(
+        "#{==:#{session_name},myapp}",
+        "notmyapp"
+    ));
+    assert!(!eval_filter_via_production(
+        "#{==:#{session_name},myapp}",
+        ""
+    ));
 }
 
 #[test]
 fn filter_exact_match_prefix_not_enough() {
-    assert!(!eval_filter_via_production("#{==:#{session_name},myapp}", "myapp-extra"));
+    assert!(!eval_filter_via_production(
+        "#{==:#{session_name},myapp}",
+        "myapp-extra"
+    ));
 }
 
 #[test]
 fn filter_exact_match_suffix_not_enough() {
-    assert!(!eval_filter_via_production("#{==:#{session_name},myapp}", "prefix-myapp"));
+    assert!(!eval_filter_via_production(
+        "#{==:#{session_name},myapp}",
+        "prefix-myapp"
+    ));
 }
 
 #[test]
 fn filter_gastown_pattern_verbatim() {
     // Exact pattern gastown generates for GetSessionInfo
     let filter = "#{==:#{session_name},dev}";
-    assert!( eval_filter_via_production(filter, "dev"));
+    assert!(eval_filter_via_production(filter, "dev"));
     assert!(!eval_filter_via_production(filter, "dev2"));
     assert!(!eval_filter_via_production(filter, "staging"));
 }
@@ -154,7 +177,7 @@ fn filter_gastown_pattern_verbatim() {
 #[test]
 fn filter_hyphenated_session_name() {
     let filter = "#{==:#{session_name},my-dev-session}";
-    assert!( eval_filter_via_production(filter, "my-dev-session"));
+    assert!(eval_filter_via_production(filter, "my-dev-session"));
     assert!(!eval_filter_via_production(filter, "my-dev-session-extra"));
     assert!(!eval_filter_via_production(filter, "my-dev"));
 }
@@ -164,7 +187,8 @@ fn filter_hyphenated_session_name() {
 // ════════════════════════════════════════════════════════════════════════════
 
 fn find_in_defaults(key: &str) -> Option<&'static str> {
-    crate::help::PREFIX_DEFAULTS.iter()
+    crate::help::PREFIX_DEFAULTS
+        .iter()
         .find(|(k, _)| *k == key)
         .map(|(_, v)| *v)
 }
@@ -172,15 +196,19 @@ fn find_in_defaults(key: &str) -> Option<&'static str> {
 #[test]
 fn prefix_defaults_n_is_next_window() {
     let action = find_in_defaults("n").expect("'n' missing from PREFIX_DEFAULTS");
-    assert_eq!(action, "next-window",
-        "gastown TestGetKeyBinding_CapturesDefaultBinding expects next-window for 'n'");
+    assert_eq!(
+        action, "next-window",
+        "gastown TestGetKeyBinding_CapturesDefaultBinding expects next-window for 'n'"
+    );
 }
 
 #[test]
 fn prefix_defaults_w_is_choose_tree() {
     let action = find_in_defaults("w").expect("'w' missing from PREFIX_DEFAULTS");
-    assert_eq!(action, "choose-tree",
-        "gastown TestGetKeyBinding_CapturesDefaultBindingWithArgs expects choose-tree for 'w'");
+    assert_eq!(
+        action, "choose-tree",
+        "gastown TestGetKeyBinding_CapturesDefaultBindingWithArgs expects choose-tree for 'w'"
+    );
 }
 
 #[test]
@@ -218,11 +246,11 @@ fn list_keys_offline_format_matches_gastown_parse() {
     let line = format!("bind-key -T {} {} {}", table, key, action);
 
     let parts: Vec<&str> = line.split_whitespace().collect();
-    assert_eq!(parts[0], "bind-key",   "field 0 must be bind-key");
-    assert_eq!(parts[1], "-T",         "field 1 must be -T");
-    assert_eq!(parts[2], "prefix",     "field 2 must be table name");
-    assert_eq!(parts[3], "n",          "field 3 must be key");
-    assert_eq!(parts[4], "next-window","field 4 must be command");
+    assert_eq!(parts[0], "bind-key", "field 0 must be bind-key");
+    assert_eq!(parts[1], "-T", "field 1 must be -T");
+    assert_eq!(parts[2], "prefix", "field 2 must be table name");
+    assert_eq!(parts[3], "n", "field 3 must be key");
+    assert_eq!(parts[4], "next-window", "field 4 must be command");
 }
 
 #[test]
@@ -237,9 +265,11 @@ fn list_keys_offline_format_choose_tree() {
 #[test]
 fn prefix_defaults_has_enough_bindings() {
     let count = crate::help::PREFIX_DEFAULTS.len();
-    assert!(count >= 20,
+    assert!(
+        count >= 20,
         "PREFIX_DEFAULTS should have >= 20 entries for a usable default keymap, got {}",
-        count);
+        count
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -254,24 +284,32 @@ fn list_keys_command_produces_popup_with_bindings() {
     crate::config::populate_default_bindings(&mut app);
     execute_command_string(&mut app, "list-keys").unwrap();
     match &app.mode {
-        Mode::PopupMode { command, output, .. } => {
+        Mode::PopupMode {
+            command, output, ..
+        } => {
             assert_eq!(command, "list-keys");
             assert!(
                 output.contains("bind-key"),
-                "list-keys popup must contain bind-key lines, got:\n{}", output
+                "list-keys popup must contain bind-key lines, got:\n{}",
+                output
             );
             assert!(
                 output.contains("next-window"),
-                "popup must contain next-window binding, got:\n{}", output
+                "popup must contain next-window binding, got:\n{}",
+                output
             );
             // choose-tree and choose-window are synonymous; the internal action
             // serialises as choose-window but both are valid for w binding
             assert!(
                 output.contains("choose-tree") || output.contains("choose-window"),
-                "popup must contain choose-tree or choose-window binding for 'w', got:\n{}", output
+                "popup must contain choose-tree or choose-window binding for 'w', got:\n{}",
+                output
             );
         }
-        other => panic!("expected PopupMode, got {:?}", std::mem::discriminant(other)),
+        other => panic!(
+            "expected PopupMode, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
@@ -282,11 +320,14 @@ fn list_keys_popup_format_matches_bind_key_syntax() {
     execute_command_string(&mut app, "list-keys").unwrap();
     if let Mode::PopupMode { output, .. } = &app.mode {
         for line in output.lines() {
-            if line.is_empty() || line.starts_with('(') { continue; }
+            if line.is_empty() || line.starts_with('(') {
+                continue;
+            }
             // Every non-empty line must start with "bind-key"
             assert!(
                 line.starts_with("bind-key"),
-                "expected 'bind-key ...' format, got: {}", line
+                "expected 'bind-key ...' format, got: {}",
+                line
             );
         }
     }

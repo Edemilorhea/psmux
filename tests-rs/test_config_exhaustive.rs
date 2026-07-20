@@ -15,9 +15,9 @@
 // - Option flags: -g, -u, -a, -q, -o, -w, -F, combined
 // - Default values for every option
 
-use crate::types::AppState;
-use crate::config::{parse_config_content, parse_config_line};
 use crate::commands::execute_command_string;
+use crate::config::{parse_config_content, parse_config_line};
+use crate::types::AppState;
 use std::sync::Mutex;
 
 static ENV_MUTEX: Mutex<()> = Mutex::new(());
@@ -438,7 +438,9 @@ fn default_allow_predictions() {
 fn default_update_environment() {
     let app = mock_app();
     assert!(app.update_environment.contains(&"DISPLAY".to_string()));
-    assert!(app.update_environment.contains(&"SSH_AUTH_SOCK".to_string()));
+    assert!(app
+        .update_environment
+        .contains(&"SSH_AUTH_SOCK".to_string()));
 }
 
 // ============================================================
@@ -852,7 +854,10 @@ fn config_file_window_status_format() {
 #[test]
 fn config_file_window_status_current_format() {
     let mut app = mock_app();
-    parse_config_content(&mut app, "set -g window-status-current-format '#[bold]#I:#W'\n");
+    parse_config_content(
+        &mut app,
+        "set -g window-status-current-format '#[bold]#I:#W'\n",
+    );
     assert_eq!(app.window_status_current_format, "#[bold]#I:#W");
 }
 
@@ -873,14 +878,20 @@ fn config_file_window_status_style() {
 #[test]
 fn config_file_window_status_current_style() {
     let mut app = mock_app();
-    parse_config_content(&mut app, "set -g window-status-current-style 'fg=yellow,bold'\n");
+    parse_config_content(
+        &mut app,
+        "set -g window-status-current-style 'fg=yellow,bold'\n",
+    );
     assert_eq!(app.window_status_current_style, "fg=yellow,bold");
 }
 
 #[test]
 fn config_file_window_status_activity_style() {
     let mut app = mock_app();
-    parse_config_content(&mut app, "set -g window-status-activity-style 'underscore'\n");
+    parse_config_content(
+        &mut app,
+        "set -g window-status-activity-style 'underscore'\n",
+    );
     assert_eq!(app.window_status_activity_style, "underscore");
 }
 
@@ -1072,7 +1083,10 @@ fn config_file_terminal_overrides_accepted() {
 fn config_file_command_alias() {
     let mut app = mock_app();
     parse_config_content(&mut app, "set -g command-alias split-pane=split-window\n");
-    assert_eq!(app.command_aliases.get("split-pane").unwrap(), "split-window");
+    assert_eq!(
+        app.command_aliases.get("split-pane").unwrap(),
+        "split-window"
+    );
 }
 
 #[test]
@@ -1126,14 +1140,20 @@ fn config_file_popup_style_stored_in_user_options() {
 fn config_file_popup_border_style() {
     let mut app = mock_app();
     parse_config_content(&mut app, "set -g popup-border-style 'fg=yellow'\n");
-    assert_eq!(app.user_options.get("popup-border-style").unwrap(), "fg=yellow");
+    assert_eq!(
+        app.user_options.get("popup-border-style").unwrap(),
+        "fg=yellow"
+    );
 }
 
 #[test]
 fn config_file_popup_border_lines() {
     let mut app = mock_app();
     parse_config_content(&mut app, "set -g popup-border-lines rounded\n");
-    assert_eq!(app.user_options.get("popup-border-lines").unwrap(), "rounded");
+    assert_eq!(
+        app.user_options.get("popup-border-lines").unwrap(),
+        "rounded"
+    );
 }
 
 #[test]
@@ -1147,7 +1167,10 @@ fn config_file_window_style() {
 fn config_file_window_active_style() {
     let mut app = mock_app();
     parse_config_content(&mut app, "set -g window-active-style 'bg=colour235'\n");
-    assert_eq!(app.user_options.get("window-active-style").unwrap(), "bg=colour235");
+    assert_eq!(
+        app.user_options.get("window-active-style").unwrap(),
+        "bg=colour235"
+    );
 }
 
 #[test]
@@ -1168,7 +1191,10 @@ fn config_file_lock_options() {
 fn config_file_pane_border_format() {
     let mut app = mock_app();
     parse_config_content(&mut app, "set -g pane-border-format '#{pane_index}'\n");
-    assert_eq!(app.user_options.get("pane-border-format").unwrap(), "#{pane_index}");
+    assert_eq!(
+        app.user_options.get("pane-border-format").unwrap(),
+        "#{pane_index}"
+    );
 }
 
 #[test]
@@ -1258,7 +1284,10 @@ fn config_flag_u_unset_string_option() {
 #[test]
 fn config_flag_a_append_string() {
     let mut app = mock_app();
-    parse_config_content(&mut app, "set -g status-right AAA\nset -ga status-right BBB\n");
+    parse_config_content(
+        &mut app,
+        "set -g status-right AAA\nset -ga status-right BBB\n",
+    );
     assert_eq!(app.status_right, "AAABBB");
 }
 
@@ -1281,7 +1310,10 @@ fn config_flag_q_quiet() {
 #[test]
 fn config_flag_o_only_if_unset_already_set() {
     let mut app = mock_app();
-    parse_config_content(&mut app, "set -g escape-time 100\nset -go escape-time 999\n");
+    parse_config_content(
+        &mut app,
+        "set -g escape-time 100\nset -go escape-time 999\n",
+    );
     // -o should not overwrite because escape-time is already set
     assert_eq!(app.escape_time_ms, 100);
 }
@@ -1563,7 +1595,9 @@ fn direct_bind_key() {
     let mut app = mock_app();
     parse_config_line(&mut app, "bind-key x kill-pane");
     let prefix = app.key_tables.get("prefix").unwrap();
-    assert!(prefix.iter().any(|b| b.key.0 == crossterm::event::KeyCode::Char('x')));
+    assert!(prefix
+        .iter()
+        .any(|b| b.key.0 == crossterm::event::KeyCode::Char('x')));
 }
 
 #[test]
@@ -1573,7 +1607,9 @@ fn direct_unbind_key() {
     parse_config_line(&mut app, "unbind-key y");
     let empty = vec![];
     let prefix = app.key_tables.get("prefix").unwrap_or(&empty);
-    assert!(!prefix.iter().any(|b| b.key.0 == crossterm::event::KeyCode::Char('y')));
+    assert!(!prefix
+        .iter()
+        .any(|b| b.key.0 == crossterm::event::KeyCode::Char('y')));
 }
 
 #[test]
@@ -1639,7 +1675,9 @@ fn config_continuation_line_bind() {
     let mut app = mock_app();
     parse_config_content(&mut app, "bind-key \\\nx \\\nkill-pane\n");
     let prefix = app.key_tables.get("prefix").unwrap();
-    assert!(prefix.iter().any(|b| b.key.0 == crossterm::event::KeyCode::Char('x')));
+    assert!(prefix
+        .iter()
+        .any(|b| b.key.0 == crossterm::event::KeyCode::Char('x')));
 }
 
 #[test]
@@ -1687,14 +1725,20 @@ fn config_if_empty_is_false() {
 #[test]
 fn config_if_else_true_branch() {
     let mut app = mock_app();
-    parse_config_content(&mut app, "%if \"1\"\nset -g escape-time 111\n%else\nset -g escape-time 222\n%endif\n");
+    parse_config_content(
+        &mut app,
+        "%if \"1\"\nset -g escape-time 111\n%else\nset -g escape-time 222\n%endif\n",
+    );
     assert_eq!(app.escape_time_ms, 111);
 }
 
 #[test]
 fn config_if_else_false_branch() {
     let mut app = mock_app();
-    parse_config_content(&mut app, "%if \"0\"\nset -g escape-time 111\n%else\nset -g escape-time 222\n%endif\n");
+    parse_config_content(
+        &mut app,
+        "%if \"0\"\nset -g escape-time 111\n%else\nset -g escape-time 222\n%endif\n",
+    );
     assert_eq!(app.escape_time_ms, 222);
 }
 
@@ -1722,14 +1766,20 @@ fn config_elif_else_branch() {
 #[test]
 fn config_nested_if() {
     let mut app = mock_app();
-    parse_config_content(&mut app, "%if \"1\"\n%if \"1\"\nset -g escape-time 999\n%endif\n%endif\n");
+    parse_config_content(
+        &mut app,
+        "%if \"1\"\n%if \"1\"\nset -g escape-time 999\n%endif\n%endif\n",
+    );
     assert_eq!(app.escape_time_ms, 999);
 }
 
 #[test]
 fn config_nested_if_outer_false() {
     let mut app = mock_app();
-    parse_config_content(&mut app, "%if \"0\"\n%if \"1\"\nset -g escape-time 999\n%endif\n%endif\n");
+    parse_config_content(
+        &mut app,
+        "%if \"0\"\n%if \"1\"\nset -g escape-time 999\n%endif\n%endif\n",
+    );
     // Should remain default because outer %if is false
     assert_eq!(app.escape_time_ms, 500);
 }
@@ -1737,7 +1787,10 @@ fn config_nested_if_outer_false() {
 #[test]
 fn config_nested_if_inner_false() {
     let mut app = mock_app();
-    parse_config_content(&mut app, "%if \"1\"\n%if \"0\"\nset -g escape-time 999\n%endif\nset -g escape-time 111\n%endif\n");
+    parse_config_content(
+        &mut app,
+        "%if \"1\"\n%if \"0\"\nset -g escape-time 999\n%endif\nset -g escape-time 111\n%endif\n",
+    );
     assert_eq!(app.escape_time_ms, 111);
 }
 
@@ -1746,14 +1799,20 @@ fn config_if_with_format_condition() {
     let mut app = mock_app();
     app.session_name = "mysess".to_string();
     // #{session_name} expands to "mysess" which is truthy
-    parse_config_content(&mut app, "%if \"#{session_name}\"\nset -g escape-time 777\n%endif\n");
+    parse_config_content(
+        &mut app,
+        "%if \"#{session_name}\"\nset -g escape-time 777\n%endif\n",
+    );
     assert_eq!(app.escape_time_ms, 777);
 }
 
 #[test]
 fn config_if_after_endif_still_active() {
     let mut app = mock_app();
-    parse_config_content(&mut app, "%if \"0\"\nset -g escape-time 111\n%endif\nset -g escape-time 222\n");
+    parse_config_content(
+        &mut app,
+        "%if \"0\"\nset -g escape-time 111\n%endif\nset -g escape-time 222\n",
+    );
     // Lines after %endif should be active
     assert_eq!(app.escape_time_ms, 222);
 }
@@ -1763,7 +1822,10 @@ fn config_if_after_endif_still_active() {
 #[test]
 fn config_hidden_basic() {
     let mut app = mock_app();
-    parse_config_content(&mut app, "%hidden MY_COLOR=blue\nset -g status-style $MY_COLOR\n");
+    parse_config_content(
+        &mut app,
+        "%hidden MY_COLOR=blue\nset -g status-style $MY_COLOR\n",
+    );
     assert_eq!(app.status_style, "blue");
 }
 
@@ -1777,14 +1839,20 @@ fn config_hidden_in_environment() {
 #[test]
 fn config_hidden_dollar_brace_syntax() {
     let mut app = mock_app();
-    parse_config_content(&mut app, "%hidden COLOR=red\nset -g status-style ${COLOR}\n");
+    parse_config_content(
+        &mut app,
+        "%hidden COLOR=red\nset -g status-style ${COLOR}\n",
+    );
     assert_eq!(app.status_style, "red");
 }
 
 #[test]
 fn config_hidden_multiple_vars() {
     let mut app = mock_app();
-    parse_config_content(&mut app, "%hidden FG=white\n%hidden BG=black\nset -g status-style fg=$FG,bg=$BG\n");
+    parse_config_content(
+        &mut app,
+        "%hidden FG=white\n%hidden BG=black\nset -g status-style fg=$FG,bg=$BG\n",
+    );
     assert_eq!(app.status_style, "fg=white,bg=black");
 }
 
@@ -1841,7 +1909,9 @@ fn config_bind_key_basic() {
     let mut app = mock_app();
     parse_config_content(&mut app, "bind-key r source-file\n");
     let prefix = app.key_tables.get("prefix").unwrap();
-    assert!(prefix.iter().any(|b| b.key.0 == crossterm::event::KeyCode::Char('r')));
+    assert!(prefix
+        .iter()
+        .any(|b| b.key.0 == crossterm::event::KeyCode::Char('r')));
 }
 
 #[test]
@@ -1849,7 +1919,9 @@ fn config_bind_alias() {
     let mut app = mock_app();
     parse_config_content(&mut app, "bind s choose-tree\n");
     let prefix = app.key_tables.get("prefix").unwrap();
-    assert!(prefix.iter().any(|b| b.key.0 == crossterm::event::KeyCode::Char('s')));
+    assert!(prefix
+        .iter()
+        .any(|b| b.key.0 == crossterm::event::KeyCode::Char('s')));
 }
 
 #[test]
@@ -1857,7 +1929,9 @@ fn config_bind_n_root_table() {
     let mut app = mock_app();
     parse_config_content(&mut app, "bind-key -n F5 kill-pane\n");
     let root = app.key_tables.get("root").unwrap();
-    assert!(root.iter().any(|b| b.key.0 == crossterm::event::KeyCode::F(5)));
+    assert!(root
+        .iter()
+        .any(|b| b.key.0 == crossterm::event::KeyCode::F(5)));
 }
 
 #[test]
@@ -1865,7 +1939,9 @@ fn config_bind_T_custom_table() {
     let mut app = mock_app();
     parse_config_content(&mut app, "bind-key -T mymenu x kill-pane\n");
     let tab = app.key_tables.get("mymenu").unwrap();
-    assert!(tab.iter().any(|b| b.key.0 == crossterm::event::KeyCode::Char('x')));
+    assert!(tab
+        .iter()
+        .any(|b| b.key.0 == crossterm::event::KeyCode::Char('x')));
 }
 
 #[test]
@@ -1873,7 +1949,10 @@ fn config_bind_r_repeat() {
     let mut app = mock_app();
     parse_config_content(&mut app, "bind-key -r Up select-pane -U\n");
     let prefix = app.key_tables.get("prefix").unwrap();
-    let b = prefix.iter().find(|b| b.key.0 == crossterm::event::KeyCode::Up).unwrap();
+    let b = prefix
+        .iter()
+        .find(|b| b.key.0 == crossterm::event::KeyCode::Up)
+        .unwrap();
     assert!(b.repeat);
 }
 
@@ -1882,7 +1961,10 @@ fn config_bind_command_chain() {
     let mut app = mock_app();
     parse_config_content(&mut app, "bind-key x split-window \\; select-pane -D\n");
     let prefix = app.key_tables.get("prefix").unwrap();
-    let b = prefix.iter().find(|b| b.key.0 == crossterm::event::KeyCode::Char('x')).unwrap();
+    let b = prefix
+        .iter()
+        .find(|b| b.key.0 == crossterm::event::KeyCode::Char('x'))
+        .unwrap();
     match &b.action {
         crate::types::Action::CommandChain(cmds) => {
             assert_eq!(cmds.len(), 2);
@@ -1921,13 +2003,18 @@ fn config_unbind_specific_key() {
     parse_config_content(&mut app, "bind-key z kill-pane\nunbind-key z\n");
     let empty = vec![];
     let prefix = app.key_tables.get("prefix").unwrap_or(&empty);
-    assert!(!prefix.iter().any(|b| b.key.0 == crossterm::event::KeyCode::Char('z')));
+    assert!(!prefix
+        .iter()
+        .any(|b| b.key.0 == crossterm::event::KeyCode::Char('z')));
 }
 
 #[test]
 fn config_unbind_all() {
     let mut app = mock_app();
-    parse_config_content(&mut app, "bind-key a kill-pane\nbind-key b kill-pane\nunbind-key -a\n");
+    parse_config_content(
+        &mut app,
+        "bind-key a kill-pane\nbind-key b kill-pane\nunbind-key -a\n",
+    );
     assert!(app.key_tables.is_empty() || app.key_tables.values().all(|v| v.is_empty()));
 }
 
@@ -1936,7 +2023,9 @@ fn config_unbind_n_root() {
     let mut app = mock_app();
     parse_config_content(&mut app, "bind-key -n F5 kill-pane\nunbind-key -n F5\n");
     let root = app.key_tables.get("root").unwrap();
-    assert!(!root.iter().any(|b| b.key.0 == crossterm::event::KeyCode::F(5)));
+    assert!(!root
+        .iter()
+        .any(|b| b.key.0 == crossterm::event::KeyCode::F(5)));
 }
 
 // --- set-hook via config file ---
@@ -1952,14 +2041,20 @@ fn config_set_hook_basic() {
 #[test]
 fn config_set_hook_append() {
     let mut app = mock_app();
-    parse_config_content(&mut app, "set-hook -g after-new-session 'run echo a'\nset-hook -ga after-new-session 'run echo b'\n");
+    parse_config_content(
+        &mut app,
+        "set-hook -g after-new-session 'run echo a'\nset-hook -ga after-new-session 'run echo b'\n",
+    );
     assert_eq!(app.hooks["after-new-session"].len(), 2);
 }
 
 #[test]
 fn config_set_hook_unset() {
     let mut app = mock_app();
-    parse_config_content(&mut app, "set-hook -g after-new-session 'run echo a'\nset-hook -gu after-new-session\n");
+    parse_config_content(
+        &mut app,
+        "set-hook -g after-new-session 'run echo a'\nset-hook -gu after-new-session\n",
+    );
     assert!(!app.hooks.contains_key("after-new-session"));
 }
 
@@ -1967,7 +2062,10 @@ fn config_set_hook_unset() {
 fn config_set_hook_replace_no_duplicates() {
     // Without -a, set-hook should replace (not append) to prevent duplicates on reload
     let mut app = mock_app();
-    parse_config_content(&mut app, "set-hook -g my-hook 'cmd1'\nset-hook -g my-hook 'cmd2'\n");
+    parse_config_content(
+        &mut app,
+        "set-hook -g my-hook 'cmd1'\nset-hook -g my-hook 'cmd2'\n",
+    );
     assert_eq!(app.hooks["my-hook"].len(), 1);
     assert_eq!(app.hooks["my-hook"][0], "cmd2");
 }
@@ -2082,12 +2180,22 @@ bind-key -r Down select-pane -D
     parse_config_content(&mut app, config);
     assert!(app.mouse_enabled);
     assert_eq!(app.prefix_key.0, crossterm::event::KeyCode::Char('a'));
-    assert!(app.prefix_key.1.contains(crossterm::event::KeyModifiers::CONTROL));
+    assert!(app
+        .prefix_key
+        .1
+        .contains(crossterm::event::KeyModifiers::CONTROL));
     let prefix = app.key_tables.get("prefix").unwrap();
-    assert!(prefix.iter().any(|b| b.key.0 == crossterm::event::KeyCode::Char('|')));
-    assert!(prefix.iter().any(|b| b.key.0 == crossterm::event::KeyCode::Char('-')));
+    assert!(prefix
+        .iter()
+        .any(|b| b.key.0 == crossterm::event::KeyCode::Char('|')));
+    assert!(prefix
+        .iter()
+        .any(|b| b.key.0 == crossterm::event::KeyCode::Char('-')));
     // Repeatable bindings
-    let up = prefix.iter().find(|b| b.key.0 == crossterm::event::KeyCode::Up).unwrap();
+    let up = prefix
+        .iter()
+        .find(|b| b.key.0 == crossterm::event::KeyCode::Up)
+        .unwrap();
     assert!(up.repeat);
 }
 
@@ -2185,7 +2293,10 @@ fn config_only_whitespace() {
 #[test]
 fn config_duplicate_option_last_wins() {
     let mut app = mock_app();
-    parse_config_content(&mut app, "set -g escape-time 100\nset -g escape-time 200\nset -g escape-time 300\n");
+    parse_config_content(
+        &mut app,
+        "set -g escape-time 100\nset -g escape-time 200\nset -g escape-time 300\n",
+    );
     assert_eq!(app.escape_time_ms, 300);
 }
 
@@ -2254,7 +2365,10 @@ fn config_prefix_c_a() {
     let mut app = mock_app();
     parse_config_content(&mut app, "set -g prefix C-a\n");
     assert_eq!(app.prefix_key.0, crossterm::event::KeyCode::Char('a'));
-    assert!(app.prefix_key.1.contains(crossterm::event::KeyModifiers::CONTROL));
+    assert!(app
+        .prefix_key
+        .1
+        .contains(crossterm::event::KeyModifiers::CONTROL));
 }
 
 #[test]
@@ -2269,7 +2383,10 @@ fn config_prefix2() {
 #[test]
 fn config_prefix2_none() {
     let mut app = mock_app();
-    app.prefix2_key = Some((crossterm::event::KeyCode::Char('s'), crossterm::event::KeyModifiers::CONTROL));
+    app.prefix2_key = Some((
+        crossterm::event::KeyCode::Char('s'),
+        crossterm::event::KeyModifiers::CONTROL,
+    ));
     parse_config_content(&mut app, "set -g prefix2 none\n");
     assert!(app.prefix2_key.is_none());
 }
@@ -2277,7 +2394,10 @@ fn config_prefix2_none() {
 #[test]
 fn config_status_format_0_and_1() {
     let mut app = mock_app();
-    parse_config_content(&mut app, "set -g status-format[0] 'zero'\nset -g status-format[1] 'one'\n");
+    parse_config_content(
+        &mut app,
+        "set -g status-format[0] 'zero'\nset -g status-format[1] 'one'\n",
+    );
     assert_eq!(app.status_format[0], "zero");
     assert_eq!(app.status_format[1], "one");
 }
@@ -2285,7 +2405,10 @@ fn config_status_format_0_and_1() {
 #[test]
 fn config_multiple_command_aliases() {
     let mut app = mock_app();
-    parse_config_content(&mut app, "set -g command-alias sp=split-window\nset -g command-alias nw=new-window\n");
+    parse_config_content(
+        &mut app,
+        "set -g command-alias sp=split-window\nset -g command-alias nw=new-window\n",
+    );
     assert_eq!(app.command_aliases["sp"], "split-window");
     assert_eq!(app.command_aliases["nw"], "new-window");
 }
@@ -2473,7 +2596,9 @@ fn cross_channel_bind_key_all_paths() {
 
     for app in [&app1, &app2, &app3] {
         let prefix = app.key_tables.get("prefix").unwrap();
-        assert!(prefix.iter().any(|b| b.key.0 == crossterm::event::KeyCode::Char('q')));
+        assert!(prefix
+            .iter()
+            .any(|b| b.key.0 == crossterm::event::KeyCode::Char('q')));
     }
 }
 
@@ -2500,7 +2625,10 @@ fn cross_channel_hook_all_paths() {
 #[test]
 fn flag_append_via_config() {
     let mut app = mock_app();
-    parse_config_content(&mut app, "set -g status-left A\nset -ga status-left B\nset -ga status-left C\n");
+    parse_config_content(
+        &mut app,
+        "set -g status-left A\nset -ga status-left B\nset -ga status-left C\n",
+    );
     assert_eq!(app.status_left, "ABC");
 }
 
@@ -2515,7 +2643,10 @@ fn flag_append_via_cli() {
 #[test]
 fn flag_unset_then_set_via_config() {
     let mut app = mock_app();
-    parse_config_content(&mut app, "set -g status-left HELLO\nset -gu status-left\nset -g status-left WORLD\n");
+    parse_config_content(
+        &mut app,
+        "set -g status-left HELLO\nset -gu status-left\nset -g status-left WORLD\n",
+    );
     assert_eq!(app.status_left, "WORLD");
 }
 
@@ -2531,7 +2662,11 @@ fn flag_format_via_config() {
 fn flag_format_via_cli() {
     let mut app = mock_app();
     app.session_name = "sess456".to_string();
-    execute_command_string(&mut app, r##"set-option -gF status-left "#{session_name}""##).unwrap();
+    execute_command_string(
+        &mut app,
+        r##"set-option -gF status-left "#{session_name}""##,
+    )
+    .unwrap();
     assert_eq!(app.status_left, "sess456");
 }
 

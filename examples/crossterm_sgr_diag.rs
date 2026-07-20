@@ -5,7 +5,7 @@ use std::io::Write;
 fn main() {
     let mut out: Vec<u8> = Vec::new();
     {
-        use crossterm::style::{Attribute, SetAttribute, SetForegroundColor, Color as CtColor};
+        use crossterm::style::{Attribute, Color as CtColor, SetAttribute, SetForegroundColor};
         use crossterm::QueueableCommand;
         let mut c = std::io::Cursor::new(&mut out);
 

@@ -71,9 +71,9 @@ pub fn for_option_change(name: &str, app: &AppState) -> WarmPaneSync {
         // Parser-only flag — cheap to flip on a running pane.
         // Drives whether TUI apps render to alt grid (default) or
         // straight to main grid + scrollback (#88).
-        "alternate-screen" => {
-            WarmPaneSync::Patch(WarmPanePatch::AllowAlternateScreen(app.allow_alternate_screen))
-        }
+        "alternate-screen" => WarmPaneSync::Patch(WarmPanePatch::AllowAlternateScreen(
+            app.allow_alternate_screen,
+        )),
 
         // The shell binary itself differs — must respawn.
         "default-shell" => WarmPaneSync::Respawn("default-shell changed"),
@@ -145,9 +145,10 @@ pub fn for_post_config(app: &AppState) -> WarmPaneSync {
     // Config injected env vars (e.g. via set -g default-terminal,
     // set-environment in the config, or update-environment passing
     // through client env): the early child has them missing.
-    let needs_env = app.environment.iter().any(|(k, _)| {
-        !k.starts_with("PSMUX_TARGET_SESSION") && k != "TMUX" && k != "TMUX_PANE"
-    });
+    let needs_env = app
+        .environment
+        .iter()
+        .any(|(k, _)| !k.starts_with("PSMUX_TARGET_SESSION") && k != "TMUX" && k != "TMUX_PANE");
     if needs_env {
         return WarmPaneSync::Respawn("post-config: env vars set");
     }
@@ -177,11 +178,7 @@ pub fn for_post_config(app: &AppState) -> WarmPaneSync {
 
 /// The single mutation point for `app.warm_pane`.  Every other call
 /// site outside of pre-warm boot and consume paths goes through here.
-pub fn apply(
-    app: &mut AppState,
-    pty_system: &dyn portable_pty::PtySystem,
-    sync: WarmPaneSync,
-) {
+pub fn apply(app: &mut AppState, pty_system: &dyn portable_pty::PtySystem, sync: WarmPaneSync) {
     match sync {
         WarmPaneSync::Noop => {}
         WarmPaneSync::Patch(patch) => apply_patch(app, patch),

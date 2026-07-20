@@ -257,7 +257,11 @@ fn fix_osc633_vscode_full_cycle() {
         "633;C (pre-exec) should keep the running command"
     );
     p.process(&osc633_d());
-    assert_eq!(p.screen().shell_command(), None, "633;D should clear when done");
+    assert_eq!(
+        p.screen().shell_command(),
+        None,
+        "633;D should clear when done"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -346,7 +350,10 @@ fn regression_cmd_capture_does_not_appear_in_grid() {
                 .collect::<String>()
         })
         .collect();
-    assert!(!visible.contains("133"), "OSC bytes leaked into grid: {visible:?}");
+    assert!(
+        !visible.contains("133"),
+        "OSC bytes leaked into grid: {visible:?}"
+    );
     assert!(!visible.contains("cmdline_url"));
 }
 
@@ -376,8 +383,7 @@ fn fix_osc133c_split_across_chunks() {
 // ---------------------------------------------------------------------------
 
 fn base64_encode(input: &[u8]) -> String {
-    const ALPHABET: &[u8] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::new();
     for chunk in input.chunks(3) {
         let b0 = chunk[0];

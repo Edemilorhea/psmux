@@ -8,8 +8,11 @@ fn extract_run_shell(cmd: &str) -> (String, bool) {
     let mut cmd_parts: Vec<&str> = Vec::new();
     let mut background = false;
     for arg in &args[1..] {
-        if arg == "-b" { background = true; }
-        else { cmd_parts.push(arg); }
+        if arg == "-b" {
+            background = true;
+        } else {
+            cmd_parts.push(arg);
+        }
     }
     (cmd_parts.join(" "), background)
 }
@@ -30,7 +33,10 @@ fn parse_singlequoted_vs_unquoted_c_path() {
     eprintln!("UQ shell_cmd: [{}]", uq_cmd);
 
     // If these differ, the single-quote handling is the culprit.
-    assert_eq!(sq_cmd, uq_cmd, "single-quoted and unquoted -c path produce DIFFERENT shell_cmd");
+    assert_eq!(
+        sq_cmd, uq_cmd,
+        "single-quoted and unquoted -c path produce DIFFERENT shell_cmd"
+    );
 }
 
 #[test]

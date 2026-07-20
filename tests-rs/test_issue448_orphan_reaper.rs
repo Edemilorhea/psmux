@@ -23,11 +23,19 @@ fn temp_dir() -> PathBuf {
 }
 
 fn cand(pid: u32, ports: &[u16], creation_ft: u64) -> ServerCandidate {
-    ServerCandidate { pid, ports: ports.to_vec(), creation_ft }
+    ServerCandidate {
+        pid,
+        ports: ports.to_vec(),
+        creation_ft,
+    }
 }
 
-fn ports(list: &[u16]) -> HashSet<u16> { list.iter().copied().collect() }
-fn pids(list: &[u32]) -> HashSet<u32> { list.iter().copied().collect() }
+fn ports(list: &[u16]) -> HashSet<u16> {
+    list.iter().copied().collect()
+}
+fn pids(list: &[u32]) -> HashSet<u32> {
+    list.iter().copied().collect()
+}
 
 // ── select_orphan_pids: core policy ──────────────────────────────────────
 
@@ -36,7 +44,11 @@ fn orphan_with_no_registry_reference_is_reaped() {
     // A live server on port 5000 that no .port file references -> orphan.
     let cands = vec![cand(1000, &[5000], 100)];
     let got = select_orphan_pids(&cands, &ports(&[]), &pids(&[]), 42, u64::MAX);
-    assert_eq!(got, vec![1000], "untracked live server must be selected for reaping");
+    assert_eq!(
+        got,
+        vec![1000],
+        "untracked live server must be selected for reaping"
+    );
 }
 
 #[test]
@@ -45,7 +57,10 @@ fn server_with_tracked_port_is_never_reaped() {
     // its PID is not in tracked_pids (backward-compat with pre-#448 servers).
     let cands = vec![cand(1000, &[5000], 100)];
     let got = select_orphan_pids(&cands, &ports(&[5000]), &pids(&[]), 42, u64::MAX);
-    assert!(got.is_empty(), "a server whose port is registered must be preserved");
+    assert!(
+        got.is_empty(),
+        "a server whose port is registered must be preserved"
+    );
 }
 
 #[test]
@@ -60,7 +75,10 @@ fn server_with_tracked_pid_is_never_reaped() {
 fn self_pid_is_never_reaped() {
     let cands = vec![cand(42, &[5000], 100)];
     let got = select_orphan_pids(&cands, &ports(&[]), &pids(&[]), 42, u64::MAX);
-    assert!(got.is_empty(), "the reaping process must never terminate itself");
+    assert!(
+        got.is_empty(),
+        "the reaping process must never terminate itself"
+    );
 }
 
 #[test]
@@ -68,7 +86,10 @@ fn young_process_is_skipped_by_grace_window() {
     // creation_ft (200) is LATER than the age cutoff (150) -> too young, skip.
     let cands = vec![cand(1000, &[5000], 200)];
     let got = select_orphan_pids(&cands, &ports(&[]), &pids(&[]), 42, 150);
-    assert!(got.is_empty(), "a process younger than the grace window must be skipped");
+    assert!(
+        got.is_empty(),
+        "a process younger than the grace window must be skipped"
+    );
 }
 
 #[test]
@@ -76,7 +97,11 @@ fn old_process_passes_grace_window() {
     // creation_ft (100) is at/older than the cutoff (150) -> eligible.
     let cands = vec![cand(1000, &[5000], 100)];
     let got = select_orphan_pids(&cands, &ports(&[]), &pids(&[]), 42, 150);
-    assert_eq!(got, vec![1000], "a process older than the grace window must be reaped");
+    assert_eq!(
+        got,
+        vec![1000],
+        "a process older than the grace window must be reaped"
+    );
 }
 
 #[test]
@@ -85,7 +110,10 @@ fn multi_port_server_kept_if_any_port_tracked() {
     // legitimate server (the reaper must not kill it).
     let cands = vec![cand(1000, &[5000, 5001], 100)];
     let got = select_orphan_pids(&cands, &ports(&[5001]), &pids(&[]), 42, u64::MAX);
-    assert!(got.is_empty(), "any tracked port must protect the whole process");
+    assert!(
+        got.is_empty(),
+        "any tracked port must protect the whole process"
+    );
 }
 
 #[test]
@@ -99,7 +127,11 @@ fn mixed_fleet_only_orphans_selected() {
     ];
     let mut got = select_orphan_pids(&cands, &ports(&[6001]), &pids(&[12]), 42, u64::MAX);
     got.sort();
-    assert_eq!(got, vec![10, 13], "exactly the untracked non-self servers must be selected");
+    assert_eq!(
+        got,
+        vec![10, 13],
+        "exactly the untracked non-self servers must be selected"
+    );
 }
 
 // ── read_tracked_registry: file -> (ports, pids) ─────────────────────────
@@ -113,8 +145,14 @@ fn reads_ports_and_pids_from_registry() {
     std::fs::write(dir.join("beta.pid"), "2222").unwrap();
 
     let (tp, tpid) = read_tracked_registry(&dir);
-    assert!(tp.contains(&5000) && tp.contains(&5001), "both ports must be read");
-    assert!(tpid.contains(&1111) && tpid.contains(&2222), "both pids must be read");
+    assert!(
+        tp.contains(&5000) && tp.contains(&5001),
+        "both ports must be read"
+    );
+    assert!(
+        tpid.contains(&1111) && tpid.contains(&2222),
+        "both pids must be read"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -130,7 +168,10 @@ fn pid_without_live_port_is_ignored() {
     let (tp, tpid) = read_tracked_registry(&dir);
     assert!(tp.contains(&5002), "live port must be tracked");
     assert!(tpid.contains(&3333), "live pid must be tracked");
-    assert!(!tpid.contains(&9999), "orphaned .pid without a .port must be ignored");
+    assert!(
+        !tpid.contains(&9999),
+        "orphaned .pid without a .port must be ignored"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -144,8 +185,8 @@ fn end_to_end_selection_over_registry_files() {
     let (tp, tpid) = read_tracked_registry(&dir);
 
     let cands = vec![
-        cand(500, &[7000], 100),  // the tracked session server
-        cand(501, &[7777], 100),  // an orphaned duplicate, nothing points at it
+        cand(500, &[7000], 100), // the tracked session server
+        cand(501, &[7777], 100), // an orphaned duplicate, nothing points at it
     ];
     let got = select_orphan_pids(&cands, &tp, &tpid, 1, u64::MAX);
     assert_eq!(got, vec![501], "only the orphaned duplicate must be reaped");

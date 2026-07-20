@@ -26,10 +26,12 @@ fn issue226_ctrl_o_still_is_0x0f() {
 #[test]
 fn issue226_ctrl_slash_and_ctrl_o_are_distinct() {
     let slash = ctrl_char_send_keys_byte('/').unwrap();
-    let o     = ctrl_char_send_keys_byte('o').unwrap();
-    assert_ne!(slash, o,
+    let o = ctrl_char_send_keys_byte('o').unwrap();
+    assert_ne!(
+        slash, o,
         "BUG #226 regression: C-/ (0x{:02x}) collided with C-o (0x{:02x})",
-        slash, o);
+        slash, o
+    );
 }
 
 // === tmux standard_map parity ===
@@ -77,7 +79,7 @@ fn ctrl_letters_use_standard_mask() {
     assert_eq!(ctrl_char_send_keys_byte('m'), Some(0x0d)); // CR
     assert_eq!(ctrl_char_send_keys_byte('i'), Some(0x09)); // TAB
     assert_eq!(ctrl_char_send_keys_byte('['), Some(0x1b)); // ESC
-    assert_eq!(ctrl_char_send_keys_byte('\\'),Some(0x1c));
+    assert_eq!(ctrl_char_send_keys_byte('\\'), Some(0x1c));
     assert_eq!(ctrl_char_send_keys_byte(']'), Some(0x1d));
 }
 

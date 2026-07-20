@@ -19,7 +19,11 @@ fn mock_app() -> AppState {
 
 fn make_window(name: &str, id: usize) -> crate::types::Window {
     crate::types::Window {
-        root: Node::Split { kind: LayoutKind::Horizontal, sizes: vec![], children: vec![] },
+        root: Node::Split {
+            kind: LayoutKind::Horizontal,
+            sizes: vec![],
+            children: vec![],
+        },
         active_path: vec![],
         name: name.to_string(),
         id,
@@ -122,7 +126,10 @@ fn new_session_shows_status_confirmation() {
 
     // Should not be in popup mode with the blocking message
     let in_blocking_popup = is_popup_with_text(&app, "cannot create");
-    assert!(!in_blocking_popup, "Should not show blocking popup after new-session");
+    assert!(
+        !in_blocking_popup,
+        "Should not show blocking popup after new-session"
+    );
 }
 
 // ─── Argument parsing tests ─────────────────────────────────────────────────

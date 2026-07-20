@@ -21,14 +21,20 @@ fn mock_app() -> AppState {
 #[test]
 fn bold_is_bright_defaults_on() {
     let app = mock_app();
-    assert!(app.bold_is_bright, "bold-is-bright must default to on (issue #425 fix stays active)");
+    assert!(
+        app.bold_is_bright,
+        "bold-is-bright must default to on (issue #425 fix stays active)"
+    );
 }
 
 #[test]
 fn config_can_disable_bold_is_bright() {
     let mut app = mock_app();
     parse_config_content(&mut app, "set -g bold-is-bright off\n");
-    assert!(!app.bold_is_bright, "set -g bold-is-bright off should disable the rewrite");
+    assert!(
+        !app.bold_is_bright,
+        "set -g bold-is-bright off should disable the rewrite"
+    );
 }
 
 #[test]
@@ -36,7 +42,10 @@ fn config_can_re_enable_bold_is_bright() {
     let mut app = mock_app();
     parse_config_content(&mut app, "set -g bold-is-bright off\n");
     parse_config_content(&mut app, "set -g bold-is-bright on\n");
-    assert!(app.bold_is_bright, "set -g bold-is-bright on should re-enable the rewrite");
+    assert!(
+        app.bold_is_bright,
+        "set -g bold-is-bright on should re-enable the rewrite"
+    );
 }
 
 #[test]
@@ -58,14 +67,23 @@ fn config_accepts_boolean_synonyms() {
 fn server_apply_and_report_round_trip() {
     let mut app = mock_app();
     // Default reports "on".
-    assert_eq!(crate::server::options::get_option_value(&app, "bold-is-bright"), "on");
+    assert_eq!(
+        crate::server::options::get_option_value(&app, "bold-is-bright"),
+        "on"
+    );
     // Disable via the server-side apply path (the forwarded set-option path).
     crate::server::options::apply_set_option(&mut app, "bold-is-bright", "off", false);
     assert!(!app.bold_is_bright);
-    assert_eq!(crate::server::options::get_option_value(&app, "bold-is-bright"), "off");
+    assert_eq!(
+        crate::server::options::get_option_value(&app, "bold-is-bright"),
+        "off"
+    );
     // Re-enable.
     crate::server::options::apply_set_option(&mut app, "bold-is-bright", "on", false);
-    assert_eq!(crate::server::options::get_option_value(&app, "bold-is-bright"), "on");
+    assert_eq!(
+        crate::server::options::get_option_value(&app, "bold-is-bright"),
+        "on"
+    );
 }
 
 #[test]

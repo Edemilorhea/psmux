@@ -33,7 +33,11 @@ pub fn cache_key(sess: &str, win_id: usize, pane_id: usize) -> String {
 /// active pane). Otherwise targets a specific pane id within the window.
 pub fn fetch_pane_preview(sess: &str, win_id: usize, pane_id: usize) -> Option<String> {
     let port_path = crate::paths::port_file(sess);
-    let port: u16 = std::fs::read_to_string(&port_path).ok()?.trim().parse().ok()?;
+    let port: u16 = std::fs::read_to_string(&port_path)
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
     let key = read_session_key(sess).ok()?;
     let target = if pane_id == usize::MAX {
         format!(":@{}", win_id)
@@ -121,11 +125,22 @@ pub fn clip_lines(text: &str, width: u16, height: u16) -> Vec<String> {
 
 fn sgr_color_from_8bit(n: u8) -> Color {
     match n {
-        0 => Color::Black, 1 => Color::Red, 2 => Color::Green, 3 => Color::Yellow,
-        4 => Color::Blue, 5 => Color::Magenta, 6 => Color::Cyan, 7 => Color::Gray,
-        8 => Color::DarkGray, 9 => Color::LightRed, 10 => Color::LightGreen,
-        11 => Color::LightYellow, 12 => Color::LightBlue, 13 => Color::LightMagenta,
-        14 => Color::LightCyan, 15 => Color::White,
+        0 => Color::Black,
+        1 => Color::Red,
+        2 => Color::Green,
+        3 => Color::Yellow,
+        4 => Color::Blue,
+        5 => Color::Magenta,
+        6 => Color::Cyan,
+        7 => Color::Gray,
+        8 => Color::DarkGray,
+        9 => Color::LightRed,
+        10 => Color::LightGreen,
+        11 => Color::LightYellow,
+        12 => Color::LightBlue,
+        13 => Color::LightMagenta,
+        14 => Color::LightCyan,
+        15 => Color::White,
         n => Color::Indexed(n),
     }
 }
@@ -159,8 +174,16 @@ fn apply_sgr(style: &mut Style, params: &[u32]) {
                 if let Some(&kind) = params.get(i + 1) {
                     if kind == 5 {
                         if let Some(&n) = params.get(i + 2) {
-                            let col = if n <= 255 { Color::Indexed(n as u8) } else { Color::Reset };
-                            *style = if p == 38 { style.fg(col) } else { style.bg(col) };
+                            let col = if n <= 255 {
+                                Color::Indexed(n as u8)
+                            } else {
+                                Color::Reset
+                            };
+                            *style = if p == 38 {
+                                style.fg(col)
+                            } else {
+                                style.bg(col)
+                            };
                             i += 2;
                         }
                     } else if kind == 2 {
@@ -168,7 +191,11 @@ fn apply_sgr(style: &mut Style, params: &[u32]) {
                             (params.get(i + 2), params.get(i + 3), params.get(i + 4))
                         {
                             let col = Color::Rgb(r as u8, g as u8, b as u8);
-                            *style = if p == 38 { style.fg(col) } else { style.bg(col) };
+                            *style = if p == 38 {
+                                style.fg(col)
+                            } else {
+                                style.bg(col)
+                            };
                             i += 4;
                         }
                     }
@@ -218,9 +245,15 @@ fn parse_sgr_line(line: &str, max_width: usize, style: &mut Style) -> Vec<Span<'
             }
             continue;
         }
-        if ch == '\r' { continue; }
-        if (ch as u32) < 0x20 { continue; }
-        if width + 1 > max_width { break; }
+        if ch == '\r' {
+            continue;
+        }
+        if (ch as u32) < 0x20 {
+            continue;
+        }
+        if width + 1 > max_width {
+            break;
+        }
         buf.push(ch);
         width += 1;
     }
@@ -238,9 +271,13 @@ fn strip_ansi(s: &str) -> String {
             if chars.peek() == Some(&'[') {
                 chars.next();
                 while let Some(c) = chars.next() {
-                    if !(c.is_ascii_digit() || c == ';' || c == ':') { break; }
+                    if !(c.is_ascii_digit() || c == ';' || c == ':') {
+                        break;
+                    }
                 }
-            } else { let _ = chars.next(); }
+            } else {
+                let _ = chars.next();
+            }
             continue;
         }
         out.push(ch);
@@ -253,7 +290,9 @@ fn strip_ansi(s: &str) -> String {
 pub fn parse_ansi_lines(text: &str, width: u16, height: u16) -> Vec<Line<'static>> {
     let max_w = width as usize;
     let max_h = height as usize;
-    if max_w == 0 || max_h == 0 { return Vec::new(); }
+    if max_w == 0 || max_h == 0 {
+        return Vec::new();
+    }
     let raw: Vec<&str> = text.split('\n').collect();
     let mut end = raw.len();
     while end > 0 && strip_ansi(raw[end - 1]).trim_end().is_empty() {
@@ -285,7 +324,11 @@ pub const LAYOUT_TTL: Duration = Duration::from_millis(2500);
 /// Fetch the simplified layout for a window in any session via TCP.
 pub fn fetch_window_layout(sess: &str, win_id: usize) -> Option<LayoutSimple> {
     let port_path = crate::paths::port_file(sess);
-    let port: u16 = std::fs::read_to_string(&port_path).ok()?.trim().parse().ok()?;
+    let port: u16 = std::fs::read_to_string(&port_path)
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
     let key = read_session_key(sess).ok()?;
     let cmd = format!("window-layout {}\n", win_id);
     let resp = fetch_authed_response_multi(
@@ -337,20 +380,32 @@ pub fn flatten_layout_to_rects(
                     out.push((*id, *active, area));
                 }
             }
-            LayoutSimple::Split { kind, sizes, children } => {
+            LayoutSimple::Split {
+                kind,
+                sizes,
+                children,
+            } => {
                 if children.is_empty() {
                     return;
                 }
                 let total: u32 = sizes.iter().map(|s| *s as u32).sum::<u32>().max(1);
                 let is_horiz = kind.as_str() == "Horizontal";
-                let span = if is_horiz { area.width as u32 } else { area.height as u32 };
+                let span = if is_horiz {
+                    area.width as u32
+                } else {
+                    area.height as u32
+                };
                 let sep_count = children.len().saturating_sub(1) as u32;
                 let usable = span.saturating_sub(sep_count);
                 let n = children.len();
-                let mut alloc: Vec<u32> = sizes.iter().take(n)
+                let mut alloc: Vec<u32> = sizes
+                    .iter()
+                    .take(n)
                     .map(|s| (*s as u32 * usable) / total)
                     .collect();
-                while alloc.len() < n { alloc.push(0); }
+                while alloc.len() < n {
+                    alloc.push(0);
+                }
                 let used: u32 = alloc.iter().sum();
                 let mut leftover = usable.saturating_sub(used);
                 let alen = alloc.len();
@@ -364,9 +419,19 @@ pub fn flatten_layout_to_rects(
                 for (i, child) in children.iter().enumerate() {
                     let size = alloc[i] as u16;
                     let sub = if is_horiz {
-                        Rect { x: area.x + cursor as u16, y: area.y, width: size, height: area.height }
+                        Rect {
+                            x: area.x + cursor as u16,
+                            y: area.y,
+                            width: size,
+                            height: area.height,
+                        }
                     } else {
-                        Rect { x: area.x, y: area.y + cursor as u16, width: area.width, height: size }
+                        Rect {
+                            x: area.x,
+                            y: area.y + cursor as u16,
+                            width: area.width,
+                            height: size,
+                        }
                     };
                     rec(child, sub, out);
                     cursor += size as u32;
@@ -392,18 +457,33 @@ pub fn layout_separators(
     use ratatui::layout::Rect;
     let mut out: Vec<(Rect, bool)> = Vec::new();
     fn rec(node: &LayoutSimple, area: Rect, out: &mut Vec<(Rect, bool)>) {
-        if let LayoutSimple::Split { kind, sizes, children } = node {
-            if children.is_empty() { return; }
+        if let LayoutSimple::Split {
+            kind,
+            sizes,
+            children,
+        } = node
+        {
+            if children.is_empty() {
+                return;
+            }
             let total: u32 = sizes.iter().map(|s| *s as u32).sum::<u32>().max(1);
             let is_horiz = kind.as_str() == "Horizontal";
-            let span = if is_horiz { area.width as u32 } else { area.height as u32 };
+            let span = if is_horiz {
+                area.width as u32
+            } else {
+                area.height as u32
+            };
             let sep_count = children.len().saturating_sub(1) as u32;
             let usable = span.saturating_sub(sep_count);
             let n = children.len();
-            let mut alloc: Vec<u32> = sizes.iter().take(n)
+            let mut alloc: Vec<u32> = sizes
+                .iter()
+                .take(n)
                 .map(|s| (*s as u32 * usable) / total)
                 .collect();
-            while alloc.len() < n { alloc.push(0); }
+            while alloc.len() < n {
+                alloc.push(0);
+            }
             let used: u32 = alloc.iter().sum();
             let mut leftover = usable.saturating_sub(used);
             let alen = alloc.len();
@@ -417,17 +497,43 @@ pub fn layout_separators(
             for (i, child) in children.iter().enumerate() {
                 let size = alloc[i] as u16;
                 let sub = if is_horiz {
-                    Rect { x: area.x + cursor as u16, y: area.y, width: size, height: area.height }
+                    Rect {
+                        x: area.x + cursor as u16,
+                        y: area.y,
+                        width: size,
+                        height: area.height,
+                    }
                 } else {
-                    Rect { x: area.x, y: area.y + cursor as u16, width: area.width, height: size }
+                    Rect {
+                        x: area.x,
+                        y: area.y + cursor as u16,
+                        width: area.width,
+                        height: size,
+                    }
                 };
                 rec(child, sub, out);
                 cursor += size as u32;
                 if i + 1 < children.len() {
                     if is_horiz {
-                        out.push((Rect { x: area.x + cursor as u16, y: area.y, width: 1, height: area.height }, true));
+                        out.push((
+                            Rect {
+                                x: area.x + cursor as u16,
+                                y: area.y,
+                                width: 1,
+                                height: area.height,
+                            },
+                            true,
+                        ));
                     } else {
-                        out.push((Rect { x: area.x, y: area.y + cursor as u16, width: area.width, height: 1 }, false));
+                        out.push((
+                            Rect {
+                                x: area.x,
+                                y: area.y + cursor as u16,
+                                width: area.width,
+                                height: 1,
+                            },
+                            false,
+                        ));
                     }
                     cursor += 1;
                 }
@@ -461,7 +567,11 @@ pub const DUMP_TTL: Duration = Duration::from_millis(1500);
 /// via TCP using the new `window-dump` command.
 pub fn fetch_window_dump(sess: &str, win_id: usize) -> Option<crate::layout::LayoutJson> {
     let port_path = crate::paths::port_file(sess);
-    let port: u16 = std::fs::read_to_string(&port_path).ok()?.trim().parse().ok()?;
+    let port: u16 = std::fs::read_to_string(&port_path)
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
     let key = read_session_key(sess).ok()?;
     let cmd = format!("window-dump {}\n", win_id);
     let resp = fetch_authed_response_multi(
@@ -501,28 +611,41 @@ fn run_style(fg: &str, bg: &str, flags: u8) -> Style {
     let mut style = Style::default()
         .fg(crate::style::map_color(fg))
         .bg(crate::style::map_color(bg));
-    if flags & 1 != 0 { style = style.add_modifier(Modifier::DIM); }
-    if flags & 2 != 0 { style = style.add_modifier(Modifier::BOLD); }
-    if flags & 4 != 0 { style = style.add_modifier(Modifier::ITALIC); }
-    if flags & 8 != 0 { style = style.add_modifier(Modifier::UNDERLINED); }
-    if flags & 16 != 0 { style = style.add_modifier(Modifier::REVERSED); }
-    if flags & 32 != 0 { style = style.add_modifier(Modifier::SLOW_BLINK); }
-    if flags & 128 != 0 { style = style.add_modifier(Modifier::CROSSED_OUT); }
+    if flags & 1 != 0 {
+        style = style.add_modifier(Modifier::DIM);
+    }
+    if flags & 2 != 0 {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    if flags & 4 != 0 {
+        style = style.add_modifier(Modifier::ITALIC);
+    }
+    if flags & 8 != 0 {
+        style = style.add_modifier(Modifier::UNDERLINED);
+    }
+    if flags & 16 != 0 {
+        style = style.add_modifier(Modifier::REVERSED);
+    }
+    if flags & 32 != 0 {
+        style = style.add_modifier(Modifier::SLOW_BLINK);
+    }
+    if flags & 128 != 0 {
+        style = style.add_modifier(Modifier::CROSSED_OUT);
+    }
     style
 }
 
 /// Convert one row's run list into ratatui Spans, clipping to `width`.
 /// Pads the tail with a space-styled span so the line fills the inside
 /// rect (matches the main renderer behavior).
-pub fn render_runs_line(
-    runs: &[crate::layout::CellRunJson],
-    width: u16,
-) -> Line<'static> {
+pub fn render_runs_line(runs: &[crate::layout::CellRunJson], width: u16) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut c: u16 = 0;
     let mut last_bg = Color::Reset;
     for run in runs {
-        if c >= width { break; }
+        if c >= width {
+            break;
+        }
         let style = run_style(&run.fg, &run.bg, run.flags);
         last_bg = style.bg.unwrap_or(Color::Reset);
         // Hidden cells render as spaces to match the main view's behavior.
@@ -541,7 +664,9 @@ pub fn render_runs_line(
             let mut used = 0usize;
             for ch in text.chars() {
                 let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1);
-                if used + cw > avail { break; }
+                if used + cw > avail {
+                    break;
+                }
                 used += cw;
                 truncated.push(ch);
             }
@@ -581,18 +706,32 @@ pub fn flatten_dump_rects<'a>(
                     out.push((node, area));
                 }
             }
-            crate::layout::LayoutJson::Split { kind, sizes, children } => {
-                if children.is_empty() { return; }
+            crate::layout::LayoutJson::Split {
+                kind,
+                sizes,
+                children,
+            } => {
+                if children.is_empty() {
+                    return;
+                }
                 let total: u32 = sizes.iter().map(|s| *s as u32).sum::<u32>().max(1);
                 let is_horiz = kind == "Horizontal";
-                let span = if is_horiz { area.width as u32 } else { area.height as u32 };
+                let span = if is_horiz {
+                    area.width as u32
+                } else {
+                    area.height as u32
+                };
                 let sep_count = children.len().saturating_sub(1) as u32;
                 let usable = span.saturating_sub(sep_count);
                 let n = children.len();
-                let mut alloc: Vec<u32> = sizes.iter().take(n)
+                let mut alloc: Vec<u32> = sizes
+                    .iter()
+                    .take(n)
                     .map(|s| (*s as u32 * usable) / total)
                     .collect();
-                while alloc.len() < n { alloc.push(0); }
+                while alloc.len() < n {
+                    alloc.push(0);
+                }
                 let used: u32 = alloc.iter().sum();
                 let mut leftover = usable.saturating_sub(used);
                 let alen = alloc.len();
@@ -606,9 +745,19 @@ pub fn flatten_dump_rects<'a>(
                 for (i, child) in children.iter().enumerate() {
                     let size = alloc[i] as u16;
                     let sub = if is_horiz {
-                        Rect { x: area.x + cursor as u16, y: area.y, width: size, height: area.height }
+                        Rect {
+                            x: area.x + cursor as u16,
+                            y: area.y,
+                            width: size,
+                            height: area.height,
+                        }
                     } else {
-                        Rect { x: area.x, y: area.y + cursor as u16, width: area.width, height: size }
+                        Rect {
+                            x: area.x,
+                            y: area.y + cursor as u16,
+                            width: area.width,
+                            height: size,
+                        }
                     };
                     rec(child, sub, out);
                     cursor += size as u32;
@@ -632,18 +781,33 @@ pub fn dump_separators(
     use ratatui::layout::Rect;
     let mut out: Vec<(Rect, bool)> = Vec::new();
     fn rec(node: &crate::layout::LayoutJson, area: Rect, out: &mut Vec<(Rect, bool)>) {
-        if let crate::layout::LayoutJson::Split { kind, sizes, children } = node {
-            if children.is_empty() { return; }
+        if let crate::layout::LayoutJson::Split {
+            kind,
+            sizes,
+            children,
+        } = node
+        {
+            if children.is_empty() {
+                return;
+            }
             let total: u32 = sizes.iter().map(|s| *s as u32).sum::<u32>().max(1);
             let is_horiz = kind == "Horizontal";
-            let span = if is_horiz { area.width as u32 } else { area.height as u32 };
+            let span = if is_horiz {
+                area.width as u32
+            } else {
+                area.height as u32
+            };
             let sep_count = children.len().saturating_sub(1) as u32;
             let usable = span.saturating_sub(sep_count);
             let n = children.len();
-            let mut alloc: Vec<u32> = sizes.iter().take(n)
+            let mut alloc: Vec<u32> = sizes
+                .iter()
+                .take(n)
                 .map(|s| (*s as u32 * usable) / total)
                 .collect();
-            while alloc.len() < n { alloc.push(0); }
+            while alloc.len() < n {
+                alloc.push(0);
+            }
             let used: u32 = alloc.iter().sum();
             let mut leftover = usable.saturating_sub(used);
             let alen = alloc.len();
@@ -657,17 +821,43 @@ pub fn dump_separators(
             for (i, child) in children.iter().enumerate() {
                 let size = alloc[i] as u16;
                 let sub = if is_horiz {
-                    Rect { x: area.x + cursor as u16, y: area.y, width: size, height: area.height }
+                    Rect {
+                        x: area.x + cursor as u16,
+                        y: area.y,
+                        width: size,
+                        height: area.height,
+                    }
                 } else {
-                    Rect { x: area.x, y: area.y + cursor as u16, width: area.width, height: size }
+                    Rect {
+                        x: area.x,
+                        y: area.y + cursor as u16,
+                        width: area.width,
+                        height: size,
+                    }
                 };
                 rec(child, sub, out);
                 cursor += size as u32;
                 if i + 1 < children.len() {
                     if is_horiz {
-                        out.push((Rect { x: area.x + cursor as u16, y: area.y, width: 1, height: area.height }, true));
+                        out.push((
+                            Rect {
+                                x: area.x + cursor as u16,
+                                y: area.y,
+                                width: 1,
+                                height: area.height,
+                            },
+                            true,
+                        ));
                     } else {
-                        out.push((Rect { x: area.x, y: area.y + cursor as u16, width: area.width, height: 1 }, false));
+                        out.push((
+                            Rect {
+                                x: area.x,
+                                y: area.y + cursor as u16,
+                                width: area.width,
+                                height: 1,
+                            },
+                            false,
+                        ));
                     }
                     cursor += 1;
                 }
@@ -691,26 +881,36 @@ pub fn render_dump_tree(
     active_border_fg: Color,
     _highlight_pid: Option<usize>,
 ) {
-    if area.width == 0 || area.height == 0 { return; }
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
     let active_rect = crate::client::compute_active_rect_json(layout, area);
     let total_panes = layout.count_leaves();
     crate::client::render_layout_json(
-        f, layout, area,
-        false,            // dim_preds: never dim predictions in preview
-        border_fg, active_border_fg,
-        false,            // clock_mode off in preview
-        Color::Reset,     // clock_colour irrelevant
+        f,
+        layout,
+        area,
+        false, // dim_preds: never dim predictions in preview
+        border_fg,
+        active_border_fg,
+        false,        // clock_mode off in preview
+        Color::Reset, // clock_colour irrelevant
         active_rect,
-        "",               // mode_style_str irrelevant (no copy mode in preview)
-        false,            // zoomed: ignore zoom for preview, show real layout
-        "off",            // border_status off (no per-pane title bar)
-        "",               // border_format irrelevant
+        "",    // mode_style_str irrelevant (no copy mode in preview)
+        false, // zoomed: ignore zoom for preview, show real layout
+        "off", // border_status off (no per-pane title bar)
+        "",    // border_format irrelevant
         total_panes,
         crate::border_lines::border_chars(crate::border_lines::DEFAULT),
         None,
     );
-    let border_mask = crate::client::border_mask_from_layout(layout, area, f.buffer_mut().area, false);
-    crate::rendering::fix_border_intersections(f.buffer_mut(), crate::border_lines::border_chars(crate::border_lines::DEFAULT), &border_mask);
+    let border_mask =
+        crate::client::border_mask_from_layout(layout, area, f.buffer_mut().area, false);
+    crate::rendering::fix_border_intersections(
+        f.buffer_mut(),
+        crate::border_lines::border_chars(crate::border_lines::DEFAULT),
+        &border_mask,
+    );
 }
 
 #[cfg(test)]
@@ -726,12 +926,18 @@ mod tests_ansi {
         assert_eq!(lines.len(), 2, "expected 2 lines, got {}", lines.len());
         // First line should contain a span styled with red foreground.
         let first = &lines[0];
-        let abc_span = first.spans.iter().find(|s| s.content == "ABC")
+        let abc_span = first
+            .spans
+            .iter()
+            .find(|s| s.content == "ABC")
             .expect("no ABC span");
         assert_eq!(abc_span.style.fg, Some(Color::Red));
         // Second line def should have default fg.
         let second = &lines[1];
-        let def_span = second.spans.iter().find(|s| s.content == "def")
+        let def_span = second
+            .spans
+            .iter()
+            .find(|s| s.content == "def")
             .expect("no def span");
         assert_ne!(def_span.style.fg, Some(Color::Red));
     }
@@ -749,8 +955,11 @@ mod tests_ansi {
     fn parse_ansi_lines_handles_bold() {
         let txt = "\x1b[1mBOLD\x1b[0m";
         let lines = parse_ansi_lines(txt, 10, 1);
-        let span = lines[0].spans.iter().find(|s| s.content == "BOLD").expect("no BOLD span");
+        let span = lines[0]
+            .spans
+            .iter()
+            .find(|s| s.content == "BOLD")
+            .expect("no BOLD span");
         assert!(span.style.add_modifier.contains(Modifier::BOLD));
     }
 }
-

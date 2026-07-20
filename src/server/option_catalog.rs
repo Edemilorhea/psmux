@@ -99,13 +99,19 @@ pub static OPTION_CATALOG: &[OptionDef] = &[
 /// Build the flattened option list for CustomizeMode using live values from AppState.
 pub fn build_option_list(app: &crate::types::AppState) -> Vec<(String, String, String)> {
     use crate::server::options::get_option_value;
-    OPTION_CATALOG.iter().map(|def| {
-        let value = get_option_value(app, def.name);
-        (def.name.to_string(), value, def.scope.to_string())
-    }).collect()
+    OPTION_CATALOG
+        .iter()
+        .map(|def| {
+            let value = get_option_value(app, def.name);
+            (def.name.to_string(), value, def.scope.to_string())
+        })
+        .collect()
 }
 
 /// Look up the default value for a given option name.
 pub fn default_for(name: &str) -> Option<&'static str> {
-    OPTION_CATALOG.iter().find(|d| d.name == name).map(|d| d.default)
+    OPTION_CATALOG
+        .iter()
+        .find(|d| d.name == name)
+        .map(|d| d.default)
 }

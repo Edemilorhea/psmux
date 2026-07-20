@@ -1,5 +1,5 @@
-use ratatui::layout::Rect;
 use crate::layout::LayoutJson;
+use ratatui::layout::Rect;
 
 // Regression tests for zoom pane bleed bug.
 //
@@ -65,23 +65,32 @@ fn zoomed_left_active_hidden_pane_label_never_rendered() {
         let area = Rect::new(0, 0, 60, 20);
         let active_rect = crate::client::compute_active_rect_json(&layout, area);
         crate::client::render_layout_json(
-            f, &layout, area,
+            f,
+            &layout,
+            area,
             false,
-            Color::DarkGray, Color::Green,
-            false, Color::Reset,
+            Color::DarkGray,
+            Color::Green,
+            false,
+            Color::Reset,
             active_rect,
-            "", true, "bottom", "#{pane_index}",
+            "",
+            true,
+            "bottom",
+            "#{pane_index}",
             2,
             crate::border_lines::border_chars("single"),
             None,
         );
-    }).unwrap();
+    })
+    .unwrap();
 
     let buf = term.backend().buffer().clone();
     let hidden_label = '1';
-    let found = buf.content.iter().any(|cell| {
-        cell.symbol().chars().next() == Some(hidden_label)
-    });
+    let found = buf
+        .content
+        .iter()
+        .any(|cell| cell.symbol().chars().next() == Some(hidden_label));
     assert!(
         !found,
         "hidden pane label '1' must not appear anywhere in the buffer when zoomed"
@@ -121,23 +130,32 @@ fn zoomed_right_active_hidden_pane_label_never_rendered() {
         let area = Rect::new(0, 0, 60, 20);
         let active_rect = crate::client::compute_active_rect_json(&layout, area);
         crate::client::render_layout_json(
-            f, &layout, area,
+            f,
+            &layout,
+            area,
             false,
-            Color::DarkGray, Color::Green,
-            false, Color::Reset,
+            Color::DarkGray,
+            Color::Green,
+            false,
+            Color::Reset,
             active_rect,
-            "", true, "bottom", "#{pane_index}",
+            "",
+            true,
+            "bottom",
+            "#{pane_index}",
             2,
             crate::border_lines::border_chars("single"),
             None,
         );
-    }).unwrap();
+    })
+    .unwrap();
 
     let buf = term.backend().buffer().clone();
     let hidden_label = '0';
-    let found = buf.content.iter().any(|cell| {
-        cell.symbol().chars().next() == Some(hidden_label)
-    });
+    let found = buf
+        .content
+        .iter()
+        .any(|cell| cell.symbol().chars().next() == Some(hidden_label));
     assert!(
         !found,
         "hidden pane label '0' must not appear anywhere in the buffer when zoomed"
@@ -177,23 +195,32 @@ fn zoomed_top_active_hidden_pane_label_never_rendered() {
         let area = Rect::new(0, 0, 60, 20);
         let active_rect = crate::client::compute_active_rect_json(&layout, area);
         crate::client::render_layout_json(
-            f, &layout, area,
+            f,
+            &layout,
+            area,
             false,
-            Color::DarkGray, Color::Green,
-            false, Color::Reset,
+            Color::DarkGray,
+            Color::Green,
+            false,
+            Color::Reset,
             active_rect,
-            "", true, "bottom", "#{pane_index}",
+            "",
+            true,
+            "bottom",
+            "#{pane_index}",
             2,
             crate::border_lines::border_chars("single"),
             None,
         );
-    }).unwrap();
+    })
+    .unwrap();
 
     let buf = term.backend().buffer().clone();
     let hidden_label = '1';
-    let found = buf.content.iter().any(|cell| {
-        cell.symbol().chars().next() == Some(hidden_label)
-    });
+    let found = buf
+        .content
+        .iter()
+        .any(|cell| cell.symbol().chars().next() == Some(hidden_label));
     assert!(
         !found,
         "hidden pane label '1' must not appear anywhere in the buffer when zoomed"
@@ -233,23 +260,32 @@ fn zoomed_bottom_active_hidden_pane_label_never_rendered() {
         let area = Rect::new(0, 0, 60, 20);
         let active_rect = crate::client::compute_active_rect_json(&layout, area);
         crate::client::render_layout_json(
-            f, &layout, area,
+            f,
+            &layout,
+            area,
             false,
-            Color::DarkGray, Color::Green,
-            false, Color::Reset,
+            Color::DarkGray,
+            Color::Green,
+            false,
+            Color::Reset,
             active_rect,
-            "", true, "bottom", "#{pane_index}",
+            "",
+            true,
+            "bottom",
+            "#{pane_index}",
             2,
             crate::border_lines::border_chars("single"),
             None,
         );
-    }).unwrap();
+    })
+    .unwrap();
 
     let buf = term.backend().buffer().clone();
     let hidden_label = '0';
-    let found = buf.content.iter().any(|cell| {
-        cell.symbol().chars().next() == Some(hidden_label)
-    });
+    let found = buf
+        .content
+        .iter()
+        .any(|cell| cell.symbol().chars().next() == Some(hidden_label));
     assert!(
         !found,
         "hidden pane label '0' must not appear anywhere in the buffer when zoomed"

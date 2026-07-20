@@ -51,7 +51,13 @@ fn normal_paste_with_indentation() {
     let payload = "def foo():\r    return 42\r";
     let seq = format!("\x1b[200~{}\x1b[201~", payload);
     let events = parse(&seq);
-    let text = paste_text(events.iter().find(|e| matches!(e, Event::Paste(_))).unwrap()).unwrap();
+    let text = paste_text(
+        events
+            .iter()
+            .find(|e| matches!(e, Event::Paste(_)))
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(text, payload);
     assert!(text.contains("    return"));
 }
@@ -61,7 +67,13 @@ fn normal_paste_containing_esc_not_close() {
     // ESC inside paste followed by non-[ should be captured in paste text
     let seq = "\x1b[200~before\x1bxafter\x1b[201~";
     let events = parse(seq);
-    let text = paste_text(events.iter().find(|e| matches!(e, Event::Paste(_))).unwrap()).unwrap();
+    let text = paste_text(
+        events
+            .iter()
+            .find(|e| matches!(e, Event::Paste(_)))
+            .unwrap(),
+    )
+    .unwrap();
     assert!(text.contains("before"));
     assert!(text.contains("\x1bx"));
     assert!(text.contains("after"));
@@ -72,9 +84,15 @@ fn normal_paste_containing_esc_bracket_not_201() {
     // \x1b[100~ inside paste should not end it
     let seq = "\x1b[200~before\x1b[100~after\x1b[201~";
     let events = parse(seq);
-    let text = paste_text(events.iter().find(|e| matches!(e, Event::Paste(_))).unwrap()).unwrap();
+    let text = paste_text(
+        events
+            .iter()
+            .find(|e| matches!(e, Event::Paste(_)))
+            .unwrap(),
+    )
+    .unwrap();
     assert!(text.contains("before"));
-    assert!(text.contains("\x1b[100~"));  // partial CSI absorbed into paste
+    assert!(text.contains("\x1b[100~")); // partial CSI absorbed into paste
     assert!(text.contains("after"));
 }
 
@@ -84,8 +102,14 @@ fn consecutive_pastes() {
     let e1 = feed_str(&mut p, "\x1b[200~first\x1b[201~");
     let e2 = feed_str(&mut p, "\x1b[200~second\x1b[201~");
 
-    assert_eq!(paste_text(e1.iter().find(|e| matches!(e, Event::Paste(_))).unwrap()).unwrap(), "first");
-    assert_eq!(paste_text(e2.iter().find(|e| matches!(e, Event::Paste(_))).unwrap()).unwrap(), "second");
+    assert_eq!(
+        paste_text(e1.iter().find(|e| matches!(e, Event::Paste(_))).unwrap()).unwrap(),
+        "first"
+    );
+    assert_eq!(
+        paste_text(e2.iter().find(|e| matches!(e, Event::Paste(_))).unwrap()).unwrap(),
+        "second"
+    );
     assert_eq!(p.state, PS::Ground);
 }
 
@@ -103,7 +127,10 @@ fn normal_key_between_pastes() {
     }
     // Another paste
     let e3 = feed_str(&mut p, "\x1b[200~third\x1b[201~");
-    assert_eq!(paste_text(e3.iter().find(|e| matches!(e, Event::Paste(_))).unwrap()).unwrap(), "third");
+    assert_eq!(
+        paste_text(e3.iter().find(|e| matches!(e, Event::Paste(_))).unwrap()).unwrap(),
+        "third"
+    );
 }
 
 #[test]
@@ -115,7 +142,13 @@ fn large_paste() {
     }
     let seq = format!("\x1b[200~{}\x1b[201~", payload);
     let events = parse(&seq);
-    let text = paste_text(events.iter().find(|e| matches!(e, Event::Paste(_))).unwrap()).unwrap();
+    let text = paste_text(
+        events
+            .iter()
+            .find(|e| matches!(e, Event::Paste(_)))
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(text, payload);
 }
 
@@ -141,9 +174,16 @@ fn timeout_flush_emits_paste_and_enters_paste_drain() {
 
     assert_eq!(events.len(), 1);
     assert_eq!(paste_text(&events[0]).unwrap(), "hello timeout");
-    assert_eq!(p.state, PS::PasteDrain, "should be in PasteDrain after timeout flush");
+    assert_eq!(
+        p.state,
+        PS::PasteDrain,
+        "should be in PasteDrain after timeout flush"
+    );
     // paste_start is reused as drain deadline (set to now by flush_stale_paste)
-    assert!(p.paste_start.is_some(), "paste_start should be set as drain deadline");
+    assert!(
+        p.paste_start.is_some(),
+        "paste_start should be set as drain deadline"
+    );
 }
 
 #[test]
@@ -160,8 +200,11 @@ fn paste_drain_absorbs_tilde() {
     // The '~' leaking from ConPTY stripping the close sequence
     let tilde_events = feed_str(&mut p, "~");
     // MUST be empty: '~' should be silently consumed
-    assert!(tilde_events.is_empty(),
-        "tilde after paste timeout flush MUST be absorbed, but got {:?}", tilde_events);
+    assert!(
+        tilde_events.is_empty(),
+        "tilde after paste timeout flush MUST be absorbed, but got {:?}",
+        tilde_events
+    );
 }
 
 #[test]
@@ -177,8 +220,11 @@ fn paste_drain_absorbs_bracket_and_digits() {
 
     let residue_events = feed_str(&mut p, "[201~");
     // All should be absorbed
-    assert!(residue_events.is_empty(),
-        "[201~ residue should be absorbed in PasteDrain, got {:?}", residue_events);
+    assert!(
+        residue_events.is_empty(),
+        "[201~ residue should be absorbed in PasteDrain, got {:?}",
+        residue_events
+    );
 }
 
 #[test]
@@ -197,8 +243,11 @@ fn paste_drain_passes_normal_char_through() {
     // Next real character
     let normal_events = feed_str(&mut p, "a");
     assert_eq!(normal_events.len(), 1);
-    assert!(matches!(normal_events[0], Event::Key(_)),
-        "normal char after drain should be a Key event, got {:?}", normal_events[0]);
+    assert!(
+        matches!(normal_events[0], Event::Key(_)),
+        "normal char after drain should be a Key event, got {:?}",
+        normal_events[0]
+    );
     assert_eq!(p.state, PS::Ground);
 }
 
@@ -214,7 +263,10 @@ fn paste_drain_esc_transitions_to_escape_state() {
 
     // ESC in drain
     let esc_events = feed_str(&mut p, "\x1b");
-    assert!(esc_events.is_empty(), "ESC during drain should not emit anything yet");
+    assert!(
+        esc_events.is_empty(),
+        "ESC during drain should not emit anything yet"
+    );
     assert_eq!(p.state, PS::Escape, "should transition to Escape on ESC");
 }
 
@@ -232,8 +284,12 @@ fn timeout_flush_from_paste_esc_state() {
     assert_eq!(events.len(), 1);
     assert_eq!(paste_text(&events[0]).unwrap(), "some text");
     // After PasteEsc flush, should be in Escape state (to process the [ that might follow)
-    assert_eq!(p.state, PS::Escape,
-        "PasteEsc timeout should transition to Escape, not {:?}", p.state);
+    assert_eq!(
+        p.state,
+        PS::Escape,
+        "PasteEsc timeout should transition to Escape, not {:?}",
+        p.state
+    );
 }
 
 #[test]
@@ -250,8 +306,12 @@ fn timeout_flush_from_paste_brk_state() {
     assert_eq!(events.len(), 1);
     assert_eq!(paste_text(&events[0]).unwrap(), "text");
     // After PasteBrk flush, should be in CsiEntry (to process remaining digits + ~)
-    assert_eq!(p.state, PS::CsiEntry,
-        "PasteBrk timeout should transition to CsiEntry, not {:?}", p.state);
+    assert_eq!(
+        p.state,
+        PS::CsiEntry,
+        "PasteBrk timeout should transition to CsiEntry, not {:?}",
+        p.state
+    );
 }
 
 #[test]
@@ -268,8 +328,12 @@ fn timeout_flush_from_paste_num_state() {
     assert_eq!(events.len(), 1);
     assert_eq!(paste_text(&events[0]).unwrap(), "text");
     // After PasteNum flush, should be in CsiParam (to process remaining 1~)
-    assert_eq!(p.state, PS::CsiParam,
-        "PasteNum timeout should transition to CsiParam, not {:?}", p.state);
+    assert_eq!(
+        p.state,
+        PS::CsiParam,
+        "PasteNum timeout should transition to CsiParam, not {:?}",
+        p.state
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -296,7 +360,11 @@ fn vk_escape_in_paste_feeds_esc_to_parser() {
     // Then [201~ follows as u_char data
     let close_events = feed_str(&mut p, "[201~");
     let pastes: Vec<&str> = close_events.iter().filter_map(paste_text).collect();
-    assert_eq!(pastes, vec!["pasted text"], "paste should complete after VK_ESCAPE + [201~");
+    assert_eq!(
+        pastes,
+        vec!["pasted text"],
+        "paste should complete after VK_ESCAPE + [201~"
+    );
     assert_eq!(p.state, PS::Ground);
 }
 
@@ -348,13 +416,19 @@ fn full_scenario_conpty_strips_close_only_tilde_remains() {
     p.flush_stale_paste(&mut |evt| flush_events.push(evt));
 
     assert_eq!(flush_events.len(), 1);
-    assert_eq!(paste_text(&flush_events[0]).unwrap(), "copied text from clipboard");
+    assert_eq!(
+        paste_text(&flush_events[0]).unwrap(),
+        "copied text from clipboard"
+    );
     assert_eq!(p.state, PS::PasteDrain);
 
     // The '~' that ConPTY leaked
     let tilde_events = feed_str(&mut p, "~");
-    assert!(tilde_events.is_empty(),
-        "ISSUE #197 REGRESSION: tilde leaked as visible character! Got {:?}", tilde_events);
+    assert!(
+        tilde_events.is_empty(),
+        "ISSUE #197 REGRESSION: tilde leaked as visible character! Got {:?}",
+        tilde_events
+    );
 
     // Verify parser returns to normal ground state after drain
     // (either by normal char or by flush_escape timeout)
@@ -376,8 +450,11 @@ fn full_scenario_conpty_strips_esc_bracket_leaves_201_tilde() {
 
     // Residue: 201~
     let residue = feed_str(&mut p, "201~");
-    assert!(residue.is_empty(),
-        "201~ residue after paste flush should be absorbed, got {:?}", residue);
+    assert!(
+        residue.is_empty(),
+        "201~ residue after paste flush should be absorbed, got {:?}",
+        residue
+    );
 
     // Normal operation resumes
     let normal = feed_str(&mut p, "x");
@@ -404,16 +481,26 @@ fn paste_drain_expires_on_flush_escape() {
     // deadline was just set to now).
     let mut timeout_events = Vec::new();
     p.flush_escape(&mut |evt| timeout_events.push(evt));
-    assert_eq!(p.state, PS::PasteDrain,
-        "PasteDrain should NOT expire immediately — 2000ms window not elapsed");
+    assert_eq!(
+        p.state,
+        PS::PasteDrain,
+        "PasteDrain should NOT expire immediately — 2000ms window not elapsed"
+    );
     assert!(timeout_events.is_empty());
 
     // After the 2000ms deadline expires, flush_escape should transition to Ground.
     p.paste_start = Some(std::time::Instant::now() - std::time::Duration::from_millis(2100));
     let mut expired_events = Vec::new();
     p.flush_escape(&mut |evt| expired_events.push(evt));
-    assert_eq!(p.state, PS::Ground, "PasteDrain should expire after 2000ms window");
-    assert!(expired_events.is_empty(), "no events should be emitted on drain expiry");
+    assert_eq!(
+        p.state,
+        PS::Ground,
+        "PasteDrain should expire after 2000ms window"
+    );
+    assert!(
+        expired_events.is_empty(),
+        "no events should be emitted on drain expiry"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -432,7 +519,13 @@ fn empty_paste() {
 fn paste_with_only_escs() {
     // Multiple ESCs inside paste, none starting a close sequence
     let events = parse("\x1b[200~\x1ba\x1bb\x1bc\x1b[201~");
-    let text = paste_text(events.iter().find(|e| matches!(e, Event::Paste(_))).unwrap()).unwrap();
+    let text = paste_text(
+        events
+            .iter()
+            .find(|e| matches!(e, Event::Paste(_)))
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(text, "\x1ba\x1bb\x1bc");
 }
 
@@ -465,7 +558,10 @@ fn needs_vti_recheck_set_on_paste_start() {
     assert!(!p.needs_vti_recheck);
 
     let _ = feed_str(&mut p, "\x1b[200~");
-    assert!(p.needs_vti_recheck, "needs_vti_recheck should be set when paste starts");
+    assert!(
+        p.needs_vti_recheck,
+        "needs_vti_recheck should be set when paste starts"
+    );
 
     // Simulate reader thread resetting it
     p.needs_vti_recheck = false;
@@ -478,7 +574,13 @@ fn paste_preserves_exact_content_including_special_chars() {
     let payload = "Hello\ttab\rCR\nLF\x00null\r\nCRLF  spaces   end";
     let seq = format!("\x1b[200~{}\x1b[201~", payload);
     let events = parse(&seq);
-    let text = paste_text(events.iter().find(|e| matches!(e, Event::Paste(_))).unwrap()).unwrap();
+    let text = paste_text(
+        events
+            .iter()
+            .find(|e| matches!(e, Event::Paste(_)))
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(text, payload);
 }
 
@@ -499,8 +601,11 @@ fn dispatch_tilde_ignores_param_201() {
     // Feed "1~" to complete CSI 201 ~
     let csi_events = feed_str(&mut p, "1~");
     // dispatch_tilde with param 201 should return without emitting
-    assert!(csi_events.is_empty(),
-        "CSI 201~ should be silently ignored, got {:?}", csi_events);
+    assert!(
+        csi_events.is_empty(),
+        "CSI 201~ should be silently ignored, got {:?}",
+        csi_events
+    );
     assert_eq!(p.state, PS::Ground);
 }
 
@@ -524,7 +629,12 @@ fn esc_cr_decodes_as_alt_enter() {
     // Regression: previously this split into a standalone Esc + plain Enter,
     // which submitted the prompt.
     let events = parse("\x1b\r");
-    assert_eq!(events.len(), 1, "expected exactly one event, got {:?}", events);
+    assert_eq!(
+        events.len(),
+        1,
+        "expected exactly one event, got {:?}",
+        events
+    );
     let k = key_event(&events[0]).expect("expected a Key event");
     assert_eq!(k.code, KeyCode::Enter);
     assert_eq!(k.modifiers, KeyModifiers::ALT);
@@ -533,7 +643,12 @@ fn esc_cr_decodes_as_alt_enter() {
 #[test]
 fn esc_lf_decodes_as_alt_enter() {
     let events = parse("\x1b\n");
-    assert_eq!(events.len(), 1, "expected exactly one event, got {:?}", events);
+    assert_eq!(
+        events.len(),
+        1,
+        "expected exactly one event, got {:?}",
+        events
+    );
     let k = key_event(&events[0]).expect("expected a Key event");
     assert_eq!(k.code, KeyCode::Enter);
     assert_eq!(k.modifiers, KeyModifiers::ALT);

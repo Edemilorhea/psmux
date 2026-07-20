@@ -136,7 +136,10 @@ fn fix_consume_once_returns_none_on_second_take() {
     let mut p = fresh_parser();
     p.process(&osc52(b"c", payload));
 
-    assert!(p.screen_mut().take_clipboard().is_some(), "first take drains");
+    assert!(
+        p.screen_mut().take_clipboard().is_some(),
+        "first take drains"
+    );
     assert!(
         p.screen_mut().take_clipboard().is_none(),
         "second take must be None — slot was drained"
@@ -242,7 +245,10 @@ fn fix_gate_off_leaves_payload_staged() {
     let mut drain = MockDrain::new(false); // set-clipboard = off
     p.process(&osc52(b"c", b"Z2F0ZS1vZmY="));
     drain.drain(&mut p);
-    assert!(drain.last_seen.is_none(), "drain disabled — must not capture");
+    assert!(
+        drain.last_seen.is_none(),
+        "drain disabled — must not capture"
+    );
 
     // Slot is still populated because no one drained it.
     assert!(
@@ -296,7 +302,10 @@ fn fix_osc52_does_not_appear_in_screen_contents() {
     p.process(&osc52(b"c", b"YWJj"));
     let contents = p.screen().contents();
     assert!(!contents.contains("\x1b]"), "ESC ] leaked into contents");
-    assert!(!contents.contains("YWJj"), "base64 payload leaked into contents");
+    assert!(
+        !contents.contains("YWJj"),
+        "base64 payload leaked into contents"
+    );
 }
 
 #[test]
@@ -305,7 +314,11 @@ fn fix_osc52_does_not_set_title_or_path_or_progress() {
     p.process(&osc52(b"c", b"YWJj"));
     assert_eq!(p.screen().title(), "", "OSC 52 must not touch title");
     assert_eq!(p.screen().path(), None, "OSC 52 must not touch path");
-    assert_eq!(p.screen().progress(), None, "OSC 52 must not touch progress");
+    assert_eq!(
+        p.screen().progress(),
+        None,
+        "OSC 52 must not touch progress"
+    );
 }
 
 #[test]
@@ -339,14 +352,11 @@ fn fix_claude_code_slash_copy_shape_is_captured() {
 /// Minimal base64 encoder — avoids pulling in `base64` as a dev-dep just
 /// for fixture construction.
 fn simple_b64(input: &[u8]) -> String {
-    const ALPHA: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const ALPHA: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::new();
     let mut i = 0;
     while i + 3 <= input.len() {
-        let n = ((input[i] as u32) << 16)
-            | ((input[i + 1] as u32) << 8)
-            | (input[i + 2] as u32);
+        let n = ((input[i] as u32) << 16) | ((input[i + 1] as u32) << 8) | (input[i + 2] as u32);
         out.push(ALPHA[((n >> 18) & 0x3f) as usize] as char);
         out.push(ALPHA[((n >> 12) & 0x3f) as usize] as char);
         out.push(ALPHA[((n >> 6) & 0x3f) as usize] as char);

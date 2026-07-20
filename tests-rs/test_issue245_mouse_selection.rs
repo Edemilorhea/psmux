@@ -45,16 +45,20 @@ fn mock_app_with_window() -> AppState {
 #[test]
 fn default_mouse_selection_is_on() {
     let app = mock_app();
-    assert!(app.mouse_selection,
-        "mouse-selection must default to true (on) for backwards compatibility");
+    assert!(
+        app.mouse_selection,
+        "mouse-selection must default to true (on) for backwards compatibility"
+    );
 }
 
 #[test]
 fn config_parses_mouse_selection_off() {
     let mut app = mock_app_with_window();
     crate::config::parse_config_content(&mut app, "set -g mouse-selection off\n");
-    assert!(!app.mouse_selection,
-        "set -g mouse-selection off must set mouse_selection = false");
+    assert!(
+        !app.mouse_selection,
+        "set -g mouse-selection off must set mouse_selection = false"
+    );
 }
 
 #[test]
@@ -62,8 +66,10 @@ fn config_parses_mouse_selection_on() {
     let mut app = mock_app_with_window();
     app.mouse_selection = false;
     crate::config::parse_config_content(&mut app, "set -g mouse-selection on\n");
-    assert!(app.mouse_selection,
-        "set -g mouse-selection on must set mouse_selection = true");
+    assert!(
+        app.mouse_selection,
+        "set -g mouse-selection on must set mouse_selection = true"
+    );
 }
 
 #[test]
@@ -72,7 +78,11 @@ fn config_truthy_values_accepted() {
         let mut app = mock_app_with_window();
         app.mouse_selection = false;
         crate::config::parse_config_content(&mut app, &format!("set -g mouse-selection {}\n", v));
-        assert!(app.mouse_selection, "value '{}' should enable mouse-selection", v);
+        assert!(
+            app.mouse_selection,
+            "value '{}' should enable mouse-selection",
+            v
+        );
     }
 }
 
@@ -82,8 +92,11 @@ fn config_falsy_values_disable() {
         let mut app = mock_app_with_window();
         app.mouse_selection = true;
         crate::config::parse_config_content(&mut app, &format!("set -g mouse-selection {}\n", v));
-        assert!(!app.mouse_selection,
-            "value '{}' should disable mouse-selection (matches!() pattern)", v);
+        assert!(
+            !app.mouse_selection,
+            "value '{}' should disable mouse-selection (matches!() pattern)",
+            v
+        );
     }
 }
 
@@ -91,12 +104,16 @@ fn config_falsy_values_disable() {
 fn execute_command_string_set_option() {
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, "set-option -g mouse-selection off").unwrap();
-    assert!(!app.mouse_selection,
-        "execute_command_string set-option -g mouse-selection off must apply");
+    assert!(
+        !app.mouse_selection,
+        "execute_command_string set-option -g mouse-selection off must apply"
+    );
 
     execute_command_string(&mut app, "set-option -g mouse-selection on").unwrap();
-    assert!(app.mouse_selection,
-        "execute_command_string toggling back to 'on' must apply");
+    assert!(
+        app.mouse_selection,
+        "execute_command_string toggling back to 'on' must apply"
+    );
 }
 
 #[test]
@@ -104,21 +121,33 @@ fn server_options_get_returns_correct_value() {
     let mut app = mock_app_with_window();
     app.mouse_selection = true;
     let v = crate::server::options::get_option_value(&app, "mouse-selection");
-    assert_eq!(v, "on", "get_option_value for mouse-selection should return 'on'");
+    assert_eq!(
+        v, "on",
+        "get_option_value for mouse-selection should return 'on'"
+    );
 
     app.mouse_selection = false;
     let v = crate::server::options::get_option_value(&app, "mouse-selection");
-    assert_eq!(v, "off", "get_option_value for mouse-selection should return 'off'");
+    assert_eq!(
+        v, "off",
+        "get_option_value for mouse-selection should return 'off'"
+    );
 }
 
 #[test]
 fn server_options_apply_set_option() {
     let mut app = mock_app_with_window();
     crate::server::options::apply_set_option(&mut app, "mouse-selection", "off", false);
-    assert!(!app.mouse_selection, "apply_set_option off must disable mouse_selection");
+    assert!(
+        !app.mouse_selection,
+        "apply_set_option off must disable mouse_selection"
+    );
 
     crate::server::options::apply_set_option(&mut app, "mouse-selection", "on", false);
-    assert!(app.mouse_selection, "apply_set_option on must enable mouse_selection");
+    assert!(
+        app.mouse_selection,
+        "apply_set_option on must enable mouse_selection"
+    );
 }
 
 #[test]
@@ -136,8 +165,10 @@ fn option_catalog_default_is_on() {
         .iter()
         .find(|o| o.name == "mouse-selection")
         .expect("mouse-selection must be in catalog");
-    assert_eq!(entry.default, "on",
-        "Catalog default for mouse-selection must be 'on' (preserves existing behavior)");
+    assert_eq!(
+        entry.default, "on",
+        "Catalog default for mouse-selection must be 'on' (preserves existing behavior)"
+    );
     assert_eq!(entry.option_type, "boolean");
     assert_eq!(entry.scope, "session");
 }
@@ -152,8 +183,10 @@ fn mouse_selection_independent_of_mouse_enabled() {
 
     execute_command_string(&mut app, "set-option -g mouse-selection off").unwrap();
     assert!(!app.mouse_selection);
-    assert!(app.mouse_enabled,
-        "Disabling mouse-selection must NOT disable mouse forwarding");
+    assert!(
+        app.mouse_enabled,
+        "Disabling mouse-selection must NOT disable mouse forwarding"
+    );
 }
 
 #[test]
@@ -162,5 +195,8 @@ fn mouse_selection_independent_of_pwsh_mouse_selection() {
     execute_command_string(&mut app, "set-option -g pwsh-mouse-selection on").unwrap();
     execute_command_string(&mut app, "set-option -g mouse-selection off").unwrap();
     assert!(app.pwsh_mouse_selection, "pwsh-mouse-selection unchanged");
-    assert!(!app.mouse_selection, "mouse-selection toggled independently");
+    assert!(
+        !app.mouse_selection,
+        "mouse-selection toggled independently"
+    );
 }

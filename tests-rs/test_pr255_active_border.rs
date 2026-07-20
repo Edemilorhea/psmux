@@ -127,19 +127,32 @@ fn render_three_panes_does_not_color_unrelated_separator_active() {
         let area = Rect::new(0, 0, 60, 20);
         let active_rect = crate::client::compute_active_rect_json(&layout, area);
         crate::client::render_layout_json(
-            f, &layout, area,
+            f,
+            &layout,
+            area,
             false,
-            inactive_border, active_border,
-            false, Color::Reset,
+            inactive_border,
+            active_border,
+            false,
+            Color::Reset,
             active_rect,
-            "", false, "off", "",
+            "",
+            false,
+            "off",
+            "",
             total,
             crate::border_lines::border_chars("single"),
             None,
         );
-        let border_mask = crate::client::border_mask_from_layout(&layout, area, f.buffer_mut().area, false);
-        crate::rendering::fix_border_intersections(f.buffer_mut(), crate::border_lines::border_chars("single"), &border_mask);
-    }).unwrap();
+        let border_mask =
+            crate::client::border_mask_from_layout(&layout, area, f.buffer_mut().area, false);
+        crate::rendering::fix_border_intersections(
+            f.buffer_mut(),
+            crate::border_lines::border_chars("single"),
+            &border_mask,
+        );
+    })
+    .unwrap();
 
     // Inspect every horizontal separator cell '─' on the right side of the
     // outer split and assert NONE of them are colored active_border (Green),
@@ -165,7 +178,10 @@ fn render_three_panes_does_not_color_unrelated_separator_active() {
         }
     }
 
-    assert!(total_dash_right > 0, "expected horizontal separator on right side");
+    assert!(
+        total_dash_right > 0,
+        "expected horizontal separator on right side"
+    );
     assert_eq!(
         bad_active_colored_dash, 0,
         "PR #255 regression: {} dash cells on right side were colored as active even though active pane is on the left",
@@ -195,19 +211,32 @@ fn render_two_panes_keeps_half_highlight_path() {
         let area = Rect::new(0, 0, 40, 12);
         let active_rect = crate::client::compute_active_rect_json(&layout, area);
         crate::client::render_layout_json(
-            f, &layout, area,
+            f,
+            &layout,
+            area,
             false,
-            inactive_border, active_border,
-            false, Color::Reset,
+            inactive_border,
+            active_border,
+            false,
+            Color::Reset,
             active_rect,
-            "", false, "off", "",
+            "",
+            false,
+            "off",
+            "",
             total,
             crate::border_lines::border_chars("single"),
             None,
         );
-        let border_mask = crate::client::border_mask_from_layout(&layout, area, f.buffer_mut().area, false);
-        crate::rendering::fix_border_intersections(f.buffer_mut(), crate::border_lines::border_chars("single"), &border_mask);
-    }).unwrap();
+        let border_mask =
+            crate::client::border_mask_from_layout(&layout, area, f.buffer_mut().area, false);
+        crate::rendering::fix_border_intersections(
+            f.buffer_mut(),
+            crate::border_lines::border_chars("single"),
+            &border_mask,
+        );
+    })
+    .unwrap();
 
     // The vertical separator '│' should have at least some cells colored as
     // active_border (the half adjacent to the active left pane).
@@ -223,5 +252,8 @@ fn render_two_panes_keeps_half_highlight_path() {
             }
         }
     }
-    assert!(active_pipe > 0, "expected at least some active-colored pipe cells in 2-pane split");
+    assert!(
+        active_pipe > 0,
+        "expected at least some active-colored pipe cells in 2-pane split"
+    );
 }

@@ -67,7 +67,9 @@ impl HideWindowCommandExt for std::process::Command {
 #[cfg(windows)]
 pub(crate) fn escape_arg_msvcrt(arg: &str) -> String {
     let needs_quoting = arg.is_empty()
-        || arg.chars().any(|c| c == ' ' || c == '\t' || c == '\n' || c == '\x0b' || c == '"');
+        || arg
+            .chars()
+            .any(|c| c == ' ' || c == '\t' || c == '\n' || c == '\x0b' || c == '"');
     if !needs_quoting {
         return arg.to_string();
     }
@@ -80,18 +82,24 @@ pub(crate) fn escape_arg_msvcrt(arg: &str) -> String {
             backslashes += 1;
         } else if c == '"' {
             // 2N+1 backslashes followed by `"` = N literal backslashes + literal `"`
-            for _ in 0..(backslashes * 2 + 1) { out.push('\\'); }
+            for _ in 0..(backslashes * 2 + 1) {
+                out.push('\\');
+            }
             out.push('"');
             backslashes = 0;
         } else {
-            for _ in 0..backslashes { out.push('\\'); }
+            for _ in 0..backslashes {
+                out.push('\\');
+            }
             out.push(c);
             backslashes = 0;
         }
     }
     // Closing quote: any trailing backslashes must be doubled so the
     // receiver does not see them as escaping the closing quote.
-    for _ in 0..(backslashes * 2) { out.push('\\'); }
+    for _ in 0..(backslashes * 2) {
+        out.push('\\');
+    }
     out.push('"');
     out
 }
@@ -295,15 +303,23 @@ pub fn process_is_alive(_pid: u32) -> bool {
 /// (or the process exiting) releases the underlying Windows named mutex, which
 /// the OS also auto-releases on a crash — so there is no stale-lock to reap.
 #[cfg(windows)]
-pub struct SessionMutex { handle: *mut std::ffi::c_void }
+pub struct SessionMutex {
+    handle: *mut std::ffi::c_void,
+}
 #[cfg(windows)]
 unsafe impl Send for SessionMutex {}
 #[cfg(windows)]
 impl Drop for SessionMutex {
     fn drop(&mut self) {
         #[link(name = "kernel32")]
-        extern "system" { fn CloseHandle(h: isize) -> i32; }
-        if !self.handle.is_null() { unsafe { CloseHandle(self.handle as isize); } }
+        extern "system" {
+            fn CloseHandle(h: isize) -> i32;
+        }
+        if !self.handle.is_null() {
+            unsafe {
+                CloseHandle(self.handle as isize);
+            }
+        }
     }
 }
 
@@ -317,26 +333,38 @@ impl Drop for SessionMutex {
 pub fn acquire_session_mutex(name: &str) -> Option<SessionMutex> {
     #[link(name = "kernel32")]
     extern "system" {
-        fn CreateMutexW(attrs: *const std::ffi::c_void, initial_owner: i32, name: *const u16) -> *mut std::ffi::c_void;
+        fn CreateMutexW(
+            attrs: *const std::ffi::c_void,
+            initial_owner: i32,
+            name: *const u16,
+        ) -> *mut std::ffi::c_void;
         fn WaitForSingleObject(h: *mut std::ffi::c_void, ms: u32) -> u32;
         fn CloseHandle(h: isize) -> i32;
     }
     const WAIT_OBJECT_0: u32 = 0x0000_0000;
     const WAIT_ABANDONED: u32 = 0x0000_0080; // prior owner died holding it -> ours now
-    const WAIT_TIMEOUT: u32 = 0x0000_0102;   // another live process owns it
-    // Backslash is the kernel-object namespace separator and must not appear in
-    // the leaf name; map path chars out. `Local\` scopes it to this session.
-    let sanitized: String = name.chars().map(|c| if c == '\\' || c == '/' { '_' } else { c }).collect();
+    const WAIT_TIMEOUT: u32 = 0x0000_0102; // another live process owns it
+                                           // Backslash is the kernel-object namespace separator and must not appear in
+                                           // the leaf name; map path chars out. `Local\` scopes it to this session.
+    let sanitized: String = name
+        .chars()
+        .map(|c| if c == '\\' || c == '/' { '_' } else { c })
+        .collect();
     let obj = format!("Local\\psmux-session-{sanitized}");
     let wide: Vec<u16> = obj.encode_utf16().chain(std::iter::once(0)).collect();
     unsafe {
         let h = CreateMutexW(std::ptr::null(), 0, wide.as_ptr());
         if h.is_null() {
-            return Some(SessionMutex { handle: std::ptr::null_mut() }); // fail-open
+            return Some(SessionMutex {
+                handle: std::ptr::null_mut(),
+            }); // fail-open
         }
         match WaitForSingleObject(h, 0) {
             WAIT_OBJECT_0 | WAIT_ABANDONED => Some(SessionMutex { handle: h }),
-            WAIT_TIMEOUT => { CloseHandle(h as isize); None }
+            WAIT_TIMEOUT => {
+                CloseHandle(h as isize);
+                None
+            }
             _ => Some(SessionMutex { handle: h }), // unknown -> fail-open
         }
     }
@@ -347,7 +375,9 @@ pub struct SessionMutex;
 /// Non-Windows: no cross-process named mutex plumbed; fail-open (never block a
 /// legitimate start). psmux's duplicate-server race is a Windows-only concern.
 #[cfg(not(windows))]
-pub fn acquire_session_mutex(_name: &str) -> Option<SessionMutex> { Some(SessionMutex) }
+pub fn acquire_session_mutex(_name: &str) -> Option<SessionMutex> {
+    Some(SessionMutex)
+}
 
 /// Enable virtual terminal processing on Windows Console Host.
 /// This is required for ANSI color codes to work in conhost.exe (legacy console).
@@ -421,15 +451,17 @@ pub fn disable_vti_on_stdin() {
         let mut mode: u32 = 0;
         if GetConsoleMode(handle, &mut mode) != 0 {
             let had_vti = mode & ENABLE_VIRTUAL_TERMINAL_INPUT != 0;
-            crate::debug_log::input_log("console", &format!(
-                "stdin mode before: 0x{:04X} VTI={}", mode, had_vti
-            ));
+            crate::debug_log::input_log(
+                "console",
+                &format!("stdin mode before: 0x{:04X} VTI={}", mode, had_vti),
+            );
             if had_vti {
                 let new_mode = mode & !ENABLE_VIRTUAL_TERMINAL_INPUT;
                 SetConsoleMode(handle, new_mode);
-                crate::debug_log::input_log("console", &format!(
-                    "stdin mode after: 0x{:04X} (VTI cleared)", new_mode
-                ));
+                crate::debug_log::input_log(
+                    "console",
+                    &format!("stdin mode after: 0x{:04X} (VTI cleared)", new_mode),
+                );
             }
         }
     }
@@ -465,8 +497,8 @@ pub fn install_console_ctrl_handler() {
             // a GenerateConsoleCtrlEvent(_, 0) broadcast would then kill the
             // server itself.  SetConsoleCtrlHandler(None,1) only suppresses
             // Ctrl+C, so Ctrl+Break needs this explicit survival (issue #454).
-            CTRL_C_EVENT | CTRL_BREAK_EVENT
-            | CTRL_CLOSE_EVENT | CTRL_LOGOFF_EVENT | CTRL_SHUTDOWN_EVENT => 1,
+            CTRL_C_EVENT | CTRL_BREAK_EVENT | CTRL_CLOSE_EVENT | CTRL_LOGOFF_EVENT
+            | CTRL_SHUTDOWN_EVENT => 1,
             _ => 0,
         }
     }
@@ -570,9 +602,26 @@ pub fn take_client_ctrl_break() -> bool {
 pub mod mouse_inject {
     use std::ffi::c_void;
 
-    const GENERIC_READ: u32  = 0x80000000;
+    #[derive(Debug, PartialEq, Eq)]
+    pub(super) enum CtrlCModeAction {
+        SendSignal,
+        SkipSignal,
+        EnableProcessedAndSend,
+    }
+
+    pub(super) fn ctrl_c_mode_action(processed_input: bool, force: bool) -> CtrlCModeAction {
+        if processed_input {
+            CtrlCModeAction::SendSignal
+        } else if force {
+            CtrlCModeAction::EnableProcessedAndSend
+        } else {
+            CtrlCModeAction::SkipSignal
+        }
+    }
+
+    const GENERIC_READ: u32 = 0x80000000;
     const GENERIC_WRITE: u32 = 0x40000000;
-    const FILE_SHARE_READ: u32  = 0x00000001;
+    const FILE_SHARE_READ: u32 = 0x00000001;
     const FILE_SHARE_WRITE: u32 = 0x00000002;
     const OPEN_EXISTING: u32 = 3;
     const INVALID_HANDLE: isize = -1;
@@ -582,12 +631,12 @@ pub mod mouse_inject {
 
     // dwButtonState flags
     pub const FROM_LEFT_1ST_BUTTON_PRESSED: u32 = 0x0001;
-    pub const RIGHTMOST_BUTTON_PRESSED: u32     = 0x0002;
+    pub const RIGHTMOST_BUTTON_PRESSED: u32 = 0x0002;
     pub const FROM_LEFT_2ND_BUTTON_PRESSED: u32 = 0x0004; // middle button
 
     // dwEventFlags
-    pub const MOUSE_MOVED: u32       = 0x0001;
-    pub const MOUSE_WHEELED: u32     = 0x0004;
+    pub const MOUSE_MOVED: u32 = 0x0001;
+    pub const MOUSE_WHEELED: u32 = 0x0004;
 
     use std::sync::Mutex;
     use std::time::{Duration, Instant};
@@ -643,9 +692,9 @@ pub mod mouse_inject {
     }
 
     /// Console input mode flags
-    const ENABLE_MOUSE_INPUT: u32         = 0x0010;
-    const ENABLE_EXTENDED_FLAGS: u32      = 0x0080;
-    const ENABLE_QUICK_EDIT_MODE: u32     = 0x0040;
+    const ENABLE_MOUSE_INPUT: u32 = 0x0010;
+    const ENABLE_EXTENDED_FLAGS: u32 = 0x0080;
+    const ENABLE_QUICK_EDIT_MODE: u32 = 0x0040;
     const ENABLE_VIRTUAL_TERMINAL_INPUT: u32 = 0x0200;
 
     #[inline]
@@ -659,11 +708,19 @@ pub mod mouse_inject {
             let on = std::env::var("PSMUX_MOUSE_DEBUG").map_or(false, |v| v == "1" || v == "true");
             ENABLED.store(on, Ordering::Relaxed);
         }
-        if !ENABLED.load(Ordering::Relaxed) { return; }
+        if !ENABLED.load(Ordering::Relaxed) {
+            return;
+        }
 
-        let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or_default();
+        let home = std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .unwrap_or_default();
         let path = format!("{}/.psmux/mouse_debug.log", home);
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
             use std::io::Write;
             let _ = writeln!(f, "[platform] {}", msg);
         }
@@ -695,14 +752,18 @@ pub mod mouse_inject {
             FreeConsole();
 
             if AttachConsole(child_pid) == 0 {
-                debug_log(&format!("query_vti_enabled: AttachConsole({}) FAILED", child_pid));
-                if had_console { AttachConsole(ATTACH_PARENT_PROCESS); }
+                debug_log(&format!(
+                    "query_vti_enabled: AttachConsole({}) FAILED",
+                    child_pid
+                ));
+                if had_console {
+                    AttachConsole(ATTACH_PARENT_PROCESS);
+                }
                 return None;
             }
 
             let conin: [u16; 7] = [
-                'C' as u16, 'O' as u16, 'N' as u16,
-                'I' as u16, 'N' as u16, '$' as u16, 0,
+                'C' as u16, 'O' as u16, 'N' as u16, 'I' as u16, 'N' as u16, '$' as u16, 0,
             ];
             let handle = CreateFileW(
                 conin.as_ptr(),
@@ -717,7 +778,9 @@ pub mod mouse_inject {
             if handle == INVALID_HANDLE || handle == 0 {
                 debug_log("query_vti_enabled: CreateFileW(CONIN$) FAILED");
                 FreeConsole();
-                if had_console { AttachConsole(ATTACH_PARENT_PROCESS); }
+                if had_console {
+                    AttachConsole(ATTACH_PARENT_PROCESS);
+                }
                 return None;
             }
 
@@ -730,7 +793,9 @@ pub mod mouse_inject {
 
             CloseHandle(handle);
             FreeConsole();
-            if had_console { AttachConsole(ATTACH_PARENT_PROCESS); }
+            if had_console {
+                AttachConsole(ATTACH_PARENT_PROCESS);
+            }
 
             if ok == 0 {
                 debug_log("query_vti_enabled: GetConsoleMode FAILED");
@@ -738,7 +803,10 @@ pub mod mouse_inject {
             }
 
             let vti = (mode & ENABLE_VIRTUAL_TERMINAL_INPUT) != 0;
-            debug_log(&format!("query_vti_enabled: pid={} mode=0x{:04X} VTI={}", child_pid, mode, vti));
+            debug_log(&format!(
+                "query_vti_enabled: pid={} mode=0x{:04X} VTI={}",
+                child_pid, mode, vti
+            ));
             Some(vti)
         }
     }
@@ -785,15 +853,19 @@ pub mod mouse_inject {
             // Attach to child's pseudo-console
             if AttachConsole(child_pid) == 0 {
                 let err = GetLastError();
-                debug_log(&format!("send_mouse_event: AttachConsole({}) FAILED err={}", child_pid, err));
-                if had_console { AttachConsole(ATTACH_PARENT_PROCESS); }
+                debug_log(&format!(
+                    "send_mouse_event: AttachConsole({}) FAILED err={}",
+                    child_pid, err
+                ));
+                if had_console {
+                    AttachConsole(ATTACH_PARENT_PROCESS);
+                }
                 return false;
             }
 
             // Open the console input buffer
             let conin: [u16; 7] = [
-                'C' as u16, 'O' as u16, 'N' as u16,
-                'I' as u16, 'N' as u16, '$' as u16, 0,
+                'C' as u16, 'O' as u16, 'N' as u16, 'I' as u16, 'N' as u16, '$' as u16, 0,
             ];
             let handle = CreateFileW(
                 conin.as_ptr(),
@@ -807,9 +879,14 @@ pub mod mouse_inject {
 
             if handle == INVALID_HANDLE || handle == 0 {
                 let err = GetLastError();
-                debug_log(&format!("send_mouse_event: CreateFileW(CONIN$) FAILED err={}", err));
+                debug_log(&format!(
+                    "send_mouse_event: CreateFileW(CONIN$) FAILED err={}",
+                    err
+                ));
                 FreeConsole();
-                if had_console { AttachConsole(ATTACH_PARENT_PROCESS); }
+                if had_console {
+                    AttachConsole(ATTACH_PARENT_PROCESS);
+                }
                 return false;
             }
 
@@ -829,7 +906,7 @@ pub mod mouse_inject {
                 let h = handle as *mut c_void;
                 if GetConsoleMode(h, &mut mode) != 0 {
                     let desired = (mode | ENABLE_MOUSE_INPUT | ENABLE_EXTENDED_FLAGS)
-                                  & !ENABLE_QUICK_EDIT_MODE;
+                        & !ENABLE_QUICK_EDIT_MODE;
                     if desired != mode {
                         SetConsoleMode(h, desired);
                     }
@@ -881,14 +958,18 @@ pub mod mouse_inject {
             FreeConsole();
 
             if AttachConsole(child_pid) == 0 {
-                debug_log(&format!("query_mouse_input_enabled: AttachConsole({}) FAILED", child_pid));
-                if had_console { AttachConsole(ATTACH_PARENT_PROCESS); }
+                debug_log(&format!(
+                    "query_mouse_input_enabled: AttachConsole({}) FAILED",
+                    child_pid
+                ));
+                if had_console {
+                    AttachConsole(ATTACH_PARENT_PROCESS);
+                }
                 return None;
             }
 
             let conin: [u16; 7] = [
-                'C' as u16, 'O' as u16, 'N' as u16,
-                'I' as u16, 'N' as u16, '$' as u16, 0,
+                'C' as u16, 'O' as u16, 'N' as u16, 'I' as u16, 'N' as u16, '$' as u16, 0,
             ];
             let handle = CreateFileW(
                 conin.as_ptr(),
@@ -903,7 +984,9 @@ pub mod mouse_inject {
             if handle == INVALID_HANDLE || handle == 0 {
                 debug_log("query_mouse_input_enabled: CreateFileW(CONIN$) FAILED");
                 FreeConsole();
-                if had_console { AttachConsole(ATTACH_PARENT_PROCESS); }
+                if had_console {
+                    AttachConsole(ATTACH_PARENT_PROCESS);
+                }
                 return None;
             }
 
@@ -916,7 +999,9 @@ pub mod mouse_inject {
 
             CloseHandle(handle);
             FreeConsole();
-            if had_console { AttachConsole(ATTACH_PARENT_PROCESS); }
+            if had_console {
+                AttachConsole(ATTACH_PARENT_PROCESS);
+            }
 
             if ok == 0 {
                 debug_log("query_mouse_input_enabled: GetConsoleMode FAILED");
@@ -924,7 +1009,10 @@ pub mod mouse_inject {
             }
 
             let mouse_input = (mode & ENABLE_MOUSE_INPUT) != 0;
-            debug_log(&format!("query_mouse_input_enabled: pid={} mode=0x{:04X} ENABLE_MOUSE_INPUT={}", child_pid, mode, mouse_input));
+            debug_log(&format!(
+                "query_mouse_input_enabled: pid={} mode=0x{:04X} ENABLE_MOUSE_INPUT={}",
+                child_pid, mode, mouse_input
+            ));
             Some(mouse_input)
         }
     }
@@ -948,13 +1036,14 @@ pub mod mouse_inject {
             FreeConsole();
 
             if AttachConsole(child_pid) == 0 {
-                if had_console { AttachConsole(ATTACH_PARENT_PROCESS); }
+                if had_console {
+                    AttachConsole(ATTACH_PARENT_PROCESS);
+                }
                 return false;
             }
 
             let conin: [u16; 7] = [
-                'C' as u16, 'O' as u16, 'N' as u16,
-                'I' as u16, 'N' as u16, '$' as u16, 0,
+                'C' as u16, 'O' as u16, 'N' as u16, 'I' as u16, 'N' as u16, '$' as u16, 0,
             ];
             let handle = CreateFileW(
                 conin.as_ptr(),
@@ -968,7 +1057,9 @@ pub mod mouse_inject {
 
             if handle == INVALID_HANDLE || handle == 0 {
                 FreeConsole();
-                if had_console { AttachConsole(ATTACH_PARENT_PROCESS); }
+                if had_console {
+                    AttachConsole(ATTACH_PARENT_PROCESS);
+                }
                 return false;
             }
 
@@ -985,8 +1076,8 @@ pub mod mouse_inject {
             let mut original_mode: u32 = 0;
             let got_mode = GetConsoleMode(h, &mut original_mode) != 0;
             if got_mode {
-                let desired = (original_mode | ENABLE_EXTENDED_FLAGS | 0x0200 /*ENABLE_VIRTUAL_TERMINAL_INPUT*/)
-                              & !ENABLE_QUICK_EDIT_MODE;
+                let desired = (original_mode | ENABLE_EXTENDED_FLAGS | 0x0200/*ENABLE_VIRTUAL_TERMINAL_INPUT*/)
+                    & !ENABLE_QUICK_EDIT_MODE;
                 if desired != original_mode {
                     SetConsoleMode(h, desired);
                 }
@@ -1003,7 +1094,7 @@ pub mod mouse_inject {
                 repeat_count: u16,
                 virtual_key_code: u16,
                 virtual_scan_code: u16,
-                u_char: u16,       // UnicodeChar
+                u_char: u16, // UnicodeChar
                 control_key_state: u32,
             }
 
@@ -1071,14 +1162,18 @@ pub mod mouse_inject {
 
             if AttachConsole(child_pid) == 0 {
                 let err = GetLastError();
-                debug_log(&format!("send_bracketed_paste: AttachConsole({}) FAILED err={}", child_pid, err));
-                if had_console { AttachConsole(ATTACH_PARENT_PROCESS); }
+                debug_log(&format!(
+                    "send_bracketed_paste: AttachConsole({}) FAILED err={}",
+                    child_pid, err
+                ));
+                if had_console {
+                    AttachConsole(ATTACH_PARENT_PROCESS);
+                }
                 return false;
             }
 
             let conin: [u16; 7] = [
-                'C' as u16, 'O' as u16, 'N' as u16,
-                'I' as u16, 'N' as u16, '$' as u16, 0,
+                'C' as u16, 'O' as u16, 'N' as u16, 'I' as u16, 'N' as u16, '$' as u16, 0,
             ];
             let handle = CreateFileW(
                 conin.as_ptr(),
@@ -1092,9 +1187,14 @@ pub mod mouse_inject {
 
             if handle == INVALID_HANDLE || handle == 0 {
                 let err = GetLastError();
-                debug_log(&format!("send_bracketed_paste: CreateFileW(CONIN$) FAILED err={}", err));
+                debug_log(&format!(
+                    "send_bracketed_paste: CreateFileW(CONIN$) FAILED err={}",
+                    err
+                ));
                 FreeConsole();
-                if had_console { AttachConsole(ATTACH_PARENT_PROCESS); }
+                if had_console {
+                    AttachConsole(ATTACH_PARENT_PROCESS);
+                }
                 return false;
             }
 
@@ -1215,8 +1315,15 @@ pub mod mouse_inject {
                 }
             }
 
-            debug_log(&format!("send_bracketed_paste: pid={} bracket={} text_len={} records={} written={} ok={}",
-                child_pid, bracket, text.len(), records.len(), offset, last_result != 0));
+            debug_log(&format!(
+                "send_bracketed_paste: pid={} bracket={} text_len={} records={} written={} ok={}",
+                child_pid,
+                bracket,
+                text.len(),
+                records.len(),
+                offset,
+                last_result != 0
+            ));
 
             CloseHandle(handle);
             FreeConsole();
@@ -1269,14 +1376,8 @@ pub mod mouse_inject {
 
         #[link(name = "kernel32")]
         extern "system" {
-            fn SetConsoleCtrlHandler(
-                handler: Option<HandlerRoutine>,
-                add: i32,
-            ) -> i32;
-            fn GenerateConsoleCtrlEvent(
-                ctrl_event: u32,
-                process_group_id: u32,
-            ) -> i32;
+            fn SetConsoleCtrlHandler(handler: Option<HandlerRoutine>, add: i32) -> i32;
+            fn GenerateConsoleCtrlEvent(ctrl_event: u32, process_group_id: u32) -> i32;
             fn GetConsoleMode(h: *mut c_void, mode: *mut u32) -> i32;
             fn SetConsoleMode(h: *mut c_void, mode: u32) -> i32;
         }
@@ -1297,8 +1398,8 @@ pub mod mouse_inject {
         // When `force=true` the caller is an explicit user command (e.g. a
         // keybinding that runs `send-keys -f C-c` to kill the foreground app);
         // skip the heuristic and always deliver the signal.
-        let fg_is_shell = force || crate::platform::process_info::foreground_is_shell(child_pid)
-            .unwrap_or(true);
+        let fg_is_shell =
+            force || crate::platform::process_info::foreground_is_shell(child_pid).unwrap_or(true);
 
         let _console_guard = portable_pty::console_state_lock();
         unsafe {
@@ -1306,19 +1407,23 @@ pub mod mouse_inject {
 
             FreeConsole();
 
-            log(&format!("called: pid={} reattach={} had_console={}", child_pid, reattach, had_console));
+            log(&format!(
+                "called: pid={} reattach={} had_console={}",
+                child_pid, reattach, had_console
+            ));
 
             if AttachConsole(child_pid) == 0 {
                 let err = GetLastError();
                 log(&format!("AttachConsole({}) FAILED err={}", child_pid, err));
-                if had_console { AttachConsole(ATTACH_PARENT_PROCESS); }
+                if had_console {
+                    AttachConsole(ATTACH_PARENT_PROCESS);
+                }
                 return false;
             }
 
             // Open the console input buffer to check / fix ENABLE_PROCESSED_INPUT
             let conin: [u16; 7] = [
-                'C' as u16, 'O' as u16, 'N' as u16,
-                'I' as u16, 'N' as u16, '$' as u16, 0,
+                'C' as u16, 'O' as u16, 'N' as u16, 'I' as u16, 'N' as u16, '$' as u16, 0,
             ];
             let handle = CreateFileW(
                 conin.as_ptr(),
@@ -1330,9 +1435,8 @@ pub mod mouse_inject {
                 std::ptr::null(),
             );
 
-            // If we temporarily flip ENABLE_PROCESSED_INPUT on to make
-            // GenerateConsoleCtrlEvent fire, remember the handle + original mode
-            // so we can restore the shell's raw console state afterwards.
+            // If a forced interrupt temporarily flips ENABLE_PROCESSED_INPUT on,
+            // keep the handle + original mode so the raw state can be restored.
             //
             // Leaving PROCESSED_INPUT permanently ON corrupts PSReadLine, which
             // deliberately runs the console RAW (PROCESSED_INPUT cleared) so it
@@ -1342,17 +1446,22 @@ pub mod mouse_inject {
             // reaching PSReadLine as a key, so only the *first* Ctrl+C cancels the
             // line and every subsequent press is silently dropped (repeated-Ctrl+C
             // regression).
-            // By the time we reach the GenerateConsoleCtrlEvent below, the
-            // foreground console is either already in cooked mode
-            // (ENABLE_PROCESSED_INPUT set) or we could not inspect it.  Both
-            // raw-mode branches (TUI and shell) detach early via `return false`
-            // above, so there is never a temporarily-flipped mode to restore.
+            // Ordinary Ctrl+C still leaves raw-mode shells and TUIs untouched.
+            // An explicit `send-keys -f C-c`, however, temporarily enables
+            // processed input so GenerateConsoleCtrlEvent can honor the force
+            // contract, then restores the exact original mode below.
+            let mut mode_to_restore: Option<(isize, u32)> = None;
             if handle != INVALID_HANDLE && handle != 0 {
                 let mut mode: u32 = 0;
                 if GetConsoleMode(handle as *mut c_void, &mut mode) != 0 {
-                    log(&format!("console mode=0x{:04X} PROCESSED_INPUT={} fg_is_shell={}", mode, mode & ENABLE_PROCESSED_INPUT != 0, fg_is_shell));
-                    if mode & ENABLE_PROCESSED_INPUT == 0 {
-                        if !fg_is_shell {
+                    log(&format!(
+                        "console mode=0x{:04X} PROCESSED_INPUT={} fg_is_shell={}",
+                        mode,
+                        mode & ENABLE_PROCESSED_INPUT != 0,
+                        fg_is_shell
+                    ));
+                    match ctrl_c_mode_action(mode & ENABLE_PROCESSED_INPUT != 0, force) {
+                        CtrlCModeAction::SkipSignal if !fg_is_shell => {
                             // Live raw-mode TUI (Copilot CLI, vim, ...): it
                             // cleared ENABLE_PROCESSED_INPUT to read raw 0x03
                             // itself and decide copy-vs-interrupt.  The call
@@ -1364,31 +1473,52 @@ pub mod mouse_inject {
                             log(&format!("raw-mode non-shell foreground pid={}: deliver raw 0x03, skip CTRL_C_EVENT", child_pid));
                             CloseHandle(handle);
                             FreeConsole();
-                            if had_console { AttachConsole(ATTACH_PARENT_PROCESS); }
+                            if had_console {
+                                AttachConsole(ATTACH_PARENT_PROCESS);
+                            }
                             return false;
                         }
-                        // Raw-mode shell prompt (e.g. PSReadLine).  Like the
-                        // raw-mode TUI case above, the shell deliberately cleared
-                        // ENABLE_PROCESSED_INPUT so it can read Ctrl+C as a raw
-                        // 0x03 key event and cancel the current input line itself.
-                        // The call site already writes raw 0x03 to the PTY, which
-                        // is sufficient to cancel the line.  Firing an additional
-                        // GenerateConsoleCtrlEvent here is both redundant and
-                        // harmful: to make the signal fire we would have to flip
-                        // PROCESSED_INPUT on temporarily, and the extra async
-                        // CTRL_C_EVENT interrupts PSReadLine's ReadConsole loop
-                        // after it has already handled the raw 0x03, leaving the
-                        // shell half-wedged so that subsequent Enter (\r) bytes
-                        // are written to the PTY but never processed as a line.
-                        // Skip the signal entirely and detach cleanly; the raw
-                        // 0x03 byte carries the interrupt on its own.
-                        log(&format!("raw-mode shell foreground pid={}: deliver raw 0x03, skip CTRL_C_EVENT", child_pid));
-                        CloseHandle(handle);
-                        FreeConsole();
-                        if had_console { AttachConsole(ATTACH_PARENT_PROCESS); }
-                        return false;
-                    } else {
-                        CloseHandle(handle);
+                        CtrlCModeAction::SkipSignal => {
+                            // Raw-mode shell prompt (e.g. PSReadLine).  Like the
+                            // raw-mode TUI case above, the shell deliberately cleared
+                            // ENABLE_PROCESSED_INPUT so it can read Ctrl+C as a raw
+                            // 0x03 key event and cancel the current input line itself.
+                            // The call site already writes raw 0x03 to the PTY, which
+                            // is sufficient to cancel the line.  Firing an additional
+                            // GenerateConsoleCtrlEvent here is both redundant and
+                            // harmful: to make the signal fire we would have to flip
+                            // PROCESSED_INPUT on temporarily, and the extra async
+                            // CTRL_C_EVENT interrupts PSReadLine's ReadConsole loop
+                            // after it has already handled the raw 0x03, leaving the
+                            // shell half-wedged so that subsequent Enter (\r) bytes
+                            // are written to the PTY but never processed as a line.
+                            // Skip the signal entirely and detach cleanly; the raw
+                            // 0x03 byte carries the interrupt on its own.
+                            log(&format!("raw-mode shell foreground pid={}: deliver raw 0x03, skip CTRL_C_EVENT", child_pid));
+                            CloseHandle(handle);
+                            FreeConsole();
+                            if had_console {
+                                AttachConsole(ATTACH_PARENT_PROCESS);
+                            }
+                            return false;
+                        }
+                        CtrlCModeAction::EnableProcessedAndSend => {
+                            let processed_mode = mode | ENABLE_PROCESSED_INPUT;
+                            if SetConsoleMode(handle as *mut c_void, processed_mode) == 0 {
+                                log("forced raw-mode interrupt: SetConsoleMode FAILED");
+                                CloseHandle(handle);
+                                FreeConsole();
+                                if had_console {
+                                    AttachConsole(ATTACH_PARENT_PROCESS);
+                                }
+                                return false;
+                            }
+                            log(&format!("forced raw-mode interrupt: temporarily enabled PROCESSED_INPUT (0x{:04X} -> 0x{:04X})", mode, processed_mode));
+                            mode_to_restore = Some((handle, mode));
+                        }
+                        CtrlCModeAction::SendSignal => {
+                            CloseHandle(handle);
+                        }
                     }
                 } else {
                     CloseHandle(handle);
@@ -1404,13 +1534,25 @@ pub mod mouse_inject {
             let ok = GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0);
             let err = GetLastError();
 
-            log(&format!("GenerateConsoleCtrlEvent => ok={} err={}", ok, err));
+            log(&format!(
+                "GenerateConsoleCtrlEvent => ok={} err={}",
+                ok, err
+            ));
 
             // GenerateConsoleCtrlEvent dispatches asynchronously via a system
             // thread pool.  Sleep while still attached so the signal has time
             // to propagate through the console subsystem before we detach.
             // psmux is protected by the preceding SetConsoleCtrlHandler(None, 1).
             std::thread::sleep(std::time::Duration::from_millis(5));
+
+            if let Some((handle, original_mode)) = mode_to_restore {
+                let restored = SetConsoleMode(handle as *mut c_void, original_mode);
+                log(&format!(
+                    "forced raw-mode interrupt: restore mode=0x{:04X} ok={}",
+                    original_mode, restored
+                ));
+                CloseHandle(handle);
+            }
 
             // Detach from the child's console BEFORE restoring Ctrl+C handling.
             // If we restore the default handler while still attached, the async
@@ -1455,14 +1597,8 @@ pub mod mouse_inject {
 
         #[link(name = "kernel32")]
         extern "system" {
-            fn SetConsoleCtrlHandler(
-                handler: Option<HandlerRoutine>,
-                add: i32,
-            ) -> i32;
-            fn GenerateConsoleCtrlEvent(
-                ctrl_event: u32,
-                process_group_id: u32,
-            ) -> i32;
+            fn SetConsoleCtrlHandler(handler: Option<HandlerRoutine>, add: i32) -> i32;
+            fn GenerateConsoleCtrlEvent(ctrl_event: u32, process_group_id: u32) -> i32;
         }
 
         fn log(msg: &str) {
@@ -1490,12 +1626,17 @@ pub mod mouse_inject {
 
             FreeConsole();
 
-            log(&format!("called: pid={} reattach={} had_console={}", child_pid, reattach, had_console));
+            log(&format!(
+                "called: pid={} reattach={} had_console={}",
+                child_pid, reattach, had_console
+            ));
 
             if AttachConsole(child_pid) == 0 {
                 let err = GetLastError();
                 log(&format!("AttachConsole({}) FAILED err={}", child_pid, err));
-                if had_console { AttachConsole(ATTACH_PARENT_PROCESS); }
+                if had_console {
+                    AttachConsole(ATTACH_PARENT_PROCESS);
+                }
                 return false;
             }
 
@@ -1505,7 +1646,10 @@ pub mod mouse_inject {
 
             let ok = GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, 0);
             let err = GetLastError();
-            log(&format!("GenerateConsoleCtrlEvent(CTRL_BREAK) => ok={} err={}", ok, err));
+            log(&format!(
+                "GenerateConsoleCtrlEvent(CTRL_BREAK) => ok={} err={}",
+                ok, err
+            ));
 
             // GenerateConsoleCtrlEvent dispatches asynchronously via a system
             // thread pool.  Sleep while still attached AND still protected so the
@@ -1528,8 +1672,8 @@ pub mod mouse_inject {
 
     pub fn char_to_vk(ch: char) -> u16 {
         match ch {
-            '\x1b' => 0x1B,  // VK_ESCAPE — VkKeyScanW returns -1 for non-printable
-            '\r'   => 0x0D,  // VK_RETURN
+            '\x1b' => 0x1B, // VK_ESCAPE — VkKeyScanW returns -1 for non-printable
+            '\r' => 0x0D,   // VK_RETURN
             _ => {
                 #[link(name = "user32")]
                 extern "system" {
@@ -1538,7 +1682,11 @@ pub mod mouse_inject {
                 let mut buf = [0u16; 2];
                 let wch = ch.to_ascii_lowercase().encode_utf16(&mut buf)[0];
                 let result = unsafe { VkKeyScanW(wch) };
-                if result == -1 { 0u16 } else { (result & 0xFF) as u16 }
+                if result == -1 {
+                    0u16
+                } else {
+                    (result & 0xFF) as u16
+                }
             }
         }
     }
@@ -1567,21 +1715,31 @@ pub mod mouse_inject {
     /// For Ctrl+key: `u_char` = control character (ch & 0x1F); for Alt+key:
     /// `u_char` = the plain char; for Ctrl+Alt: `u_char` = control character.
     /// Sends both key-down and key-up events for proper event pairing.
-    pub fn send_modified_key_event(child_pid: u32, ch: char, ctrl: bool, alt: bool, shift: bool) -> bool {
+    pub fn send_modified_key_event(
+        child_pid: u32,
+        ch: char,
+        ctrl: bool,
+        alt: bool,
+        shift: bool,
+    ) -> bool {
         let _console_guard = portable_pty::console_state_lock();
         unsafe {
             let had_console = GetConsoleWindow() != 0;
             FreeConsole();
 
             if AttachConsole(child_pid) == 0 {
-                debug_log(&format!("send_modified_key_event: AttachConsole({}) FAILED", child_pid));
-                if had_console { AttachConsole(ATTACH_PARENT_PROCESS); }
+                debug_log(&format!(
+                    "send_modified_key_event: AttachConsole({}) FAILED",
+                    child_pid
+                ));
+                if had_console {
+                    AttachConsole(ATTACH_PARENT_PROCESS);
+                }
                 return false;
             }
 
             let conin: [u16; 7] = [
-                'C' as u16, 'O' as u16, 'N' as u16,
-                'I' as u16, 'N' as u16, '$' as u16, 0,
+                'C' as u16, 'O' as u16, 'N' as u16, 'I' as u16, 'N' as u16, '$' as u16, 0,
             ];
             let handle = CreateFileW(
                 conin.as_ptr(),
@@ -1594,9 +1752,13 @@ pub mod mouse_inject {
             );
 
             if handle == INVALID_HANDLE || handle == 0 {
-                debug_log(&format!("send_modified_key_event: CreateFileW(CONIN$) FAILED"));
+                debug_log(&format!(
+                    "send_modified_key_event: CreateFileW(CONIN$) FAILED"
+                ));
                 FreeConsole();
-                if had_console { AttachConsole(ATTACH_PARENT_PROCESS); }
+                if had_console {
+                    AttachConsole(ATTACH_PARENT_PROCESS);
+                }
                 return false;
             }
 
@@ -1625,11 +1787,21 @@ pub mod mouse_inject {
 
             // Build control_key_state flags (matching Windows Terminal convention)
             let mut flags: u32 = 0;
-            if ctrl { flags |= LEFT_CTRL_PRESSED; }
-            if alt  { flags |= LEFT_ALT_PRESSED; }
-            if shift { flags |= SHIFT_PRESSED; }
+            if ctrl {
+                flags |= LEFT_CTRL_PRESSED;
+            }
+            if alt {
+                flags |= LEFT_ALT_PRESSED;
+            }
+            if shift {
+                flags |= SHIFT_PRESSED;
+            }
 
-            let base_char = if shift && !ctrl { ch.to_ascii_uppercase() } else { ch };
+            let base_char = if shift && !ctrl {
+                ch.to_ascii_uppercase()
+            } else {
+                ch
+            };
             let u_char_value: u16 = if ctrl {
                 (base_char.to_ascii_lowercase() as u16) & 0x1F
             } else {
@@ -1706,14 +1878,18 @@ pub mod mouse_inject {
             FreeConsole();
 
             if AttachConsole(child_pid) == 0 {
-                debug_log(&format!("send_modified_enter_event: AttachConsole({}) FAILED", child_pid));
-                if had_console { AttachConsole(ATTACH_PARENT_PROCESS); }
+                debug_log(&format!(
+                    "send_modified_enter_event: AttachConsole({}) FAILED",
+                    child_pid
+                ));
+                if had_console {
+                    AttachConsole(ATTACH_PARENT_PROCESS);
+                }
                 return false;
             }
 
             let conin: [u16; 7] = [
-                'C' as u16, 'O' as u16, 'N' as u16,
-                'I' as u16, 'N' as u16, '$' as u16, 0,
+                'C' as u16, 'O' as u16, 'N' as u16, 'I' as u16, 'N' as u16, '$' as u16, 0,
             ];
             let handle = CreateFileW(
                 conin.as_ptr(),
@@ -1726,9 +1902,13 @@ pub mod mouse_inject {
             );
 
             if handle == INVALID_HANDLE || handle == 0 {
-                debug_log(&format!("send_modified_enter_event: CreateFileW(CONIN$) FAILED"));
+                debug_log(&format!(
+                    "send_modified_enter_event: CreateFileW(CONIN$) FAILED"
+                ));
                 FreeConsole();
-                if had_console { AttachConsole(ATTACH_PARENT_PROCESS); }
+                if had_console {
+                    AttachConsole(ATTACH_PARENT_PROCESS);
+                }
                 return false;
             }
 
@@ -1762,9 +1942,15 @@ pub mod mouse_inject {
             }
 
             let mut flags: u32 = 0;
-            if ctrl  { flags |= LEFT_CTRL_PRESSED; }
-            if alt   { flags |= LEFT_ALT_PRESSED; }
-            if shift { flags |= SHIFT_PRESSED; }
+            if ctrl {
+                flags |= LEFT_CTRL_PRESSED;
+            }
+            if alt {
+                flags |= LEFT_ALT_PRESSED;
+            }
+            if shift {
+                flags |= SHIFT_PRESSED;
+            }
 
             // MAPVK_VK_TO_VSC = 0
             let scan = MapVirtualKeyW(VK_RETURN as u32, 0) as u16;
@@ -1775,7 +1961,11 @@ pub mod mouse_inject {
             // (PSReadLine) still see Ctrl+Enter, while VT/raw stdin readers (Node/libuv
             // apps like pi, Claude Code) receive LF instead of CR (#409).  Shift/Alt
             // Enter variants keep CR to preserve their existing behavior.
-            let u_char = if ctrl && !alt && !shift { '\n' as u16 } else { '\r' as u16 };
+            let u_char = if ctrl && !alt && !shift {
+                '\n' as u16
+            } else {
+                '\r' as u16
+            };
 
             let records = [
                 KEY_INPUT_RECORD {
@@ -1828,19 +2018,58 @@ pub mod mouse_inject {
 
 #[cfg(not(windows))]
 pub mod mouse_inject {
-    pub fn get_child_pid(_child: &dyn portable_pty::Child) -> Option<u32> { None }
-    pub fn send_mouse_event(_pid: u32, _col: i16, _row: i16, _btn: u32, _flags: u32, _reattach: bool) -> bool { false }
-    pub fn send_vt_sequence(_pid: u32, _sequence: &[u8]) -> bool { false }
-    pub fn query_vti_enabled(_pid: u32) -> Option<bool> { None }
-    pub fn send_ctrl_c_event(_pid: u32, _reattach: bool, _force: bool) -> bool { false }
-    pub fn send_ctrl_break_event(_pid: u32, _reattach: bool) -> bool { false }
-    pub fn query_mouse_input_enabled(_pid: u32) -> Option<bool> { None }
-    pub fn send_bracketed_paste(_pid: u32, _text: &str, _bracket: bool) -> bool { false }
-    pub fn send_modified_key_event(_pid: u32, _ch: char, _ctrl: bool, _alt: bool, _shift: bool) -> bool { false }
-    pub fn send_alt_key_event(_pid: u32, _ch: char) -> bool { false }
-    pub fn send_modified_enter_event(_pid: u32, _ctrl: bool, _alt: bool, _shift: bool) -> bool { false }
-    pub fn char_to_vk(_ch: char) -> u16 { 0 }
-    pub fn vk_to_scan(_vk: u16) -> u16 { 0 }
+    pub fn get_child_pid(_child: &dyn portable_pty::Child) -> Option<u32> {
+        None
+    }
+    pub fn send_mouse_event(
+        _pid: u32,
+        _col: i16,
+        _row: i16,
+        _btn: u32,
+        _flags: u32,
+        _reattach: bool,
+    ) -> bool {
+        false
+    }
+    pub fn send_vt_sequence(_pid: u32, _sequence: &[u8]) -> bool {
+        false
+    }
+    pub fn query_vti_enabled(_pid: u32) -> Option<bool> {
+        None
+    }
+    pub fn send_ctrl_c_event(_pid: u32, _reattach: bool, _force: bool) -> bool {
+        false
+    }
+    pub fn send_ctrl_break_event(_pid: u32, _reattach: bool) -> bool {
+        false
+    }
+    pub fn query_mouse_input_enabled(_pid: u32) -> Option<bool> {
+        None
+    }
+    pub fn send_bracketed_paste(_pid: u32, _text: &str, _bracket: bool) -> bool {
+        false
+    }
+    pub fn send_modified_key_event(
+        _pid: u32,
+        _ch: char,
+        _ctrl: bool,
+        _alt: bool,
+        _shift: bool,
+    ) -> bool {
+        false
+    }
+    pub fn send_alt_key_event(_pid: u32, _ch: char) -> bool {
+        false
+    }
+    pub fn send_modified_enter_event(_pid: u32, _ctrl: bool, _alt: bool, _shift: bool) -> bool {
+        false
+    }
+    pub fn char_to_vk(_ch: char) -> u16 {
+        0
+    }
+    pub fn vk_to_scan(_vk: u16) -> u16 {
+        0
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1905,7 +2134,10 @@ pub mod process_kill {
     /// snapshot cannot be a process we enumerated, so it must be a reused PID.
     fn now_filetime() -> u64 {
         unsafe {
-            let mut ft = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+            let mut ft = FILETIME {
+                dwLowDateTime: 0,
+                dwHighDateTime: 0,
+            };
             GetSystemTimeAsFileTime(&mut ft);
             filetime_to_u64(ft)
         }
@@ -1922,10 +2154,22 @@ pub mod process_kill {
             if h == 0 || h == INVALID_HANDLE {
                 return None;
             }
-            let mut creation = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
-            let mut exit = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
-            let mut kernel = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
-            let mut user = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+            let mut creation = FILETIME {
+                dwLowDateTime: 0,
+                dwHighDateTime: 0,
+            };
+            let mut exit = FILETIME {
+                dwLowDateTime: 0,
+                dwHighDateTime: 0,
+            };
+            let mut kernel = FILETIME {
+                dwLowDateTime: 0,
+                dwHighDateTime: 0,
+            };
+            let mut user = FILETIME {
+                dwLowDateTime: 0,
+                dwHighDateTime: 0,
+            };
             let ok = GetProcessTimes(h, &mut creation, &mut exit, &mut kernel, &mut user);
             CloseHandle(h);
             if ok == 0 {
@@ -1941,7 +2185,9 @@ pub mod process_kill {
         let mut descendants = Vec::new();
         unsafe {
             let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-            if snap == INVALID_HANDLE || snap == 0 { return descendants; }
+            if snap == INVALID_HANDLE || snap == 0 {
+                return descendants;
+            }
 
             // Build full process table from snapshot
             let mut entries: Vec<(u32, u32)> = Vec::with_capacity(256); // (pid, parent_pid)
@@ -2014,7 +2260,9 @@ pub mod process_kill {
         unsafe {
             let cur_pid = GetCurrentProcessIdSafe();
             let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-            if snap == INVALID_HANDLE || snap == 0 { return None; }
+            if snap == INVALID_HANDLE || snap == 0 {
+                return None;
+            }
             let mut pe: PROCESSENTRY32W = std::mem::zeroed();
             pe.dw_size = std::mem::size_of::<PROCESSENTRY32W>() as u32;
             let mut found: Option<u32> = None;
@@ -2046,7 +2294,9 @@ pub mod process_kill {
     pub fn kill_parent_process() -> bool {
         if let Some(ppid) = current_parent_pid() {
             // Sanity check: don't terminate PID 0 / 4 (System / kernel).
-            if ppid == 0 || ppid == 4 { return false; }
+            if ppid == 0 || ppid == 4 {
+                return false;
+            }
             // detach-client -P intentionally targets the caller's own parent
             // shell; there is no snapshot cutoff to verify against, so kill
             // unconditionally.
@@ -2106,7 +2356,8 @@ pub mod process_kill {
     /// killing an entire session (avoids N separate system snapshots).
     pub fn kill_process_trees_batch(children: &mut [&mut Box<dyn portable_pty::Child>]) {
         // Collect all root PIDs
-        let root_pids: Vec<Option<u32>> = children.iter()
+        let root_pids: Vec<Option<u32>> = children
+            .iter()
             .map(|c| super::mouse_inject::get_child_pid(c.as_ref()))
             .collect();
 
@@ -2138,7 +2389,9 @@ pub mod process_kill {
         let mut entries: Vec<(u32, u32)> = Vec::with_capacity(256);
         unsafe {
             let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-            if snap == INVALID_HANDLE || snap == 0 { return entries; }
+            if snap == INVALID_HANDLE || snap == 0 {
+                return entries;
+            }
 
             let mut pe: PROCESSENTRY32W = std::mem::zeroed();
             pe.dw_size = std::mem::size_of::<PROCESSENTRY32W>() as u32;
@@ -2212,27 +2465,43 @@ pub mod process_kill {
             let mut size: u32 = 0;
             // First call sizes the buffer.
             let _ = GetExtendedTcpTable(
-                std::ptr::null_mut(), &mut size, 0, AF_INET,
-                TCP_TABLE_OWNER_PID_LISTENER, 0,
+                std::ptr::null_mut(),
+                &mut size,
+                0,
+                AF_INET,
+                TCP_TABLE_OWNER_PID_LISTENER,
+                0,
             );
-            if size == 0 { return out; }
+            if size == 0 {
+                return out;
+            }
             let mut buf = vec![0u8; size as usize];
             let mut attempts = 0;
             let mut ret = GetExtendedTcpTable(
-                buf.as_mut_ptr(), &mut size, 0, AF_INET,
-                TCP_TABLE_OWNER_PID_LISTENER, 0,
+                buf.as_mut_ptr(),
+                &mut size,
+                0,
+                AF_INET,
+                TCP_TABLE_OWNER_PID_LISTENER,
+                0,
             );
             // The table can grow between the sizing and filling calls; retry a
             // couple of times on ERROR_INSUFFICIENT_BUFFER with the new size.
             while ret == ERROR_INSUFFICIENT_BUFFER && attempts < 3 {
                 buf.resize(size as usize, 0);
                 ret = GetExtendedTcpTable(
-                    buf.as_mut_ptr(), &mut size, 0, AF_INET,
-                    TCP_TABLE_OWNER_PID_LISTENER, 0,
+                    buf.as_mut_ptr(),
+                    &mut size,
+                    0,
+                    AF_INET,
+                    TCP_TABLE_OWNER_PID_LISTENER,
+                    0,
                 );
                 attempts += 1;
             }
-            if ret != 0 { return out; }
+            if ret != 0 {
+                return out;
+            }
 
             // MIB_TCPTABLE_OWNER_PID: u32 dwNumEntries, then rows.
             // MIB_TCPROW_OWNER_PID (24 bytes): state, localAddr, localPort,
@@ -2242,9 +2511,13 @@ pub mod process_kill {
             const ROW: usize = 24;
             for i in 0..num {
                 let row = base.add(4 + i * ROW);
-                if 4 + i * ROW + ROW > buf.len() { break; }
+                if 4 + i * ROW + ROW > buf.len() {
+                    break;
+                }
                 let local_addr = (row.add(4) as *const u32).read_unaligned();
-                if local_addr != LOOPBACK_ADDR { continue; }
+                if local_addr != LOOPBACK_ADDR {
+                    continue;
+                }
                 let local_port_raw = (row.add(8) as *const u32).read_unaligned();
                 // dwLocalPort is network byte order in the low 16 bits.
                 let port = (((local_port_raw & 0xff) << 8) | ((local_port_raw >> 8) & 0xff)) as u16;
@@ -2297,9 +2570,15 @@ pub mod process_kill {
     }
 
     // Orphaned-server reaper stubs (issue #448) — no-ops off Windows.
-    pub fn loopback_listener_pids() -> Vec<(u32, u16)> { Vec::new() }
-    pub fn now_process_filetime() -> u64 { 0 }
-    pub fn process_creation_time(_pid: u32) -> Option<u64> { None }
+    pub fn loopback_listener_pids() -> Vec<(u32, u16)> {
+        Vec::new()
+    }
+    pub fn now_process_filetime() -> u64 {
+        0
+    }
+    pub fn process_creation_time(_pid: u32) -> Option<u64> {
+        None
+    }
     pub fn terminate_server_pid(_pid: u32, _max_creation_ft: Option<u64>) {}
 }
 
@@ -2383,12 +2662,16 @@ pub mod process_info {
     pub fn get_process_name(pid: u32) -> Option<String> {
         unsafe {
             let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-            if h == 0 || h == -1 { return None; }
+            if h == 0 || h == -1 {
+                return None;
+            }
             let mut buf = [0u16; 1024];
             let mut size = buf.len() as u32;
             let ok = QueryFullProcessImageNameW(h, 0, buf.as_mut_ptr(), &mut size);
             CloseHandle(h);
-            if ok == 0 { return None; }
+            if ok == 0 {
+                return None;
+            }
             let full_path = OsString::from_wide(&buf[..size as usize])
                 .to_string_lossy()
                 .into_owned();
@@ -2404,7 +2687,9 @@ pub mod process_info {
     pub fn get_process_cwd(pid: u32) -> Option<String> {
         unsafe {
             let h = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, 0, pid);
-            if h == 0 || h == -1 { return None; }
+            if h == 0 || h == -1 {
+                return None;
+            }
             let result = read_process_cwd(h);
             CloseHandle(h);
             result
@@ -2423,14 +2708,22 @@ pub mod process_info {
             std::mem::size_of::<PROCESS_BASIC_INFORMATION>() as u32,
             &mut ret_len,
         );
-        if status != 0 { return None; }
+        if status != 0 {
+            return None;
+        }
         let peb_addr = pbi.PebBaseAddress;
-        if peb_addr == 0 { return None; }
+        if peb_addr == 0 {
+            return None;
+        }
 
         // Step 2: Read ProcessParameters pointer from PEB.
         // PEB layout (x64): offset 0x20 = ProcessParameters pointer
         // PEB layout (x86): offset 0x10 = ProcessParameters pointer
-        let params_ptr_offset = if std::mem::size_of::<usize>() == 8 { 0x20 } else { 0x10 };
+        let params_ptr_offset = if std::mem::size_of::<usize>() == 8 {
+            0x20
+        } else {
+            0x10
+        };
         let mut process_params_ptr: isize = 0;
         let mut bytes_read: usize = 0;
         let ok = ReadProcessMemory(
@@ -2440,12 +2733,18 @@ pub mod process_info {
             std::mem::size_of::<isize>(),
             &mut bytes_read,
         );
-        if ok == 0 || process_params_ptr == 0 { return None; }
+        if ok == 0 || process_params_ptr == 0 {
+            return None;
+        }
 
         // Step 3: Read CurrentDirectory.DosPath (UNICODE_STRING) from RTL_USER_PROCESS_PARAMETERS.
         // x64 offset: 0x38 = CurrentDirectory.DosPath
         // x86 offset: 0x24 = CurrentDirectory.DosPath
-        let cwd_offset = if std::mem::size_of::<usize>() == 8 { 0x38 } else { 0x24 };
+        let cwd_offset = if std::mem::size_of::<usize>() == 8 {
+            0x38
+        } else {
+            0x24
+        };
         let mut cwd_ustr: UNICODE_STRING = std::mem::zeroed();
         let ok = ReadProcessMemory(
             h,
@@ -2454,7 +2753,9 @@ pub mod process_info {
             std::mem::size_of::<UNICODE_STRING>(),
             &mut bytes_read,
         );
-        if ok == 0 || cwd_ustr.Length == 0 || cwd_ustr.Buffer == 0 { return None; }
+        if ok == 0 || cwd_ustr.Length == 0 || cwd_ustr.Buffer == 0 {
+            return None;
+        }
 
         // Step 4: Read the actual CWD wide string
         let char_count = (cwd_ustr.Length / 2) as usize;
@@ -2466,11 +2767,11 @@ pub mod process_info {
             cwd_ustr.Length as usize,
             &mut bytes_read,
         );
-        if ok == 0 { return None; }
+        if ok == 0 {
+            return None;
+        }
 
-        let path = OsString::from_wide(&wchars)
-            .to_string_lossy()
-            .into_owned();
+        let path = OsString::from_wide(&wchars).to_string_lossy().into_owned();
         // Remove trailing backslash (tmux convention)
         Some(path.trim_end_matches('\\').to_string())
     }
@@ -2480,12 +2781,25 @@ pub mod process_info {
         use std::sync::atomic::{AtomicU32, Ordering};
         static COUNT: AtomicU32 = AtomicU32::new(0);
         let n = COUNT.fetch_add(1, Ordering::Relaxed);
-        if n > 100 { return; }
-        let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or_default();
+        if n > 100 {
+            return;
+        }
+        let home = std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .unwrap_or_default();
         let path = format!("{}/.psmux/autorename.log", home);
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
             use std::io::Write;
-            let _ = writeln!(f, "[{}] {}", chrono::Local::now().format("%H:%M:%S%.3f"), msg);
+            let _ = writeln!(
+                f,
+                "[{}] {}",
+                chrono::Local::now().format("%H:%M:%S%.3f"),
+                msg
+            );
         }
     }
 
@@ -2533,10 +2847,17 @@ pub mod process_info {
     /// Known system/infrastructure processes that should be skipped when
     /// walking the process tree to find the user's foreground command.
     fn is_system_exe(name: &str) -> bool {
-        matches!(name,
-            "conhost.exe" | "csrss.exe" | "dwm.exe" | "services.exe"
-            | "svchost.exe" | "wininit.exe" | "winlogon.exe"
-            | "openconsole.exe" | "runtimebroker.exe"
+        matches!(
+            name,
+            "conhost.exe"
+                | "csrss.exe"
+                | "dwm.exe"
+                | "services.exe"
+                | "svchost.exe"
+                | "wininit.exe"
+                | "winlogon.exe"
+                | "openconsole.exe"
+                | "runtimebroker.exe"
         )
     }
 
@@ -2546,10 +2867,22 @@ pub mod process_info {
     /// at *its* immediate child instead.
     fn is_wrapper_exe(name: &str) -> bool {
         let stem = name.strip_suffix(".exe").unwrap_or(name);
-        matches!(stem,
-            "cmd" | "bash" | "sh" | "dash" | "zsh" | "fish"
-            | "npx" | "npm" | "pnpm" | "yarn" | "bunx"
-            | "env" | "sudo" | "runas"
+        matches!(
+            stem,
+            "cmd"
+                | "bash"
+                | "sh"
+                | "dash"
+                | "zsh"
+                | "fish"
+                | "npx"
+                | "npm"
+                | "pnpm"
+                | "yarn"
+                | "bunx"
+                | "env"
+                | "sudo"
+                | "runas"
         )
     }
 
@@ -2585,10 +2918,15 @@ pub mod process_info {
             }
             CloseHandle(snap);
 
-            autorename_log(&format!("root={} snapshot_entries={}", root_pid, entries.len()));
+            autorename_log(&format!(
+                "root={} snapshot_entries={}",
+                root_pid,
+                entries.len()
+            ));
 
             // Immediate children of root_pid, skipping system processes.
-            let direct: Vec<(u32, String)> = entries.iter()
+            let direct: Vec<(u32, String)> = entries
+                .iter()
                 .filter(|(_, ppid, name)| *ppid == root_pid && !is_system_exe(name))
                 .map(|(pid, _, name)| (*pid, name.clone()))
                 .collect();
@@ -2604,24 +2942,27 @@ pub mod process_info {
 
             // Pick the immediate child.  When multiple exist, prefer the
             // largest PID (most recently created).
-            let (mut chosen_pid, chosen_name) = direct.iter()
+            let (mut chosen_pid, chosen_name) = direct
+                .iter()
                 .max_by_key(|(pid, _)| *pid)
                 .map(|(pid, name)| (*pid, name.clone()))
                 .unwrap();
 
-            autorename_log(&format!("root={} immediate_child={} name={}", root_pid, chosen_pid, chosen_name));
+            autorename_log(&format!(
+                "root={} immediate_child={} name={}",
+                root_pid, chosen_pid, chosen_name
+            ));
 
             // If the immediate child is a known wrapper (cmd, bash, npx, ...),
             // look one level deeper for the real program.
             if is_wrapper_exe(&chosen_name) {
-                let grandchildren: Vec<(u32, String)> = entries.iter()
+                let grandchildren: Vec<(u32, String)> = entries
+                    .iter()
                     .filter(|(_, ppid, name)| *ppid == chosen_pid && !is_system_exe(name))
                     .map(|(pid, _, name)| (*pid, name.clone()))
                     .collect();
 
-                if let Some((gc_pid, gc_name)) = grandchildren.iter()
-                    .max_by_key(|(pid, _)| *pid)
-                {
+                if let Some((gc_pid, gc_name)) = grandchildren.iter().max_by_key(|(pid, _)| *pid) {
                     autorename_log(&format!(
                         "root={} wrapper={} skip_to_grandchild={} name={}",
                         root_pid, chosen_name, gc_pid, gc_name
@@ -2637,7 +2978,11 @@ pub mod process_info {
 
     /// Extract the lowercased executable name from a PROCESSENTRY32W.
     fn exe_name_from_entry(pe: &PROCESSENTRY32W) -> String {
-        let nul = pe.sz_exe_file.iter().position(|&c| c == 0).unwrap_or(pe.sz_exe_file.len());
+        let nul = pe
+            .sz_exe_file
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(pe.sz_exe_file.len());
         String::from_utf16_lossy(&pe.sz_exe_file[..nul]).to_lowercase()
     }
 
@@ -2645,9 +2990,18 @@ pub mod process_info {
     /// that requires VT mouse injection instead of Win32 console injection.
     fn is_vt_bridge_exe(name: &str) -> bool {
         let stem = name.strip_suffix(".exe").unwrap_or(name);
-        matches!(stem, "wsl" | "ssh" | "ubuntu" | "debian" | "kali"
-                      | "fedoraremix" | "opensuse-leap" | "sles" | "arch")
-            || stem.starts_with("wsl")
+        matches!(
+            stem,
+            "wsl"
+                | "ssh"
+                | "ubuntu"
+                | "debian"
+                | "kali"
+                | "fedoraremix"
+                | "opensuse-leap"
+                | "sles"
+                | "arch"
+        ) || stem.starts_with("wsl")
     }
 
     /// Native Windows shell executables.  Used by the Ctrl+C router to decide
@@ -2656,10 +3010,24 @@ pub mod process_info {
     /// (live raw-mode TUIs like Copilot CLI, vim, nvim).
     pub fn is_shell_exe(name: &str) -> bool {
         let stem = name.strip_suffix(".exe").unwrap_or(name);
-        matches!(stem,
-            "pwsh" | "powershell" | "cmd" | "command"
-            | "bash" | "sh" | "dash" | "zsh" | "fish"
-            | "ksh" | "tcsh" | "csh" | "nu" | "elvish" | "xonsh" | "busybox"
+        matches!(
+            stem,
+            "pwsh"
+                | "powershell"
+                | "cmd"
+                | "command"
+                | "bash"
+                | "sh"
+                | "dash"
+                | "zsh"
+                | "fish"
+                | "ksh"
+                | "tcsh"
+                | "csh"
+                | "nu"
+                | "elvish"
+                | "xonsh"
+                | "busybox"
         )
     }
 
@@ -2696,9 +3064,17 @@ pub mod process_info {
             let mut pe: PROCESSENTRY32W = std::mem::zeroed();
             pe.dw_size = std::mem::size_of::<PROCESSENTRY32W>() as u32;
             if Process32FirstW(snap, &mut pe) != 0 {
-                entries.push((pe.th32_process_id, pe.th32_parent_process_id, exe_name_from_entry(&pe)));
+                entries.push((
+                    pe.th32_process_id,
+                    pe.th32_parent_process_id,
+                    exe_name_from_entry(&pe),
+                ));
                 while Process32NextW(snap, &mut pe) != 0 {
-                    entries.push((pe.th32_process_id, pe.th32_parent_process_id, exe_name_from_entry(&pe)));
+                    entries.push((
+                        pe.th32_process_id,
+                        pe.th32_parent_process_id,
+                        exe_name_from_entry(&pe),
+                    ));
                 }
             }
             CloseHandle(snap);
@@ -2710,7 +3086,8 @@ pub mod process_info {
             let mut cur = root_pid;
             let mut leaf_name: Option<String> = None;
             for _ in 0..64 {
-                let next = entries.iter()
+                let next = entries
+                    .iter()
                     .filter(|(pid, ppid, name)| *ppid == cur && *pid != cur && !is_system_exe(name))
                     .max_by_key(|(pid, _, _)| *pid);
                 match next {
@@ -2728,7 +3105,8 @@ pub mod process_info {
             // directly-exec'd pane (create_window_raw) resolves to the program
             // it ran, which may be a live TUI that must NOT be force-signalled.
             let fg_name = leaf_name.or_else(|| {
-                entries.iter()
+                entries
+                    .iter()
                     .find(|(pid, _, _)| *pid == root_pid)
                     .map(|(_, _, name)| name.clone())
             });
@@ -2749,7 +3127,9 @@ pub mod process_info {
     pub fn has_vt_bridge_descendant(root_pid: u32) -> bool {
         unsafe {
             let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-            if snap == INVALID_HANDLE || snap == 0 { return false; }
+            if snap == INVALID_HANDLE || snap == 0 {
+                return false;
+            }
 
             let mut entries: Vec<(u32, u32, String)> = Vec::with_capacity(256);
             let mut pe: PROCESSENTRY32W = std::mem::zeroed();
@@ -2772,9 +3152,7 @@ pub mod process_info {
                 let parent = queue[head];
                 head += 1;
                 for (pid, ppid, name) in &entries {
-                    if *ppid == parent && *pid != root_pid
-                        && !queue.contains(pid)
-                    {
+                    if *ppid == parent && *pid != root_pid && !queue.contains(pid) {
                         if is_vt_bridge_exe(name) {
                             return true;
                         }
@@ -2789,11 +3167,21 @@ pub mod process_info {
 
 #[cfg(not(windows))]
 pub mod process_info {
-    pub fn get_process_name(_pid: u32) -> Option<String> { None }
-    pub fn get_process_cwd(_pid: u32) -> Option<String> { None }
-    pub fn get_foreground_process_name(_pid: u32) -> Option<String> { None }
-    pub fn get_foreground_cwd(_pid: u32) -> Option<String> { None }
-    pub fn has_vt_bridge_descendant(_root_pid: u32) -> bool { false }
+    pub fn get_process_name(_pid: u32) -> Option<String> {
+        None
+    }
+    pub fn get_process_cwd(_pid: u32) -> Option<String> {
+        None
+    }
+    pub fn get_foreground_process_name(_pid: u32) -> Option<String> {
+        None
+    }
+    pub fn get_foreground_cwd(_pid: u32) -> Option<String> {
+        None
+    }
+    pub fn has_vt_bridge_descendant(_root_pid: u32) -> bool {
+        false
+    }
 }
 
 // ─── UTF-16 Console Writer (Windows) ────────────────────────────────────
@@ -2845,7 +3233,10 @@ impl Utf16ConsoleWriter {
         let handle = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
         // Pre-allocate ~128KB for the frame buffer — large enough for a
         // typical full-screen frame's escape sequences without reallocation.
-        Self { handle, frame_buf: Vec::with_capacity(131072) }
+        Self {
+            handle,
+            frame_buf: Vec::with_capacity(131072),
+        }
     }
 
     /// Write a valid UTF-8 string via `WriteConsoleW`.
@@ -2981,7 +3372,11 @@ fn rewrite_sgr_params(params: &[u8], out: &mut Vec<u8>) {
             if let Some(n) = parse_dec_u16(tokens[k + 2]) {
                 if n < 16 {
                     let code = if t == b"38" {
-                        if n < 8 { 30 + n } else { 90 + (n - 8) }
+                        if n < 8 {
+                            30 + n
+                        } else {
+                            90 + (n - 8)
+                        }
                     } else if n < 8 {
                         40 + n
                     } else {
@@ -3004,7 +3399,8 @@ fn rewrite_sgr_params(params: &[u8], out: &mut Vec<u8>) {
             continue;
         }
         // fg/bg/underline truecolor: 38;2;r;g;b — skip past all 5 tokens.
-        if (t == b"38" || t == b"48" || t == b"58") && k + 1 < tokens.len() && tokens[k + 1] == b"2" {
+        if (t == b"38" || t == b"48" || t == b"58") && k + 1 < tokens.len() && tokens[k + 1] == b"2"
+        {
             let end = (k + 5).min(tokens.len());
             for m in k..end {
                 push(tokens[m], out, &mut first);
@@ -3153,9 +3549,13 @@ pub type PsmuxWriter = std::io::Stdout;
 /// Create a new [`PsmuxWriter`].
 pub fn create_writer() -> PsmuxWriter {
     #[cfg(windows)]
-    { Utf16ConsoleWriter::new() }
+    {
+        Utf16ConsoleWriter::new()
+    }
     #[cfg(not(windows))]
-    { std::io::stdout() }
+    {
+        std::io::stdout()
+    }
 }
 
 #[cfg(all(test, windows))]
@@ -3249,7 +3649,10 @@ mod bold_is_bright_tests {
         // OSC payload containing "38;5;" text must not be rewritten.
         assert_eq!(rewrite("\x1b]0;38;5;2\x07"), "\x1b]0;38;5;2\x07");
         // Plain text passes through.
-        assert_eq!(rewrite("hello \x1b[38;5;1mred\x1b[0m"), "hello \x1b[31mred\x1b[0m");
+        assert_eq!(
+            rewrite("hello \x1b[38;5;1mred\x1b[0m"),
+            "hello \x1b[31mred\x1b[0m"
+        );
     }
 
     #[test]
@@ -3332,8 +3735,16 @@ pub mod caret {
             let mut info: CONSOLE_FONT_INFOEX = std::mem::zeroed();
             info.cbSize = std::mem::size_of::<CONSOLE_FONT_INFOEX>() as u32;
             if GetCurrentConsoleFontEx(handle, 0, &mut info) != 0 {
-                let w = if info.dwFontSize_X > 0 { info.dwFontSize_X as i32 } else { 8 };
-                let h = if info.dwFontSize_Y > 0 { info.dwFontSize_Y as i32 } else { 16 };
+                let w = if info.dwFontSize_X > 0 {
+                    info.dwFontSize_X as i32
+                } else {
+                    8
+                };
+                let h = if info.dwFontSize_Y > 0 {
+                    info.dwFontSize_Y as i32
+                } else {
+                    16
+                };
                 (w, h)
             } else {
                 (8, 16)
@@ -3367,7 +3778,9 @@ pub mod caret {
     /// Hide and destroy the system caret.  Call on exit.
     pub fn destroy() {
         if CARET_CREATED.swap(false, Ordering::Relaxed) {
-            unsafe { DestroyCaret(); }
+            unsafe {
+                DestroyCaret();
+            }
         }
     }
 }
@@ -3458,9 +3871,13 @@ pub fn ime_disable() -> bool {
     }
     unsafe {
         let hwnd = GetConsoleWindow();
-        if hwnd == 0 { return false; }
+        if hwnd == 0 {
+            return false;
+        }
         let himc = ImmGetContext(hwnd);
-        if himc == 0 { return false; }
+        if himc == 0 {
+            return false;
+        }
         let was_open = ImmGetOpenStatus(himc) != 0;
         if was_open {
             ImmSetOpenStatus(himc, 0);
@@ -3485,9 +3902,13 @@ pub fn ime_restore() {
     }
     unsafe {
         let hwnd = GetConsoleWindow();
-        if hwnd == 0 { return; }
+        if hwnd == 0 {
+            return;
+        }
         let himc = ImmGetContext(hwnd);
-        if himc == 0 { return; }
+        if himc == 0 {
+            return;
+        }
         ImmSetOpenStatus(himc, 1);
         ImmReleaseContext(hwnd, himc);
     }

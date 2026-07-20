@@ -18,15 +18,18 @@ fn mock_app() -> AppState {
 }
 
 fn add_client(app: &mut AppState, id: u64, tty: &str) {
-    app.client_registry.insert(id, ClientInfo {
+    app.client_registry.insert(
         id,
-        width: 120,
-        height: 30,
-        connected_at: Instant::now(),
-        last_activity: Instant::now(),
-        tty_name: tty.to_string(),
-        is_control: false,
-    });
+        ClientInfo {
+            id,
+            width: 120,
+            height: 30,
+            connected_at: Instant::now(),
+            last_activity: Instant::now(),
+            tty_name: tty.to_string(),
+            is_control: false,
+        },
+    );
     app.attached_clients += 1;
 }
 
@@ -63,7 +66,9 @@ fn force_detach_by_tty_name_lookup() {
     add_client(&mut app, 1, "/dev/pts/1");
     add_client(&mut app, 2, "/dev/pts/2");
 
-    let target_cid: Option<u64> = app.client_registry.iter()
+    let target_cid: Option<u64> = app
+        .client_registry
+        .iter()
         .find(|(_, ci)| ci.tty_name == "/dev/pts/2")
         .map(|(cid, _)| *cid);
     assert_eq!(target_cid, Some(2), "tty_name lookup should find client 2");
@@ -82,7 +87,9 @@ fn force_detach_by_tty_name_missing() {
     let mut app = mock_app();
     add_client(&mut app, 1, "/dev/pts/1");
 
-    let target_cid: Option<u64> = app.client_registry.iter()
+    let target_cid: Option<u64> = app
+        .client_registry
+        .iter()
         .find(|(_, ci)| ci.tty_name == "/dev/pts/99")
         .map(|(cid, _)| *cid);
     assert_eq!(target_cid, None);
@@ -101,7 +108,9 @@ fn detach_all_other_clients_keeps_current() {
     add_client(&mut app, 3, "/dev/pts/3");
     let except = 2u64;
 
-    let targets: Vec<u64> = app.client_registry.iter()
+    let targets: Vec<u64> = app
+        .client_registry
+        .iter()
         .filter(|(cid, _)| **cid != except)
         .map(|(cid, _)| *cid)
         .collect();
@@ -124,11 +133,17 @@ fn detach_all_other_clients_with_cli_sentinel_detaches_all() {
     add_client(&mut app, 2, "/dev/pts/2");
     let except = u64::MAX;
 
-    let targets: Vec<u64> = app.client_registry.iter()
+    let targets: Vec<u64> = app
+        .client_registry
+        .iter()
         .filter(|(cid, _)| **cid != except)
         .map(|(cid, _)| *cid)
         .collect();
-    assert_eq!(targets.len(), 2, "u64::MAX sentinel matches no client → all detach");
+    assert_eq!(
+        targets.len(),
+        2,
+        "u64::MAX sentinel matches no client → all detach"
+    );
 
     for cid in &targets {
         app.client_registry.remove(cid);
@@ -176,7 +191,10 @@ fn detach_last_client_with_destroy_unattached_signals_shutdown() {
 
     // Replicates the handler's exit-eligibility check.
     let eligible = app.attached_clients == 0 && app.destroy_unattached;
-    assert!(eligible, "destroy_unattached + zero clients → shutdown path");
+    assert!(
+        eligible,
+        "destroy_unattached + zero clients → shutdown path"
+    );
 }
 
 /// Without destroy_unattached, the same condition should NOT trigger shutdown.
@@ -210,26 +228,37 @@ fn send_directive_reports_false_without_channel() {
     use crate::types::{remove_directive_channel, send_directive_to_client};
     let cid = 0xDEAD_0001u64;
     remove_directive_channel(cid); // drop any entry a prior run might have left
-    assert!(!send_directive_to_client(cid, "DETACH"),
-        "absent channel must report not-queued so the handler skips the sleep");
+    assert!(
+        !send_directive_to_client(cid, "DETACH"),
+        "absent channel must report not-queued so the handler skips the sleep"
+    );
 }
 
 /// Registered channel → the directive is queued (send reports true) and the
 /// exact string is delivered; after removal the send reports false again.
 #[test]
 fn send_directive_delivers_then_stops_after_removal() {
-    use crate::types::{register_directive_channel, remove_directive_channel, send_directive_to_client};
+    use crate::types::{
+        register_directive_channel, remove_directive_channel, send_directive_to_client,
+    };
     let cid = 0xDEAD_0002u64;
     let rx = register_directive_channel(cid);
 
-    assert!(send_directive_to_client(cid, "DETACH"),
-        "registered channel must report queued so the handler takes the grace sleep");
-    assert_eq!(rx.recv().ok().as_deref(), Some("DETACH"),
-        "the exact directive string must reach the client's writer thread");
+    assert!(
+        send_directive_to_client(cid, "DETACH"),
+        "registered channel must report queued so the handler takes the grace sleep"
+    );
+    assert_eq!(
+        rx.recv().ok().as_deref(),
+        Some("DETACH"),
+        "the exact directive string must reach the client's writer thread"
+    );
 
     remove_directive_channel(cid);
-    assert!(!send_directive_to_client(cid, "DETACH"),
-        "after channel removal the send must report not-queued again");
+    assert!(
+        !send_directive_to_client(cid, "DETACH"),
+        "after channel removal the send must report not-queued again"
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -237,7 +266,9 @@ fn send_directive_delivers_then_stops_after_removal() {
 // ════════════════════════════════════════════════════════════════════════════
 
 /// Helper: parse the same flag set the CLI dispatch parses.
-fn parse_detach_args(argv: &[&str]) -> (Option<String>, Option<String>, bool, bool, Option<String>) {
+fn parse_detach_args(
+    argv: &[&str],
+) -> (Option<String>, Option<String>, bool, bool, Option<String>) {
     let mut t_target: Option<String> = None;
     let mut s_target: Option<String> = None;
     let mut detach_all = false;
@@ -246,11 +277,30 @@ fn parse_detach_args(argv: &[&str]) -> (Option<String>, Option<String>, bool, bo
     let mut i = 0;
     while i < argv.len() {
         match argv[i] {
-            "-a" => { detach_all = true; }
-            "-P" => { kill_parent = true; }
-            "-t" => { if let Some(v) = argv.get(i + 1) { t_target = Some(v.to_string()); i += 1; } }
-            "-s" => { if let Some(v) = argv.get(i + 1) { s_target = Some(v.to_string()); i += 1; } }
-            "-E" => { if let Some(v) = argv.get(i + 1) { shell_cmd = Some(v.to_string()); i += 1; } }
+            "-a" => {
+                detach_all = true;
+            }
+            "-P" => {
+                kill_parent = true;
+            }
+            "-t" => {
+                if let Some(v) = argv.get(i + 1) {
+                    t_target = Some(v.to_string());
+                    i += 1;
+                }
+            }
+            "-s" => {
+                if let Some(v) = argv.get(i + 1) {
+                    s_target = Some(v.to_string());
+                    i += 1;
+                }
+            }
+            "-E" => {
+                if let Some(v) = argv.get(i + 1) {
+                    shell_cmd = Some(v.to_string());
+                    i += 1;
+                }
+            }
             _ => {}
         }
         i += 1;
@@ -284,7 +334,9 @@ fn cli_parse_t_with_tty_path() {
 fn cli_parse_t_with_percent_id() {
     let (t, _, _, _, _) = parse_detach_args(&["-t", "%5"]);
     assert_eq!(t, Some("%5".to_string()));
-    let numeric: Option<u64> = t.as_ref().and_then(|v| v.trim_start_matches('%').parse().ok());
+    let numeric: Option<u64> = t
+        .as_ref()
+        .and_then(|v| v.trim_start_matches('%').parse().ok());
     assert_eq!(numeric, Some(5));
 }
 
@@ -336,10 +388,17 @@ fn cli_parse_unknown_flags_ignored() {
 #[test]
 fn detach_client_resolves_to_action_detach() {
     use crate::types::Action;
-    assert!(matches!(parse_command_to_action("detach-client"), Some(Action::Detach)),
-        "detach-client should map to Action::Detach");
-    assert!(matches!(parse_command_to_action("detach"), Some(Action::Detach)),
-        "detach (alias) should map to Action::Detach");
+    assert!(
+        matches!(
+            parse_command_to_action("detach-client"),
+            Some(Action::Detach)
+        ),
+        "detach-client should map to Action::Detach"
+    );
+    assert!(
+        matches!(parse_command_to_action("detach"), Some(Action::Detach)),
+        "detach (alias) should map to Action::Detach"
+    );
 }
 
 /// Flag suffixes (`-a`, `-P`) on the bound command should still resolve to
@@ -348,5 +407,8 @@ fn detach_client_resolves_to_action_detach() {
 #[test]
 fn detach_with_flags_still_dispatches() {
     let action = parse_command_to_action("detach-client -a");
-    assert!(action.is_some(), "detach-client -a must produce some Action");
+    assert!(
+        action.is_some(),
+        "detach-client -a must produce some Action"
+    );
 }

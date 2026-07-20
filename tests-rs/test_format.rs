@@ -53,8 +53,14 @@ fn test_pad() {
 fn test_substitute() {
     let app = mock_app();
     let val = apply_modifier(
-        &Modifier::Substitute { pattern: "foo".into(), replacement: "bar".into(), case_insensitive: false },
-        "foobar", &app, 0
+        &Modifier::Substitute {
+            pattern: "foo".into(),
+            replacement: "bar".into(),
+            case_insensitive: false,
+        },
+        "foobar",
+        &app,
+        0,
     );
     assert_eq!(val, "barbar");
 }
@@ -63,8 +69,14 @@ fn test_substitute() {
 fn test_math_add() {
     let app = mock_app();
     let val = apply_modifier(
-        &Modifier::MathExpr { op: '+', floating: false, decimals: 0 },
-        "3,5", &app, 0
+        &Modifier::MathExpr {
+            op: '+',
+            floating: false,
+            decimals: 0,
+        },
+        "3,5",
+        &app,
+        0,
     );
     assert_eq!(val, "8");
 }
@@ -73,8 +85,14 @@ fn test_math_add() {
 fn test_math_float_div() {
     let app = mock_app();
     let val = apply_modifier(
-        &Modifier::MathExpr { op: '/', floating: true, decimals: 4 },
-        "10,3", &app, 0
+        &Modifier::MathExpr {
+            op: '/',
+            floating: true,
+            decimals: 4,
+        },
+        "10,3",
+        &app,
+        0,
     );
     assert_eq!(val, "3.3333");
 }
@@ -117,7 +135,11 @@ fn test_quote() {
 
 fn mock_window(name: &str) -> crate::types::Window {
     crate::types::Window {
-        root: Node::Split { kind: LayoutKind::Horizontal, sizes: vec![], children: vec![] },
+        root: Node::Split {
+            kind: LayoutKind::Horizontal,
+            sizes: vec![],
+            children: vec![],
+        },
         active_path: vec![],
         name: name.to_string(),
         id: 0,
@@ -306,8 +328,16 @@ fn test_window_flags_include_z_when_zoomed() {
     app.windows.push(win);
     app.active_idx = 0;
     let flags = expand_var("window_flags", &app, 0);
-    assert!(flags.contains('Z'), "window_flags should contain Z when zoomed, got: {}", flags);
-    assert!(flags.contains('*'), "window_flags should contain * for active window, got: {}", flags);
+    assert!(
+        flags.contains('Z'),
+        "window_flags should contain Z when zoomed, got: {}",
+        flags
+    );
+    assert!(
+        flags.contains('*'),
+        "window_flags should contain * for active window, got: {}",
+        flags
+    );
 }
 
 #[test]
@@ -316,7 +346,11 @@ fn test_window_flags_no_z_when_not_zoomed() {
     app.windows.push(mock_window("win0"));
     app.active_idx = 0;
     let flags = expand_var("window_flags", &app, 0);
-    assert!(!flags.contains('Z'), "window_flags should not contain Z when not zoomed, got: {}", flags);
+    assert!(
+        !flags.contains('Z'),
+        "window_flags should not contain Z when not zoomed, got: {}",
+        flags
+    );
 }
 
 #[test]
@@ -327,7 +361,7 @@ fn test_conditional_window_zoomed_flag_per_window() {
     app.windows.push(win0);
     app.windows.push(mock_window("win1"));
     app.active_idx = 1; // active is window 1, but window 0 is zoomed
-    // Conditional format should show ZOOMED for window 0
+                        // Conditional format should show ZOOMED for window 0
     let result0 = expand_format_for_window("#{?window_zoomed_flag,ZOOMED,normal}", &app, 0);
     assert_eq!(result0, "ZOOMED");
     // Conditional format should show normal for window 1
@@ -369,8 +403,12 @@ fn test_appstate_defaults_monitor_silence() {
 fn test_appstate_defaults_update_environment() {
     let app = mock_app();
     assert!(app.update_environment.contains(&"DISPLAY".to_string()));
-    assert!(app.update_environment.contains(&"SSH_AUTH_SOCK".to_string()));
-    assert!(app.update_environment.contains(&"SSH_AGENT_PID".to_string()));
+    assert!(app
+        .update_environment
+        .contains(&"SSH_AUTH_SOCK".to_string()));
+    assert!(app
+        .update_environment
+        .contains(&"SSH_AGENT_PID".to_string()));
 }
 
 // ── Session group format variable tests ─────────────────────────
@@ -575,16 +613,20 @@ fn test_expand_format_preserves_style_directives() {
     let app = mock_app();
     // #[fg=red] should pass through expand_format unchanged
     let result = expand_format("#[fg=red]Custom Line 2", &app);
-    assert_eq!(result, "#[fg=red]Custom Line 2",
-        "expand_format must not eat #[fg=red] directive");
+    assert_eq!(
+        result, "#[fg=red]Custom Line 2",
+        "expand_format must not eat #[fg=red] directive"
+    );
 }
 
 #[test]
 fn test_expand_format_preserves_align_directive() {
     let app = mock_app();
     let result = expand_format("#[align=left]Custom Line 1", &app);
-    assert_eq!(result, "#[align=left]Custom Line 1",
-        "expand_format must not eat #[align=left] directive");
+    assert_eq!(
+        result, "#[align=left]Custom Line 1",
+        "expand_format must not eat #[align=left] directive"
+    );
 }
 
 #[test]
@@ -593,24 +635,30 @@ fn test_expand_format_mixed_variables_and_styles() {
     app.session_name = "main".to_string();
     // Mix of style directive and variable expansion
     let result = expand_format("#[fg=red]session: #S", &app);
-    assert_eq!(result, "#[fg=red]session: main",
-        "Style directives preserved and variables expanded");
+    assert_eq!(
+        result, "#[fg=red]session: main",
+        "Style directives preserved and variables expanded"
+    );
 }
 
 #[test]
 fn test_expand_format_multiple_style_blocks() {
     let app = mock_app();
     let result = expand_format("#[fg=red]Hello #[fg=green]World", &app);
-    assert_eq!(result, "#[fg=red]Hello #[fg=green]World",
-        "Multiple style blocks must all be preserved");
+    assert_eq!(
+        result, "#[fg=red]Hello #[fg=green]World",
+        "Multiple style blocks must all be preserved"
+    );
 }
 
 #[test]
 fn test_expand_format_complex_style() {
     let app = mock_app();
     let result = expand_format("#[fg=yellow,bg=blue,bold]Styled Text", &app);
-    assert_eq!(result, "#[fg=yellow,bg=blue,bold]Styled Text",
-        "Complex style directives must be preserved");
+    assert_eq!(
+        result, "#[fg=yellow,bg=blue,bold]Styled Text",
+        "Complex style directives must be preserved"
+    );
 }
 
 #[test]
@@ -623,6 +671,9 @@ fn test_session_path_is_server_cwd() {
     let expected = std::env::current_dir()
         .map(|d| d.to_string_lossy().into_owned())
         .unwrap_or_default();
-    assert_eq!(expand_format("#{session_path}", &app), expected,
-        "#{{session_path}} must resolve to the session (server) working directory");
+    assert_eq!(
+        expand_format("#{session_path}", &app),
+        expected,
+        "#{{session_path}} must resolve to the session (server) working directory"
+    );
 }

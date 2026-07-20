@@ -53,7 +53,11 @@ fn append_via_parse_config_content_bounded() {
         parse_config_content(&mut app, &content);
     }
     let handlers = app.hooks.get("status-interval").unwrap();
-    assert_eq!(handlers.len(), 1, "status-interval handler must stay deduped across whole-config reloads");
+    assert_eq!(
+        handlers.len(),
+        1,
+        "status-interval handler must stay deduped across whole-config reloads"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -63,11 +67,24 @@ fn append_via_parse_config_content_bounded() {
 #[test]
 fn distinct_handlers_still_append() {
     let mut app = mock_app();
-    parse_config_line(&mut app, r#"set-hook -ga status-interval 'run-shell "cpu.ps1"'"#);
-    parse_config_line(&mut app, r#"set-hook -ga status-interval 'run-shell "mem.ps1"'"#);
-    parse_config_line(&mut app, r#"set-hook -ga status-interval 'run-shell "net.ps1"'"#);
+    parse_config_line(
+        &mut app,
+        r#"set-hook -ga status-interval 'run-shell "cpu.ps1"'"#,
+    );
+    parse_config_line(
+        &mut app,
+        r#"set-hook -ga status-interval 'run-shell "mem.ps1"'"#,
+    );
+    parse_config_line(
+        &mut app,
+        r#"set-hook -ga status-interval 'run-shell "net.ps1"'"#,
+    );
     let handlers = app.hooks.get("status-interval").unwrap();
-    assert_eq!(handlers.len(), 3, "three distinct handlers should all register");
+    assert_eq!(
+        handlers.len(),
+        3,
+        "three distinct handlers should all register"
+    );
 }
 
 #[test]
@@ -81,7 +98,11 @@ fn distinct_handlers_survive_resource_but_no_dupes() {
         parse_config_content(&mut app, content);
     }
     let handlers = app.hooks.get("status-interval").unwrap();
-    assert_eq!(handlers.len(), 2, "two distinct handlers, no dupes after 10 reloads");
+    assert_eq!(
+        handlers.len(),
+        2,
+        "two distinct handlers, no dupes after 10 reloads"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -92,22 +113,41 @@ fn distinct_handlers_survive_resource_but_no_dupes() {
 fn replace_mode_stays_single() {
     let mut app = mock_app();
     for _ in 0..10 {
-        parse_config_line(&mut app, r#"set-hook -g status-interval 'run-shell "cpu.ps1"'"#);
+        parse_config_line(
+            &mut app,
+            r#"set-hook -g status-interval 'run-shell "cpu.ps1"'"#,
+        );
     }
     let handlers = app.hooks.get("status-interval").unwrap();
-    assert_eq!(handlers.len(), 1, "replace mode must keep exactly one handler");
+    assert_eq!(
+        handlers.len(),
+        1,
+        "replace mode must keep exactly one handler"
+    );
 }
 
 #[test]
 fn append_then_replace_collapses_to_one() {
     let mut app = mock_app();
     // Append three distinct, then a replace wipes back to one.
-    parse_config_line(&mut app, r#"set-hook -ga status-interval 'run-shell "a.ps1"'"#);
-    parse_config_line(&mut app, r#"set-hook -ga status-interval 'run-shell "b.ps1"'"#);
-    parse_config_line(&mut app, r#"set-hook -g status-interval 'run-shell "only.ps1"'"#);
+    parse_config_line(
+        &mut app,
+        r#"set-hook -ga status-interval 'run-shell "a.ps1"'"#,
+    );
+    parse_config_line(
+        &mut app,
+        r#"set-hook -ga status-interval 'run-shell "b.ps1"'"#,
+    );
+    parse_config_line(
+        &mut app,
+        r#"set-hook -g status-interval 'run-shell "only.ps1"'"#,
+    );
     let handlers = app.hooks.get("status-interval").unwrap();
     assert_eq!(handlers.len(), 1);
-    assert!(handlers[0].contains("only.ps1"), "replace should install just the new handler");
+    assert!(
+        handlers[0].contains("only.ps1"),
+        "replace should install just the new handler"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -134,8 +174,14 @@ fn client_attached_hook_also_deduped() {
 #[test]
 fn unset_clears_accumulated_hook() {
     let mut app = mock_app();
-    parse_config_line(&mut app, r#"set-hook -ga status-interval 'run-shell "cpu.ps1"'"#);
-    parse_config_line(&mut app, r#"set-hook -ga status-interval 'run-shell "mem.ps1"'"#);
+    parse_config_line(
+        &mut app,
+        r#"set-hook -ga status-interval 'run-shell "cpu.ps1"'"#,
+    );
+    parse_config_line(
+        &mut app,
+        r#"set-hook -ga status-interval 'run-shell "mem.ps1"'"#,
+    );
     assert!(app.hooks.contains_key("status-interval"));
     parse_config_line(&mut app, "set-hook -gu status-interval");
     assert!(

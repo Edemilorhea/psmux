@@ -30,21 +30,29 @@ fn unbind_key_d_removes_detach_from_defaults() {
     populate_default_bindings(&mut app);
 
     // Verify 'd' is in the prefix table
-    let prefix = app.key_tables.get("prefix").expect("prefix table should exist");
-    let has_d = prefix.iter().any(|b| {
-        matches!(b.key.0, KeyCode::Char('d'))
-    });
-    assert!(has_d, "'d' should be in prefix table after populating defaults");
+    let prefix = app
+        .key_tables
+        .get("prefix")
+        .expect("prefix table should exist");
+    let has_d = prefix.iter().any(|b| matches!(b.key.0, KeyCode::Char('d')));
+    assert!(
+        has_d,
+        "'d' should be in prefix table after populating defaults"
+    );
 
     // Unbind 'd'
     parse_unbind_key(&mut app, "unbind-key d");
 
     // Verify 'd' is no longer in the prefix table
-    let prefix = app.key_tables.get("prefix").expect("prefix table should still exist");
-    let has_d_after = prefix.iter().any(|b| {
-        matches!(b.key.0, KeyCode::Char('d'))
-    });
-    assert!(!has_d_after, "'d' should be removed from prefix table after unbind-key d");
+    let prefix = app
+        .key_tables
+        .get("prefix")
+        .expect("prefix table should still exist");
+    let has_d_after = prefix.iter().any(|b| matches!(b.key.0, KeyCode::Char('d')));
+    assert!(
+        !has_d_after,
+        "'d' should be removed from prefix table after unbind-key d"
+    );
 }
 
 #[test]
@@ -80,32 +88,41 @@ fn unbind_key_n_removes_from_root_only() {
 
     // Verify both exist
     let root = app.key_tables.get("root").expect("root table should exist");
-    let has_cv_root = root.iter().any(|b| {
-        matches!(b.key.0, KeyCode::Char('v')) && b.key.1.contains(KeyModifiers::CONTROL)
-    });
+    let has_cv_root = root
+        .iter()
+        .any(|b| matches!(b.key.0, KeyCode::Char('v')) && b.key.1.contains(KeyModifiers::CONTROL));
     assert!(has_cv_root, "C-v should be in root table");
 
     let prefix = app.key_tables.get("prefix").unwrap();
-    let has_cv_prefix = prefix.iter().any(|b| {
-        matches!(b.key.0, KeyCode::Char('v')) && b.key.1.contains(KeyModifiers::CONTROL)
-    });
+    let has_cv_prefix = prefix
+        .iter()
+        .any(|b| matches!(b.key.0, KeyCode::Char('v')) && b.key.1.contains(KeyModifiers::CONTROL));
     assert!(has_cv_prefix, "C-v should be in prefix table");
 
     // unbind-key -n C-v should only remove from root
     parse_unbind_key(&mut app, "unbind-key -n C-v");
 
-    let root = app.key_tables.get("root").expect("root table should still exist");
-    let has_cv_root_after = root.iter().any(|b| {
-        matches!(b.key.0, KeyCode::Char('v')) && b.key.1.contains(KeyModifiers::CONTROL)
-    });
-    assert!(!has_cv_root_after, "C-v should be removed from root table after unbind-key -n C-v");
+    let root = app
+        .key_tables
+        .get("root")
+        .expect("root table should still exist");
+    let has_cv_root_after = root
+        .iter()
+        .any(|b| matches!(b.key.0, KeyCode::Char('v')) && b.key.1.contains(KeyModifiers::CONTROL));
+    assert!(
+        !has_cv_root_after,
+        "C-v should be removed from root table after unbind-key -n C-v"
+    );
 
     // Prefix table should be UNTOUCHED
     let prefix = app.key_tables.get("prefix").unwrap();
-    let has_cv_prefix_after = prefix.iter().any(|b| {
-        matches!(b.key.0, KeyCode::Char('v')) && b.key.1.contains(KeyModifiers::CONTROL)
-    });
-    assert!(has_cv_prefix_after, "C-v should still exist in prefix table (only root was unbound)");
+    let has_cv_prefix_after = prefix
+        .iter()
+        .any(|b| matches!(b.key.0, KeyCode::Char('v')) && b.key.1.contains(KeyModifiers::CONTROL));
+    assert!(
+        has_cv_prefix_after,
+        "C-v should still exist in prefix table (only root was unbound)"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -143,7 +160,10 @@ fn unbind_key_t_prefix_removes_from_prefix() {
 
     let prefix = app.key_tables.get("prefix").unwrap();
     let has_n = prefix.iter().any(|b| matches!(b.key.0, KeyCode::Char('n')));
-    assert!(!has_n, "'n' (next-window) should be removed from prefix after unbind-key -T prefix n");
+    assert!(
+        !has_n,
+        "'n' (next-window) should be removed from prefix after unbind-key -T prefix n"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -167,7 +187,10 @@ fn unbind_key_no_flags_defaults_to_prefix() {
 
     let root = app.key_tables.get("root").unwrap();
     let has_x_root = root.iter().any(|b| matches!(b.key.0, KeyCode::Char('x')));
-    assert!(has_x_root, "'x' should STILL be in root table (unbind-key defaults to prefix)");
+    assert!(
+        has_x_root,
+        "'x' should STILL be in root table (unbind-key defaults to prefix)"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -193,10 +216,14 @@ fn list_keys_does_not_show_unbound_individual_key() {
     let output = crate::help::build_list_keys_output(user_iter, app.defaults_suppressed);
 
     // 'd' should NOT appear in output
-    let has_detach = output.lines().any(|l| {
-        l.contains(" d ") && l.contains("detach")
-    });
-    assert!(!has_detach, "list-keys should not show 'd detach-client' after unbind-key d, got:\n{}", output);
+    let has_detach = output
+        .lines()
+        .any(|l| l.contains(" d ") && l.contains("detach"));
+    assert!(
+        !has_detach,
+        "list-keys should not show 'd detach-client' after unbind-key d, got:\n{}",
+        output
+    );
 }
 
 #[test]
@@ -217,10 +244,13 @@ fn list_keys_shows_remaining_defaults_after_individual_unbind() {
     let output = crate::help::build_list_keys_output(user_iter, app.defaults_suppressed);
 
     // Other defaults like 'c' (new-window) should still be present
-    let has_new_window = output.lines().any(|l| {
-        l.contains(" c ") && l.contains("new-window")
-    });
-    assert!(has_new_window, "list-keys should still show 'c new-window' after only unbinding 'd'");
+    let has_new_window = output
+        .lines()
+        .any(|l| l.contains(" c ") && l.contains("new-window"));
+    assert!(
+        has_new_window,
+        "list-keys should still show 'c new-window' after only unbinding 'd'"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -233,16 +263,24 @@ fn config_unbind_key_d_then_rebind_works() {
     populate_default_bindings(&mut app);
 
     // Parse a config that unbinds 'd' and rebinds it to something else
-    parse_config_content(&mut app, "unbind-key d\nbind-key d display-message \"custom\"");
+    parse_config_content(
+        &mut app,
+        "unbind-key d\nbind-key d display-message \"custom\"",
+    );
 
     let prefix = app.key_tables.get("prefix").unwrap();
-    let d_bind = prefix.iter().find(|b| matches!(b.key.0, KeyCode::Char('d')));
+    let d_bind = prefix
+        .iter()
+        .find(|b| matches!(b.key.0, KeyCode::Char('d')));
     assert!(d_bind.is_some(), "'d' should exist in prefix after rebind");
 
     // Verify it's the NEW binding, not detach-client
     let d = d_bind.unwrap();
     let action_str = crate::commands::format_action(&d.action);
-    assert!(!action_str.contains("detach"), "'d' should no longer be detach-client");
+    assert!(
+        !action_str.contains("detach"),
+        "'d' should no longer be detach-client"
+    );
 }
 
 #[test]
@@ -260,11 +298,19 @@ bind-key C-r source-file ~/.tmux.conf
 "#;
     parse_config_content(&mut app, config);
 
-    assert!(app.defaults_suppressed, "defaults_suppressed should be true after unbind-key -a");
+    assert!(
+        app.defaults_suppressed,
+        "defaults_suppressed should be true after unbind-key -a"
+    );
 
     // Only user-defined bindings should exist
     let all_bindings: Vec<_> = app.key_tables.values().flat_map(|v| v.iter()).collect();
-    assert_eq!(all_bindings.len(), 2, "Should have exactly 2 bindings (C-a and C-r), got {}", all_bindings.len());
+    assert_eq!(
+        all_bindings.len(),
+        2,
+        "Should have exactly 2 bindings (C-a and C-r), got {}",
+        all_bindings.len()
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -276,8 +322,15 @@ fn populate_default_bindings_adds_all_prefix_defaults() {
     let mut app = mock_app();
     populate_default_bindings(&mut app);
 
-    let prefix = app.key_tables.get("prefix").expect("prefix table should be created");
-    assert!(prefix.len() >= 40, "Should have ~50 default prefix bindings, got {}", prefix.len());
+    let prefix = app
+        .key_tables
+        .get("prefix")
+        .expect("prefix table should be created");
+    assert!(
+        prefix.len() >= 40,
+        "Should have ~50 default prefix bindings, got {}",
+        prefix.len()
+    );
 
     // Spot check some specific defaults
     let has_d = prefix.iter().any(|b| matches!(b.key.0, KeyCode::Char('d')));
@@ -287,7 +340,10 @@ fn populate_default_bindings_adds_all_prefix_defaults() {
 
     assert!(has_d, "prefix table should have 'd' (detach-client)");
     assert!(has_c, "prefix table should have 'c' (new-window)");
-    assert!(has_percent, "prefix table should have '%%' (split-window -h)");
+    assert!(
+        has_percent,
+        "prefix table should have '%%' (split-window -h)"
+    );
     assert!(has_question, "prefix table should have '?' (list-keys)");
 }
 
@@ -298,9 +354,13 @@ fn populate_default_bindings_adds_root_bindings() {
 
     // Root table should have default bindings (e.g. PageUp -> copy-mode -u, matching tmux)
     let root = app.key_tables.get("root");
-    assert!(root.is_some() && !root.unwrap().is_empty(),
-        "root table should have default bindings (e.g. PageUp)");
+    assert!(
+        root.is_some() && !root.unwrap().is_empty(),
+        "root table should have default bindings (e.g. PageUp)"
+    );
     let root_table = root.unwrap();
-    let has_pageup = root_table.iter().any(|b| b.key.0 == crossterm::event::KeyCode::PageUp);
+    let has_pageup = root_table
+        .iter()
+        .any(|b| b.key.0 == crossterm::event::KeyCode::PageUp);
     assert!(has_pageup, "root table should have PageUp default binding");
 }

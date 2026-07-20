@@ -1,4 +1,4 @@
-use crate::types::{AppState, ControlNotification, Node, LayoutKind, Window};
+use crate::types::{AppState, ControlNotification, LayoutKind, Node, Window};
 use ratatui::layout::Rect;
 
 /// Compute tmux's 16-bit rotating checksum over the layout body.
@@ -20,11 +20,21 @@ fn layout_checksum(s: &str) -> u16 {
 fn append_layout_body(node: &Node, area: Rect, out: &mut String) {
     match node {
         Node::Leaf(pane) => {
-            out.push_str(&format!("{}x{},{},{},{}", area.width, area.height, area.x, area.y, pane.id));
+            out.push_str(&format!(
+                "{}x{},{},{},{}",
+                area.width, area.height, area.x, area.y, pane.id
+            ));
         }
-        Node::Split { kind, sizes, children } => {
+        Node::Split {
+            kind,
+            sizes,
+            children,
+        } => {
             if children.is_empty() {
-                out.push_str(&format!("{}x{},{},{}", area.width, area.height, area.x, area.y));
+                out.push_str(&format!(
+                    "{}x{},{},{}",
+                    area.width, area.height, area.x, area.y
+                ));
                 return;
             }
             let effective_sizes: Vec<u16> = if sizes.len() == children.len() {
@@ -34,11 +44,20 @@ fn append_layout_body(node: &Node, area: Rect, out: &mut String) {
             };
             let is_horizontal = matches!(*kind, LayoutKind::Horizontal);
             let rects = crate::tree::split_with_gaps(is_horizontal, &effective_sizes, area);
-            out.push_str(&format!("{}x{},{},{}", area.width, area.height, area.x, area.y));
-            let (open, close) = if is_horizontal { ('{', '}') } else { ('[', ']') };
+            out.push_str(&format!(
+                "{}x{},{},{}",
+                area.width, area.height, area.x, area.y
+            ));
+            let (open, close) = if is_horizontal {
+                ('{', '}')
+            } else {
+                ('[', ']')
+            };
             out.push(open);
             for (i, child) in children.iter().enumerate() {
-                if i > 0 { out.push(','); }
+                if i > 0 {
+                    out.push(',');
+                }
                 let r = rects.get(i).copied().unwrap_or(area);
                 append_layout_body(child, r, out);
             }
@@ -85,12 +104,13 @@ pub fn format_notification(notif: &ControlNotification) -> String {
         ControlNotification::SessionRenamed { name } => {
             format!("%session-renamed {}", name)
         }
-        ControlNotification::SessionWindowChanged { session_id, window_id } => {
+        ControlNotification::SessionWindowChanged {
+            session_id,
+            window_id,
+        } => {
             format!("%session-window-changed ${} @{}", session_id, window_id)
         }
-        ControlNotification::SessionsChanged => {
-            "%sessions-changed".to_string()
-        }
+        ControlNotification::SessionsChanged => "%sessions-changed".to_string(),
         ControlNotification::PaneModeChanged { pane_id } => {
             format!("%pane-mode-changed %{}", pane_id)
         }
@@ -103,11 +123,30 @@ pub fn format_notification(notif: &ControlNotification) -> String {
         ControlNotification::Pause { pane_id } => {
             format!("%pause %{}", pane_id)
         }
-        ControlNotification::ExtendedOutput { pane_id, age_ms, data } => {
-            format!("%extended-output %{} {} : {}", pane_id, age_ms, escape_output(data))
+        ControlNotification::ExtendedOutput {
+            pane_id,
+            age_ms,
+            data,
+        } => {
+            format!(
+                "%extended-output %{} {} : {}",
+                pane_id,
+                age_ms,
+                escape_output(data)
+            )
         }
-        ControlNotification::SubscriptionChanged { name, session_id, window_id, window_index, pane_id, value } => {
-            format!("%subscription-changed {} ${} @{} {} %{} : {}", name, session_id, window_id, window_index, pane_id, value)
+        ControlNotification::SubscriptionChanged {
+            name,
+            session_id,
+            window_id,
+            window_index,
+            pane_id,
+            value,
+        } => {
+            format!(
+                "%subscription-changed {} ${} @{} {} %{} : {}",
+                name, session_id, window_id, window_index, pane_id, value
+            )
         }
         ControlNotification::Exit { reason } => {
             if let Some(r) = reason {
@@ -122,8 +161,15 @@ pub fn format_notification(notif: &ControlNotification) -> String {
         ControlNotification::PasteBufferDeleted { name } => {
             format!("%paste-buffer-deleted {}", name)
         }
-        ControlNotification::ClientSessionChanged { client, session_id, name } => {
-            format!("%client-session-changed {} ${} {}", client, session_id, name)
+        ControlNotification::ClientSessionChanged {
+            client,
+            session_id,
+            name,
+        } => {
+            format!(
+                "%client-session-changed {} ${} {}",
+                client, session_id, name
+            )
         }
         ControlNotification::Message { text } => {
             format!("%message {}", text)
@@ -317,7 +363,10 @@ mod tests {
             layout: "5e08,120x30,0,0,1".to_string(),
         });
         // tmux format: %layout-change @WID layout visible_layout flags
-        assert_eq!(line, "%layout-change @2 5e08,120x30,0,0,1 5e08,120x30,0,0,1 *");
+        assert_eq!(
+            line,
+            "%layout-change @2 5e08,120x30,0,0,1 5e08,120x30,0,0,1 *"
+        );
     }
 
     #[test]
@@ -364,13 +413,21 @@ mod tests {
 
     #[test]
     fn test_format_notification_continue_pause() {
-        assert_eq!(format_notification(&ControlNotification::Continue { pane_id: 1 }), "%continue %1");
-        assert_eq!(format_notification(&ControlNotification::Pause { pane_id: 1 }), "%pause %1");
+        assert_eq!(
+            format_notification(&ControlNotification::Continue { pane_id: 1 }),
+            "%continue %1"
+        );
+        assert_eq!(
+            format_notification(&ControlNotification::Pause { pane_id: 1 }),
+            "%pause %1"
+        );
     }
 
     #[test]
     fn test_format_notification_client_detached() {
-        let line = format_notification(&ControlNotification::ClientDetached { client: "client0".to_string() });
+        let line = format_notification(&ControlNotification::ClientDetached {
+            client: "client0".to_string(),
+        });
         assert_eq!(line, "%client-detached client0");
     }
 
@@ -384,19 +441,22 @@ mod tests {
     fn test_has_control_clients_with_client() {
         let mut app = AppState::new("test".to_string());
         let (tx, _rx) = std::sync::mpsc::sync_channel(16);
-        app.control_clients.insert(1, crate::types::ControlClient {
-            client_id: 1,
-            cmd_counter: 0,
-            echo_enabled: true,
-            notification_tx: tx,
-            paused_panes: std::collections::HashSet::new(),
-            subscriptions: std::collections::HashMap::new(),
-            subscription_values: std::collections::HashMap::new(),
-            subscription_last_check: std::collections::HashMap::new(),
-            pause_after_secs: None,
-            output_paused_panes: std::collections::HashSet::new(),
-            pane_last_output: std::collections::HashMap::new(),
-        });
+        app.control_clients.insert(
+            1,
+            crate::types::ControlClient {
+                client_id: 1,
+                cmd_counter: 0,
+                echo_enabled: true,
+                notification_tx: tx,
+                paused_panes: std::collections::HashSet::new(),
+                subscriptions: std::collections::HashMap::new(),
+                subscription_values: std::collections::HashMap::new(),
+                subscription_last_check: std::collections::HashMap::new(),
+                pause_after_secs: None,
+                output_paused_panes: std::collections::HashSet::new(),
+                pane_last_output: std::collections::HashMap::new(),
+            },
+        );
         assert!(has_control_clients(&app));
     }
 
@@ -404,22 +464,28 @@ mod tests {
     fn test_emit_notification_to_clients() {
         let mut app = AppState::new("test".to_string());
         let (tx, rx) = std::sync::mpsc::sync_channel(16);
-        app.control_clients.insert(1, crate::types::ControlClient {
-            client_id: 1,
-            cmd_counter: 0,
-            echo_enabled: false,
-            notification_tx: tx,
-            paused_panes: std::collections::HashSet::new(),
-            subscriptions: std::collections::HashMap::new(),
-            subscription_values: std::collections::HashMap::new(),
-            subscription_last_check: std::collections::HashMap::new(),
-            pause_after_secs: None,
-            output_paused_panes: std::collections::HashSet::new(),
-            pane_last_output: std::collections::HashMap::new(),
-        });
+        app.control_clients.insert(
+            1,
+            crate::types::ControlClient {
+                client_id: 1,
+                cmd_counter: 0,
+                echo_enabled: false,
+                notification_tx: tx,
+                paused_panes: std::collections::HashSet::new(),
+                subscriptions: std::collections::HashMap::new(),
+                subscription_values: std::collections::HashMap::new(),
+                subscription_last_check: std::collections::HashMap::new(),
+                pause_after_secs: None,
+                output_paused_panes: std::collections::HashSet::new(),
+                pane_last_output: std::collections::HashMap::new(),
+            },
+        );
         emit_notification(&app, ControlNotification::WindowAdd { window_id: 5 });
         let notif = rx.try_recv().unwrap();
-        assert!(matches!(notif, ControlNotification::WindowAdd { window_id: 5 }));
+        assert!(matches!(
+            notif,
+            ControlNotification::WindowAdd { window_id: 5 }
+        ));
     }
 
     #[test]
@@ -428,25 +494,46 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::sync_channel(16);
         let mut paused = std::collections::HashSet::new();
         paused.insert(3usize);
-        app.control_clients.insert(1, crate::types::ControlClient {
-            client_id: 1,
-            cmd_counter: 0,
-            echo_enabled: false,
-            notification_tx: tx,
-            paused_panes: paused,
-            subscriptions: std::collections::HashMap::new(),
-            subscription_values: std::collections::HashMap::new(),
-            subscription_last_check: std::collections::HashMap::new(),
-            pause_after_secs: None,
-            output_paused_panes: std::collections::HashSet::new(),
-            pane_last_output: std::collections::HashMap::new(),
-        });
+        app.control_clients.insert(
+            1,
+            crate::types::ControlClient {
+                client_id: 1,
+                cmd_counter: 0,
+                echo_enabled: false,
+                notification_tx: tx,
+                paused_panes: paused,
+                subscriptions: std::collections::HashMap::new(),
+                subscription_values: std::collections::HashMap::new(),
+                subscription_last_check: std::collections::HashMap::new(),
+                pause_after_secs: None,
+                output_paused_panes: std::collections::HashSet::new(),
+                pane_last_output: std::collections::HashMap::new(),
+            },
+        );
         // Output for paused pane 3 should be dropped
-        emit_notification(&app, ControlNotification::Output { pane_id: 3, data: "test".into() });
-        assert!(rx.try_recv().is_err(), "paused pane output should not be sent");
+        emit_notification(
+            &app,
+            ControlNotification::Output {
+                pane_id: 3,
+                data: "test".into(),
+            },
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "paused pane output should not be sent"
+        );
         // Output for different pane should go through
-        emit_notification(&app, ControlNotification::Output { pane_id: 5, data: "ok".into() });
-        assert!(rx.try_recv().is_ok(), "non-paused pane output should be sent");
+        emit_notification(
+            &app,
+            ControlNotification::Output {
+                pane_id: 5,
+                data: "ok".into(),
+            },
+        );
+        assert!(
+            rx.try_recv().is_ok(),
+            "non-paused pane output should be sent"
+        );
     }
 
     #[test]

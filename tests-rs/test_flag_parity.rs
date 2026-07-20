@@ -24,7 +24,11 @@ fn mock_app() -> AppState {
 
 fn make_window(name: &str, id: usize) -> crate::types::Window {
     crate::types::Window {
-        root: Node::Split { kind: LayoutKind::Horizontal, sizes: vec![], children: vec![] },
+        root: Node::Split {
+            kind: LayoutKind::Horizontal,
+            sizes: vec![],
+            children: vec![],
+        },
         active_path: vec![],
         name: name.to_string(),
         id,
@@ -80,7 +84,10 @@ fn prompt_input(app: &AppState) -> String {
 }
 
 fn status_msg(app: &AppState) -> String {
-    app.status_message.as_ref().map(|(s, _, _)| s.clone()).unwrap_or_default()
+    app.status_message
+        .as_ref()
+        .map(|(s, _, _)| s.clone())
+        .unwrap_or_default()
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -101,10 +108,16 @@ fn set_option_flag_u_unset_resets_default() {
     // so the field keeps its last value.  Verify the unset path executes
     // without error (user options DO get cleared to "").
     execute_command_string(&mut app, "set-option -g @unset-probe hello").unwrap();
-    assert_eq!(app.user_options.get("@unset-probe").map(|s| s.as_str()), Some("hello"));
+    assert_eq!(
+        app.user_options.get("@unset-probe").map(|s| s.as_str()),
+        Some("hello")
+    );
     execute_command_string(&mut app, "set-option -gu @unset-probe").unwrap();
-    assert_eq!(app.user_options.get("@unset-probe").map(|s| s.as_str()), Some(""),
-        "-u flag: should unset (set to empty)");
+    assert_eq!(
+        app.user_options.get("@unset-probe").map(|s| s.as_str()),
+        Some(""),
+        "-u flag: should unset (set to empty)"
+    );
 }
 
 #[test]
@@ -112,7 +125,10 @@ fn set_option_flag_a_append() {
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, r#"set-option -g status-right "PART1""#).unwrap();
     execute_command_string(&mut app, r#"set-option -ga status-right " PART2""#).unwrap();
-    assert!(app.status_right.contains("PART1"), "-a flag: should keep existing");
+    assert!(
+        app.status_right.contains("PART1"),
+        "-a flag: should keep existing"
+    );
     assert!(app.status_right.contains("PART2"), "-a flag: should append");
 }
 
@@ -130,7 +146,10 @@ fn set_option_flag_o_only_if_unset() {
     execute_command_string(&mut app, "set-option -g escape-time 42").unwrap();
     assert_eq!(app.escape_time_ms, 42);
     execute_command_string(&mut app, "set-option -go escape-time 999").unwrap();
-    assert_eq!(app.escape_time_ms, 42, "-o flag: should NOT overwrite existing value");
+    assert_eq!(
+        app.escape_time_ms, 42,
+        "-o flag: should NOT overwrite existing value"
+    );
 }
 
 #[test]
@@ -138,15 +157,25 @@ fn set_option_flag_w_window_scope() {
     let mut app = mock_app_with_window();
     // -w is treated same as -g in single-server model
     execute_command_string(&mut app, "set-option -w mouse on").unwrap();
-    assert!(app.mouse_enabled, "-w flag: window scope should apply locally");
+    assert!(
+        app.mouse_enabled,
+        "-w flag: window scope should apply locally"
+    );
 }
 
 #[test]
 fn set_option_flag_F_format_expand() {
     let mut app = mock_app_with_window();
-    execute_command_string(&mut app, r##"set-option -gF status-left "#{session_name}""##).unwrap();
+    execute_command_string(
+        &mut app,
+        r##"set-option -gF status-left "#{session_name}""##,
+    )
+    .unwrap();
     // -F should expand format strings; session_name = "flag_test"
-    assert_eq!(app.status_left, "flag_test", "-F flag: should expand format in value");
+    assert_eq!(
+        app.status_left, "flag_test",
+        "-F flag: should expand format in value"
+    );
 }
 
 #[test]
@@ -154,10 +183,16 @@ fn set_option_combined_flags_gu() {
     let mut app = mock_app_with_window();
     // Combined -gu: global unset.  For user options, verify reset to empty.
     execute_command_string(&mut app, "set-option -g @gu-probe value").unwrap();
-    assert_eq!(app.user_options.get("@gu-probe").map(|s| s.as_str()), Some("value"));
+    assert_eq!(
+        app.user_options.get("@gu-probe").map(|s| s.as_str()),
+        Some("value")
+    );
     execute_command_string(&mut app, "set-option -gu @gu-probe").unwrap();
-    assert_eq!(app.user_options.get("@gu-probe").map(|s| s.as_str()), Some(""),
-        "combined -gu: should unset to empty");
+    assert_eq!(
+        app.user_options.get("@gu-probe").map(|s| s.as_str()),
+        Some(""),
+        "combined -gu: should unset to empty"
+    );
 }
 
 #[test]
@@ -165,7 +200,10 @@ fn set_option_combined_flags_ga() {
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, r#"set-option -g status-left "A""#).unwrap();
     execute_command_string(&mut app, r#"set-option -ga status-left "B""#).unwrap();
-    assert!(app.status_left.contains('A') && app.status_left.contains('B'), "combined -ga: global append");
+    assert!(
+        app.status_left.contains('A') && app.status_left.contains('B'),
+        "combined -ga: global append"
+    );
 }
 
 #[test]
@@ -180,7 +218,10 @@ fn set_option_flag_t_target_consumed() {
 fn set_option_user_at_option() {
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, "set-option -g @my-plugin value1").unwrap();
-    assert_eq!(app.user_options.get("@my-plugin").map(|s| s.as_str()), Some("value1"));
+    assert_eq!(
+        app.user_options.get("@my-plugin").map(|s| s.as_str()),
+        Some("value1")
+    );
 }
 
 #[test]
@@ -189,8 +230,11 @@ fn set_option_user_at_option_unset() {
     execute_command_string(&mut app, "set-option -g @test-opt hello").unwrap();
     execute_command_string(&mut app, "set-option -gu @test-opt").unwrap();
     // psmux -u sets value to empty string rather than removing the key
-    assert_eq!(app.user_options.get("@test-opt").map(|s| s.as_str()), Some(""),
-        "@option unset should set to empty");
+    assert_eq!(
+        app.user_options.get("@test-opt").map(|s| s.as_str()),
+        Some(""),
+        "@option unset should set to empty"
+    );
 }
 
 #[test]
@@ -199,7 +243,10 @@ fn set_option_user_at_option_append() {
     execute_command_string(&mut app, "set-option -g @list one").unwrap();
     execute_command_string(&mut app, "set-option -ga @list ,two").unwrap();
     let val = app.user_options.get("@list").unwrap();
-    assert!(val.contains("one") && val.contains("two"), "@option append should combine");
+    assert!(
+        val.contains("one") && val.contains("two"),
+        "@option append should combine"
+    );
 }
 
 // All major set-option options
@@ -383,7 +430,11 @@ fn set_option_pane_border_style() {
 #[test]
 fn set_option_pane_active_border_style() {
     let mut app = mock_app_with_window();
-    execute_command_string(&mut app, r#"set-option -g pane-active-border-style "fg=cyan""#).unwrap();
+    execute_command_string(
+        &mut app,
+        r#"set-option -g pane-active-border-style "fg=cyan""#,
+    )
+    .unwrap();
     assert_eq!(app.pane_active_border_style, "fg=cyan");
 }
 
@@ -432,7 +483,10 @@ fn show_options_no_flags_shows_all() {
     execute_command_string(&mut app, "show-options").unwrap();
     if is_popup(&app) {
         let out = popup_output(&app);
-        assert!(out.contains("mouse") || out.contains("status"), "show-options should list options");
+        assert!(
+            out.contains("mouse") || out.contains("status"),
+            "show-options should list options"
+        );
     }
 }
 
@@ -443,8 +497,10 @@ fn show_options_specific_option_name() {
     execute_command_string(&mut app, "show-options @show-test").unwrap();
     if is_popup(&app) {
         let out = popup_output(&app);
-        assert!(out.contains("myval") || out.contains("@show-test"),
-            "show-options with name should show that option");
+        assert!(
+            out.contains("myval") || out.contains("@show-test"),
+            "show-options with name should show that option"
+        );
     }
 }
 
@@ -482,8 +538,12 @@ fn bind_key_default_prefix_table() {
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, "bind-key z split-window -v").unwrap();
     let table = app.key_tables.get("prefix").expect("prefix table");
-    assert!(table.iter().any(|b| b.key.0 == crossterm::event::KeyCode::Char('z')),
-        "default bind goes to prefix table");
+    assert!(
+        table
+            .iter()
+            .any(|b| b.key.0 == crossterm::event::KeyCode::Char('z')),
+        "default bind goes to prefix table"
+    );
 }
 
 #[test]
@@ -491,17 +551,32 @@ fn bind_key_flag_n_root_table() {
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, "bind-key -n F3 split-window -v").unwrap();
     let table = app.key_tables.get("root").expect("root table");
-    assert!(table.iter().any(|b| b.key.0 == crossterm::event::KeyCode::F(3)),
-        "-n flag: should bind to root table");
+    assert!(
+        table
+            .iter()
+            .any(|b| b.key.0 == crossterm::event::KeyCode::F(3)),
+        "-n flag: should bind to root table"
+    );
 }
 
 #[test]
 fn bind_key_flag_T_custom_table() {
     let mut app = mock_app_with_window();
-    execute_command_string(&mut app, "bind-key -T copy-mode-vi v send-keys -X begin-selection").unwrap();
-    let table = app.key_tables.get("copy-mode-vi").expect("copy-mode-vi table");
-    assert!(table.iter().any(|b| b.key.0 == crossterm::event::KeyCode::Char('v')),
-        "-T flag: should bind to named table");
+    execute_command_string(
+        &mut app,
+        "bind-key -T copy-mode-vi v send-keys -X begin-selection",
+    )
+    .unwrap();
+    let table = app
+        .key_tables
+        .get("copy-mode-vi")
+        .expect("copy-mode-vi table");
+    assert!(
+        table
+            .iter()
+            .any(|b| b.key.0 == crossterm::event::KeyCode::Char('v')),
+        "-T flag: should bind to named table"
+    );
 }
 
 #[test]
@@ -509,9 +584,14 @@ fn bind_key_flag_r_repeat() {
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, "bind-key -r n next-window").unwrap();
     let table = app.key_tables.get("prefix").expect("prefix table");
-    let bind = table.iter().find(|b| b.key.0 == crossterm::event::KeyCode::Char('n'));
+    let bind = table
+        .iter()
+        .find(|b| b.key.0 == crossterm::event::KeyCode::Char('n'));
     assert!(bind.is_some(), "-r flag: key should be bound");
-    assert!(bind.unwrap().repeat, "-r flag: should mark binding as repeatable");
+    assert!(
+        bind.unwrap().repeat,
+        "-r flag: should mark binding as repeatable"
+    );
 }
 
 #[test]
@@ -528,8 +608,12 @@ fn bind_key_flag_T_root() {
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, "bind-key -T root F7 new-window").unwrap();
     let table = app.key_tables.get("root").expect("root table");
-    assert!(table.iter().any(|b| b.key.0 == crossterm::event::KeyCode::F(7)),
-        "-T root: should bind to root table");
+    assert!(
+        table
+            .iter()
+            .any(|b| b.key.0 == crossterm::event::KeyCode::F(7)),
+        "-T root: should bind to root table"
+    );
 }
 
 #[test]
@@ -564,10 +648,21 @@ fn bind_key_alt_modifier() {
 fn unbind_key_specific_key() {
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, "bind-key q display-panes").unwrap();
-    assert!(app.key_tables.get("prefix").unwrap().iter().any(|b| b.key.0 == crossterm::event::KeyCode::Char('q')));
+    assert!(app
+        .key_tables
+        .get("prefix")
+        .unwrap()
+        .iter()
+        .any(|b| b.key.0 == crossterm::event::KeyCode::Char('q')));
     execute_command_string(&mut app, "unbind-key q").unwrap();
-    assert!(!app.key_tables.get("prefix").unwrap().iter().any(|b| b.key.0 == crossterm::event::KeyCode::Char('q')),
-        "unbind should remove the key");
+    assert!(
+        !app.key_tables
+            .get("prefix")
+            .unwrap()
+            .iter()
+            .any(|b| b.key.0 == crossterm::event::KeyCode::Char('q')),
+        "unbind should remove the key"
+    );
 }
 
 #[test]
@@ -578,7 +673,10 @@ fn unbind_key_flag_a_all() {
     execute_command_string(&mut app, "unbind-key -a").unwrap();
     let empty = vec![];
     let table = app.key_tables.get("prefix").unwrap_or(&empty);
-    assert!(table.is_empty(), "-a flag: should unbind all keys from prefix table");
+    assert!(
+        table.is_empty(),
+        "-a flag: should unbind all keys from prefix table"
+    );
 }
 
 #[test]
@@ -588,19 +686,31 @@ fn unbind_key_flag_n_root_table() {
     execute_command_string(&mut app, "unbind-key -n F9").unwrap();
     let empty = vec![];
     let table = app.key_tables.get("root").unwrap_or(&empty);
-    assert!(!table.iter().any(|b| b.key.0 == crossterm::event::KeyCode::F(9)),
-        "-n flag: should unbind from root table");
+    assert!(
+        !table
+            .iter()
+            .any(|b| b.key.0 == crossterm::event::KeyCode::F(9)),
+        "-n flag: should unbind from root table"
+    );
 }
 
 #[test]
 fn unbind_key_flag_T_named_table() {
     let mut app = mock_app_with_window();
-    execute_command_string(&mut app, "bind-key -T copy-mode-vi y send-keys -X copy-selection").unwrap();
+    execute_command_string(
+        &mut app,
+        "bind-key -T copy-mode-vi y send-keys -X copy-selection",
+    )
+    .unwrap();
     execute_command_string(&mut app, "unbind-key -T copy-mode-vi y").unwrap();
     let empty = vec![];
     let table = app.key_tables.get("copy-mode-vi").unwrap_or(&empty);
-    assert!(!table.iter().any(|b| b.key.0 == crossterm::event::KeyCode::Char('y')),
-        "-T flag: should unbind from named table");
+    assert!(
+        !table
+            .iter()
+            .any(|b| b.key.0 == crossterm::event::KeyCode::Char('y')),
+        "-T flag: should unbind from named table"
+    );
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -610,8 +720,15 @@ fn unbind_key_flag_T_named_table() {
 #[test]
 fn set_hook_basic_set() {
     let mut app = mock_app_with_window();
-    execute_command_string(&mut app, r#"set-hook -g after-new-window "display-message created""#).unwrap();
-    assert!(app.hooks.contains_key("after-new-window"), "set-hook should register hook");
+    execute_command_string(
+        &mut app,
+        r#"set-hook -g after-new-window "display-message created""#,
+    )
+    .unwrap();
+    assert!(
+        app.hooks.contains_key("after-new-window"),
+        "set-hook should register hook"
+    );
     let cmds = app.hooks.get("after-new-window").unwrap();
     assert_eq!(cmds.len(), 1);
 }
@@ -622,7 +739,11 @@ fn set_hook_flag_a_append() {
     execute_command_string(&mut app, r#"set-hook -g after-split-window "cmd1""#).unwrap();
     execute_command_string(&mut app, r#"set-hook -ga after-split-window "cmd2""#).unwrap();
     let cmds = app.hooks.get("after-split-window").unwrap();
-    assert!(cmds.len() >= 2, "-a flag: should append, got {} hooks", cmds.len());
+    assert!(
+        cmds.len() >= 2,
+        "-a flag: should append, got {} hooks",
+        cmds.len()
+    );
 }
 
 #[test]
@@ -640,7 +761,10 @@ fn set_hook_flag_u_unset() {
     execute_command_string(&mut app, r#"set-hook -g after-new-session "cmd""#).unwrap();
     assert!(app.hooks.contains_key("after-new-session"));
     execute_command_string(&mut app, "set-hook -gu after-new-session").unwrap();
-    assert!(!app.hooks.contains_key("after-new-session"), "-u flag: should remove hook");
+    assert!(
+        !app.hooks.contains_key("after-new-session"),
+        "-u flag: should remove hook"
+    );
 }
 
 #[test]
@@ -648,7 +772,10 @@ fn set_hook_flag_ug_unset_global() {
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, r#"set-hook -g client-attached "notify""#).unwrap();
     execute_command_string(&mut app, "set-hook -ug client-attached").unwrap();
-    assert!(!app.hooks.contains_key("client-attached"), "-ug flag: should remove hook");
+    assert!(
+        !app.hooks.contains_key("client-attached"),
+        "-ug flag: should remove hook"
+    );
 }
 
 #[test]
@@ -669,14 +796,20 @@ fn set_hook_overwrite_without_append() {
 fn set_environment_basic() {
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, "set-environment MY_VAR my_value").unwrap();
-    assert_eq!(app.environment.get("MY_VAR").map(|s| s.as_str()), Some("my_value"));
+    assert_eq!(
+        app.environment.get("MY_VAR").map(|s| s.as_str()),
+        Some("my_value")
+    );
 }
 
 #[test]
 fn set_environment_empty_value() {
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, "set-environment EMPTY_VAR").unwrap();
-    assert!(app.environment.contains_key("EMPTY_VAR"), "single arg should set with empty value");
+    assert!(
+        app.environment.contains_key("EMPTY_VAR"),
+        "single arg should set with empty value"
+    );
 }
 
 #[test]
@@ -685,7 +818,10 @@ fn set_environment_flag_u_unset() {
     execute_command_string(&mut app, "set-environment TEST_UNSET val").unwrap();
     assert!(app.environment.contains_key("TEST_UNSET"));
     execute_command_string(&mut app, "set-environment -u TEST_UNSET").unwrap();
-    assert!(!app.environment.contains_key("TEST_UNSET"), "-u flag: should remove var");
+    assert!(
+        !app.environment.contains_key("TEST_UNSET"),
+        "-u flag: should remove var"
+    );
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -722,7 +858,10 @@ fn display_message_flag_p_print_mode() {
     execute_command_string(&mut app, "display-message -p '#{session_name}'").unwrap();
     // -p should print to stdout; in local mode it sets status_message
     let msg = status_msg(&app);
-    assert!(msg.contains("flag_test"), "-p flag: should expand format and display");
+    assert!(
+        msg.contains("flag_test"),
+        "-p flag: should expand format and display"
+    );
 }
 
 #[test]
@@ -744,7 +883,10 @@ fn display_message_format_expansion() {
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, "display-message '#{window_index}'").unwrap();
     let msg = status_msg(&app);
-    assert!(msg.contains("0") || !msg.is_empty(), "format vars should expand");
+    assert!(
+        msg.contains("0") || !msg.is_empty(),
+        "format vars should expand"
+    );
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -754,48 +896,80 @@ fn display_message_format_expansion() {
 #[test]
 fn if_shell_true_condition() {
     let mut app = mock_app_with_window();
-    execute_command_string(&mut app, r#"if-shell "true" "set-option -g @if-result yes""#).unwrap();
+    execute_command_string(
+        &mut app,
+        r#"if-shell "true" "set-option -g @if-result yes""#,
+    )
+    .unwrap();
     // "true" always succeeds
 }
 
 #[test]
 fn if_shell_false_condition_with_else() {
     let mut app = mock_app_with_window();
-    execute_command_string(&mut app, r#"if-shell "false" "set-option -g @bad yes" "set-option -g @else-result yes""#).unwrap();
-    assert_eq!(app.user_options.get("@else-result").map(|s| s.as_str()), Some("yes"),
-        "false condition should run else branch");
+    execute_command_string(
+        &mut app,
+        r#"if-shell "false" "set-option -g @bad yes" "set-option -g @else-result yes""#,
+    )
+    .unwrap();
+    assert_eq!(
+        app.user_options.get("@else-result").map(|s| s.as_str()),
+        Some("yes"),
+        "false condition should run else branch"
+    );
 }
 
 #[test]
 fn if_shell_flag_F_format_condition() {
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, "set-option -g @cond-test 1").unwrap();
-    execute_command_string(&mut app, r##"if-shell -F "#{@cond-test}" "set-option -g @fmt-result yes""##).unwrap();
+    execute_command_string(
+        &mut app,
+        r##"if-shell -F "#{@cond-test}" "set-option -g @fmt-result yes""##,
+    )
+    .unwrap();
     // -F: condition is a format string, expanded then truth-tested
 }
 
 #[test]
 fn if_shell_flag_F_empty_is_false() {
     let mut app = mock_app_with_window();
-    execute_command_string(&mut app, r#"if-shell -F "" "set-option -g @should-not set" "set-option -g @empty-false yes""#).unwrap();
-    assert_eq!(app.user_options.get("@empty-false").map(|s| s.as_str()), Some("yes"),
-        "-F with empty string should be false");
+    execute_command_string(
+        &mut app,
+        r#"if-shell -F "" "set-option -g @should-not set" "set-option -g @empty-false yes""#,
+    )
+    .unwrap();
+    assert_eq!(
+        app.user_options.get("@empty-false").map(|s| s.as_str()),
+        Some("yes"),
+        "-F with empty string should be false"
+    );
 }
 
 #[test]
 fn if_shell_flag_F_zero_is_false() {
     let mut app = mock_app_with_window();
-    execute_command_string(&mut app, r#"if-shell -F "0" "set-option -g @shouldnot set" "set-option -g @zero-false yes""#).unwrap();
-    assert_eq!(app.user_options.get("@zero-false").map(|s| s.as_str()), Some("yes"),
-        "-F with '0' should be false");
+    execute_command_string(
+        &mut app,
+        r#"if-shell -F "0" "set-option -g @shouldnot set" "set-option -g @zero-false yes""#,
+    )
+    .unwrap();
+    assert_eq!(
+        app.user_options.get("@zero-false").map(|s| s.as_str()),
+        Some("yes"),
+        "-F with '0' should be false"
+    );
 }
 
 #[test]
 fn if_shell_literal_1_is_true() {
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, r#"if-shell "1" "set-option -g @one-true yes""#).unwrap();
-    assert_eq!(app.user_options.get("@one-true").map(|s| s.as_str()), Some("yes"),
-        "literal '1' should be true");
+    assert_eq!(
+        app.user_options.get("@one-true").map(|s| s.as_str()),
+        Some("yes"),
+        "literal '1' should be true"
+    );
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -1007,7 +1181,11 @@ fn new_session_flag_F_format() {
 #[test]
 fn new_session_multiple_flags() {
     let mut app = mock_app_with_window();
-    execute_command_string(&mut app, r#"new-session -d -s multi -n win1 -c "C:\" -e TEST=1"#).unwrap();
+    execute_command_string(
+        &mut app,
+        r#"new-session -d -s multi -n win1 -c "C:\" -e TEST=1"#,
+    )
+    .unwrap();
     // Combined flags should work
 }
 
@@ -1205,15 +1383,18 @@ fn send_keys_flag_l_literal() {
 #[test]
 fn send_keys_flag_f_force_signal_short() {
     let mut app = mock_app_with_window();
-    execute_command_string(&mut app, "send-keys -f C-c").unwrap();
-    // psmux extension: -f is accepted and only affects Ctrl+C signal delivery.
+    let error = execute_command_string(&mut app, "send-keys -f C-c").unwrap_err();
+    assert!(error.to_string().contains("target PID is unavailable"));
+    // The mock has no real child PID; reaching the force-specific delivery error
+    // proves that -f was accepted and routed rather than treated as key text.
 }
 
 #[test]
 fn send_keys_flag_force_signal_long() {
     let mut app = mock_app_with_window();
-    execute_command_string(&mut app, "send-keys --force-signal C-c").unwrap();
-    // Long-form alias should parse the same way as -f.
+    let error = execute_command_string(&mut app, "send-keys --force-signal C-c").unwrap_err();
+    assert!(error.to_string().contains("target PID is unavailable"));
+    // Long-form alias reaches the same force-specific delivery path as -f.
 }
 
 #[test]
@@ -1345,7 +1526,10 @@ fn respawn_pane_no_flags() {
 fn command_prompt_no_flags() {
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, "command-prompt").unwrap();
-    assert!(is_command_prompt(&app), "command-prompt should enter CommandPrompt mode");
+    assert!(
+        is_command_prompt(&app),
+        "command-prompt should enter CommandPrompt mode"
+    );
 }
 
 #[test]
@@ -1354,7 +1538,10 @@ fn command_prompt_flag_I_initial() {
     execute_command_string(&mut app, r#"command-prompt -I "split-window""#).unwrap();
     assert!(is_command_prompt(&app));
     let input = prompt_input(&app);
-    assert!(input.contains("split-window"), "-I flag: should pre-fill prompt");
+    assert!(
+        input.contains("split-window"),
+        "-I flag: should pre-fill prompt"
+    );
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -1981,7 +2168,10 @@ fn alias_pipep() {
 fn alias_setenv() {
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, "setenv ALIAS_TEST val").unwrap();
-    assert_eq!(app.environment.get("ALIAS_TEST").map(|s| s.as_str()), Some("val"));
+    assert_eq!(
+        app.environment.get("ALIAS_TEST").map(|s| s.as_str()),
+        Some("val")
+    );
 }
 
 #[test]
@@ -2001,7 +2191,10 @@ fn alias_set_is_set_option() {
 fn alias_setw_is_set_window_option() {
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, "setw -g mouse off").unwrap();
-    assert!(!app.mouse_enabled, "'setw' alias should work as set-window-option");
+    assert!(
+        !app.mouse_enabled,
+        "'setw' alias should work as set-window-option"
+    );
 }
 
 #[test]
@@ -2021,8 +2214,12 @@ fn alias_bind() {
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, "bind x new-window").unwrap();
     let table = app.key_tables.get("prefix").expect("prefix table");
-    assert!(table.iter().any(|b| b.key.0 == crossterm::event::KeyCode::Char('x')),
-        "'bind' alias should work");
+    assert!(
+        table
+            .iter()
+            .any(|b| b.key.0 == crossterm::event::KeyCode::Char('x')),
+        "'bind' alias should work"
+    );
 }
 
 #[test]
@@ -2160,8 +2357,11 @@ fn switch_client_flag_T_key_table() {
     // then handled in execute_action.  Test via that path.
     let action = parse_command_to_action("switch-client -T copy-mode-vi").unwrap();
     execute_action(&mut app, &action).unwrap();
-    assert_eq!(app.current_key_table.as_deref(), Some("copy-mode-vi"),
-        "-T flag: should switch key table");
+    assert_eq!(
+        app.current_key_table.as_deref(),
+        Some("copy-mode-vi"),
+        "-T flag: should switch key table"
+    );
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -2171,16 +2371,29 @@ fn switch_client_flag_T_key_table() {
 #[test]
 fn command_chain_two_commands() {
     let mut app = mock_app_with_window();
-    execute_command_string(&mut app, r#"set-option -g @chain1 v1 \; set-option -g @chain2 v2"#).unwrap();
-    assert_eq!(app.user_options.get("@chain1").map(|s| s.as_str()), Some("v1"));
-    assert_eq!(app.user_options.get("@chain2").map(|s| s.as_str()), Some("v2"));
+    execute_command_string(
+        &mut app,
+        r#"set-option -g @chain1 v1 \; set-option -g @chain2 v2"#,
+    )
+    .unwrap();
+    assert_eq!(
+        app.user_options.get("@chain1").map(|s| s.as_str()),
+        Some("v1")
+    );
+    assert_eq!(
+        app.user_options.get("@chain2").map(|s| s.as_str()),
+        Some("v2")
+    );
 }
 
 #[test]
 fn command_chain_three_commands() {
     let mut app = mock_app_with_window();
-    execute_command_string(&mut app,
-        r#"set-option -g @a 1 \; set-option -g @b 2 \; set-option -g @c 3"#).unwrap();
+    execute_command_string(
+        &mut app,
+        r#"set-option -g @a 1 \; set-option -g @b 2 \; set-option -g @c 3"#,
+    )
+    .unwrap();
     assert_eq!(app.user_options.get("@a").map(|s| s.as_str()), Some("1"));
     assert_eq!(app.user_options.get("@b").map(|s| s.as_str()), Some("2"));
     assert_eq!(app.user_options.get("@c").map(|s| s.as_str()), Some("3"));

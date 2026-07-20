@@ -103,7 +103,10 @@ fn wezterm_both_signals_route_to_vt_input() {
             std::env::set_var("WEZTERM_PANE", "3");
         },
         || {
-            assert!(needs_vt_input(), "real WezTerm (both vars) must route to VT input");
+            assert!(
+                needs_vt_input(),
+                "real WezTerm (both vars) must route to VT input"
+            );
         },
     );
 }
@@ -113,7 +116,14 @@ fn non_wezterm_term_program_stays_native() {
     // No false positives: other terminals that set TERM_PROGRAM (vscode,
     // Apple_Terminal, tmux, etc.) must NOT be dragged onto the VT path, or we
     // would regress native mouse handling for the common local case.
-    for other in ["vscode", "Apple_Terminal", "tmux", "wezterm", "WEZTERM", "iTerm.app"] {
+    for other in [
+        "vscode",
+        "Apple_Terminal",
+        "tmux",
+        "wezterm",
+        "WEZTERM",
+        "iTerm.app",
+    ] {
         with_clean_vt_env(
             || std::env::set_var("TERM_PROGRAM", other),
             || {

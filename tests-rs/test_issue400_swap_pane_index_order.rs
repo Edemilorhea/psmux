@@ -26,7 +26,12 @@ use ratatui::layout::Rect;
 fn make_pane(id: usize, rows: u16, cols: u16) -> crate::types::Pane {
     let pty = portable_pty::native_pty_system();
     let pair = pty
-        .openpty(portable_pty::PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+        .openpty(portable_pty::PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
         .expect("openpty");
     let mut cmd = portable_pty::CommandBuilder::new("cmd.exe");
     cmd.arg("/c");
@@ -68,7 +73,11 @@ fn make_pane(id: usize, rows: u16, cols: u16) -> crate::types::Pane {
 
 fn make_window(id: usize) -> crate::types::Window {
     crate::types::Window {
-        root: Node::Split { kind: LayoutKind::Horizontal, sizes: vec![], children: vec![] },
+        root: Node::Split {
+            kind: LayoutKind::Horizontal,
+            sizes: vec![],
+            children: vec![],
+        },
         active_path: vec![],
         name: "w".to_string(),
         id,
@@ -93,12 +102,24 @@ fn app_with_row(ids: &[usize]) -> AppState {
     let mut app = AppState::new("issue400".to_string());
     app.window_base_index = 0;
     app.pane_base_index = 0;
-    app.last_window_area = Rect { x: 0, y: 0, width: 160, height: 40 };
+    app.last_window_area = Rect {
+        x: 0,
+        y: 0,
+        width: 160,
+        height: 40,
+    };
     let mut win = make_window(0);
     let n = ids.len();
-    let children: Vec<Node> = ids.iter().map(|&id| Node::Leaf(make_pane(id, 40, 160 / n as u16))).collect();
+    let children: Vec<Node> = ids
+        .iter()
+        .map(|&id| Node::Leaf(make_pane(id, 40, 160 / n as u16)))
+        .collect();
     let sizes = vec![(100 / n) as u16; n];
-    win.root = Node::Split { kind: LayoutKind::Horizontal, sizes, children };
+    win.root = Node::Split {
+        kind: LayoutKind::Horizontal,
+        sizes,
+        children,
+    };
     app.windows.push(win);
     app.active_idx = 0;
     app
@@ -106,7 +127,9 @@ fn app_with_row(ids: &[usize]) -> AppState {
 
 /// pane id currently occupying index slot `i` (DFS leaf order).
 fn id_at(app: &AppState, i: usize) -> usize {
-    crate::tree::get_nth_pane(&app.windows[0].root, i).map(|p| p.id).unwrap_or(usize::MAX)
+    crate::tree::get_nth_pane(&app.windows[0].root, i)
+        .map(|p| p.id)
+        .unwrap_or(usize::MAX)
 }
 
 fn active_index(app: &AppState) -> usize {
@@ -123,15 +146,34 @@ fn swap_up_horizontal_row_swaps_with_previous_index() {
 
     let ok = crate::window_ops::swap_pane(&mut app, FocusDir::Up);
 
-    assert!(ok, "swap-pane -U must actually swap in a horizontal row (was a no-op before #400 fix)");
+    assert!(
+        ok,
+        "swap-pane -U must actually swap in a horizontal row (was a no-op before #400 fix)"
+    );
     // Index 0 and 1 exchange ids; the rest are untouched.
-    assert_eq!(id_at(&app, 0), 50, "prev slot (idx0) now holds the moved active pane");
-    assert_eq!(id_at(&app, 1), 49, "idx1 now holds the pane that was at idx0");
+    assert_eq!(
+        id_at(&app, 0),
+        50,
+        "prev slot (idx0) now holds the moved active pane"
+    );
+    assert_eq!(
+        id_at(&app, 1),
+        49,
+        "idx1 now holds the pane that was at idx0"
+    );
     assert_eq!(id_at(&app, 2), 13, "idx2 untouched");
     assert_eq!(id_at(&app, 3), 36, "idx3 untouched");
     // Focus follows the originally-active pane (id 50) to its new slot (idx0).
-    assert_eq!(active_index(&app), 0, "focus follows the moved pane to the previous slot");
-    assert_eq!(id_at(&app, active_index(&app)), 50, "active pane is still id 50");
+    assert_eq!(
+        active_index(&app),
+        0,
+        "focus follows the moved pane to the previous slot"
+    );
+    assert_eq!(
+        id_at(&app, active_index(&app)),
+        50,
+        "active pane is still id 50"
+    );
 }
 
 #[test]
@@ -142,10 +184,26 @@ fn swap_down_horizontal_row_swaps_with_next_index() {
     let ok = crate::window_ops::swap_pane(&mut app, FocusDir::Down);
 
     assert!(ok, "swap-pane -D must swap with the next pane by index");
-    assert_eq!(id_at(&app, 1), 13, "idx1 now holds the pane that was at idx2");
-    assert_eq!(id_at(&app, 2), 50, "next slot (idx2) now holds the moved active pane");
-    assert_eq!(active_index(&app), 2, "focus follows the moved pane to the next slot");
-    assert_eq!(id_at(&app, active_index(&app)), 50, "active pane is still id 50");
+    assert_eq!(
+        id_at(&app, 1),
+        13,
+        "idx1 now holds the pane that was at idx2"
+    );
+    assert_eq!(
+        id_at(&app, 2),
+        50,
+        "next slot (idx2) now holds the moved active pane"
+    );
+    assert_eq!(
+        active_index(&app),
+        2,
+        "focus follows the moved pane to the next slot"
+    );
+    assert_eq!(
+        id_at(&app, active_index(&app)),
+        50,
+        "active pane is still id 50"
+    );
 }
 
 // --- WRAP: tmux wraps -U at the first pane to the LAST, -D at the last to FIRST ---
@@ -159,8 +217,16 @@ fn swap_up_at_first_pane_wraps_to_last() {
 
     assert!(ok, "swap-pane -U at the first pane must wrap to the last");
     assert_eq!(id_at(&app, 0), 36, "idx0 now holds the last pane (id 36)");
-    assert_eq!(id_at(&app, 3), 49, "idx3 (last) now holds the moved active pane (id 49)");
-    assert_eq!(active_index(&app), 3, "focus follows the moved pane to the last slot");
+    assert_eq!(
+        id_at(&app, 3),
+        49,
+        "idx3 (last) now holds the moved active pane (id 49)"
+    );
+    assert_eq!(
+        active_index(&app),
+        3,
+        "focus follows the moved pane to the last slot"
+    );
 }
 
 #[test]
@@ -172,8 +238,16 @@ fn swap_down_at_last_pane_wraps_to_first() {
 
     assert!(ok, "swap-pane -D at the last pane must wrap to the first");
     assert_eq!(id_at(&app, 3), 49, "idx3 now holds the first pane (id 49)");
-    assert_eq!(id_at(&app, 0), 36, "idx0 (first) now holds the moved active pane (id 36)");
-    assert_eq!(active_index(&app), 0, "focus follows the moved pane to the first slot");
+    assert_eq!(
+        id_at(&app, 0),
+        36,
+        "idx0 (first) now holds the moved active pane (id 36)"
+    );
+    assert_eq!(
+        active_index(&app),
+        0,
+        "focus follows the moved pane to the first slot"
+    );
 }
 
 // --- EDGE: a single-pane window has nothing to swap with (no panic, no-op) ---
@@ -207,8 +281,14 @@ fn horizontal_row_swap_is_no_longer_geometry_gated() {
     let ok = crate::window_ops::swap_pane(&mut app, FocusDir::Up);
     let after: Vec<usize> = (0..4).map(|i| id_at(&app, i)).collect();
 
-    assert!(ok, "BUG #400: swap-pane -U in a horizontal row must not be a no-op");
-    assert_ne!(snapshot, after, "the pane_index -> pane_id mapping must actually change");
+    assert!(
+        ok,
+        "BUG #400: swap-pane -U in a horizontal row must not be a no-op"
+    );
+    assert_ne!(
+        snapshot, after,
+        "the pane_index -> pane_id mapping must actually change"
+    );
     assert_eq!(after[1], 13, "idx1 got the previously-active pane (id 13)");
     assert_eq!(after[2], 50, "idx2 got its previous neighbour (id 50)");
 }

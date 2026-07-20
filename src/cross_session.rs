@@ -22,8 +22,12 @@ use std::time::Duration;
 pub fn resolve_session(session_name: &str) -> io::Result<(u16, String)> {
     let port_path = crate::paths::port_file(session_name);
     let port: u16 = std::fs::read_to_string(&port_path)
-        .map_err(|_| io::Error::new(io::ErrorKind::NotFound,
-            format!("no server for session '{}'", session_name)))?
+        .map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("no server for session '{}'", session_name),
+            )
+        })?
         .trim()
         .parse()
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "bad port file"))?;
@@ -35,7 +39,9 @@ pub fn resolve_session(session_name: &str) -> io::Result<(u16, String)> {
 fn send_to_session(port: u16, key: &str, cmd: &str) -> io::Result<String> {
     let addr = format!("127.0.0.1:{}", port);
     let mut stream = TcpStream::connect_timeout(
-        &addr.parse().map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, format!("{}", e)))?,
+        &addr
+            .parse()
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, format!("{}", e)))?,
         Duration::from_millis(2000),
     )?;
     let _ = stream.set_nodelay(true);
@@ -51,17 +57,26 @@ fn send_to_session(port: u16, key: &str, cmd: &str) -> io::Result<String> {
             Ok(n) => {
                 buf.extend_from_slice(&tmp[..n]);
                 if buf.len() > MAX_RESPONSE {
-                    return Err(io::Error::new(io::ErrorKind::InvalidData,
-                        "response exceeded 4 MB limit"));
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "response exceeded 4 MB limit",
+                    ));
                 }
             }
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock
-                   || e.kind() == io::ErrorKind::TimedOut => break,
+            Err(e)
+                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
+            {
+                break
+            }
             Err(_) => break,
         }
     }
     let r = String::from_utf8_lossy(&buf).to_string();
-    Ok(if r.starts_with("OK\n") { r[3..].to_string() } else { r })
+    Ok(if r.starts_with("OK\n") {
+        r[3..].to_string()
+    } else {
+        r
+    })
 }
 
 /// Orchestrate a cross-session pane transfer.
@@ -90,13 +105,18 @@ pub fn orchestrate_cross_session_join(
     // followed by optional base64 screen data
     let extract_resp = extract_resp.trim();
     if !extract_resp.starts_with("FORWARD ") {
-        return Err(io::Error::new(io::ErrorKind::Other,
-            format!("extract failed: {}", extract_resp)));
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("extract failed: {}", extract_resp),
+        ));
     }
 
     let parts: Vec<&str> = extract_resp.splitn(8, ' ').collect();
     if parts.len() < 8 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "bad FORWARD response"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "bad FORWARD response",
+        ));
     }
     let forward_id: u64 = parts[1].parse().unwrap_or(0);
     let fwd_port: u16 = parts[2].parse().unwrap_or(0);
@@ -150,8 +170,10 @@ pub fn orchestrate_cross_session_join(
     // 4. Tell target to create proxy pane
     let inject_resp = send_to_session(tgt_port, &tgt_key, &inject_cmd)?;
     if inject_resp.trim().starts_with("ERR") {
-        return Err(io::Error::new(io::ErrorKind::Other,
-            format!("inject failed: {}", inject_resp.trim())));
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("inject failed: {}", inject_resp.trim()),
+        ));
     }
 
     Ok(())

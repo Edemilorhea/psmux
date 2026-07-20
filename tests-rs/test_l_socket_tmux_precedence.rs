@@ -61,8 +61,14 @@ fn dash_l_overrides_tmux_when_nested_outside_namespace() {
     let reg = TempRegistry::new();
     reg.with_session("main", 6001).with_session("X__work", 7001);
     // Precondition: prove the setup so a drift can't make this pass vacuously.
-    assert!(reg.path().join("main.port").exists(), "precondition: main.port present");
-    assert!(reg.path().join("X__work.port").exists(), "precondition: X__work.port present");
+    assert!(
+        reg.path().join("main.port").exists(),
+        "precondition: main.port present"
+    );
+    assert!(
+        reg.path().join("X__work.port").exists(),
+        "precondition: X__work.port present"
+    );
 
     // Attached inside `main` (its port is in $TMUX), running `psmux -L X <cmd>`.
     // tmux parity: `-L X` overrides `$TMUX`, so the command targets the X
@@ -127,7 +133,8 @@ fn dash_l_adopts_current_session_when_nested_inside_same_namespace() {
     // newer. The command must act on the CURRENT session (X__work), so the fix
     // must not naively ignore $TMUX whenever `-L` is present.
     let reg = TempRegistry::new();
-    reg.with_session("X__work", 7001).with_session("X__other", 7002);
+    reg.with_session("X__work", 7001)
+        .with_session("X__other", 7002);
     let tmux = tmux_for(7001);
     let got = resolve_routing_target(Some("X"), Some(&tmux), reg.path());
     assert_eq!(
@@ -155,8 +162,12 @@ fn no_dash_l_adopts_current_server_from_tmux() {
 fn warm_session_is_never_adopted_from_tmux() {
     // $TMUX points at the internal warm (standby) server; a real `main` exists.
     let reg = TempRegistry::new();
-    reg.with_session("__warm__", 9001).with_session("main", 6001);
-    assert!(is_warm_session("__warm__"), "precondition: __warm__ is a warm base");
+    reg.with_session("__warm__", 9001)
+        .with_session("main", 6001);
+    assert!(
+        is_warm_session("__warm__"),
+        "precondition: __warm__ is a warm base"
+    );
 
     let tmux = tmux_for(9001);
     let got = resolve_routing_target(None, Some(&tmux), reg.path());

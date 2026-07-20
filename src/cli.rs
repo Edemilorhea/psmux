@@ -18,10 +18,7 @@ pub fn normalize_flag_equals(args: Vec<String>) -> Vec<String> {
     for arg in args {
         // Must start with exactly one dash, followed by a single ASCII letter,
         // then `=`, then at least one character of value.
-        if arg.len() >= 4
-            && arg.starts_with('-')
-            && !arg.starts_with("--")
-        {
+        if arg.len() >= 4 && arg.starts_with('-') && !arg.starts_with("--") {
             let bytes = arg.as_bytes();
             if bytes[1].is_ascii_alphabetic() && bytes[2] == b'=' {
                 out.push(format!("-{}", bytes[1] as char));
@@ -39,10 +36,7 @@ pub fn normalize_flag_equals(args: Vec<String>) -> Vec<String> {
 pub fn normalize_flag_equals_borrowed(args: &[&str]) -> Vec<String> {
     let mut out = Vec::with_capacity(args.len());
     for arg in args {
-        if arg.len() >= 4
-            && arg.starts_with('-')
-            && !arg.starts_with("--")
-        {
+        if arg.len() >= 4 && arg.starts_with('-') && !arg.starts_with("--") {
             let bytes = arg.as_bytes();
             if bytes[1].is_ascii_alphabetic() && bytes[2] == b'=' {
                 out.push(format!("-{}", bytes[1] as char));
@@ -66,7 +60,8 @@ pub fn get_program_name() -> String {
 
 pub fn print_help() {
     let prog = get_program_name();
-    println!(r#"{prog} v{ver} - Terminal multiplexer for Windows (tmux alternative)
+    println!(
+        r#"{prog} v{ver} - Terminal multiplexer for Windows (tmux alternative)
 
 USAGE:
     {prog} [COMMAND] [OPTIONS]
@@ -421,7 +416,10 @@ EXAMPLES:
 NOTE: psmux ships as 'psmux', 'pmux', and 'tmux' - use whichever you prefer!
 
 For more information: https://github.com/psmux/psmux
-"#, prog = prog, ver = VERSION);
+"#,
+        prog = prog,
+        ver = VERSION
+    );
 }
 
 pub fn print_version() {
@@ -431,7 +429,8 @@ pub fn print_version() {
 }
 
 pub fn print_commands() {
-    println!(r#"Available commands:
+    println!(
+        r#"Available commands:
   attach-session (attach)   - Attach to a session
   bind-key (bind)           - Bind a key to a command
   break-pane                - Break a pane into a new window
@@ -509,16 +508,17 @@ pub fn print_commands() {
   unlink-window (unlinkw)   - Unlink a window
   wait-for (wait)           - Wait for a signal
   zoom-pane (zoom)          - Toggle pane zoom
-"#);
+"#
+    );
 }
 
 /// Parse a tmux-style target specification
 pub fn parse_target(target: &str) -> ParsedTarget {
     let mut result = ParsedTarget::default();
-    
+
     // Strip leading '=' prefix (tmux exact-match semantics)
     let target = target.strip_prefix('=').unwrap_or(target);
-    
+
     if target.starts_with('%') {
         if let Ok(pid) = target[1..].parse::<usize>() {
             result.pane = Some(pid);
@@ -541,13 +541,12 @@ pub fn parse_target(target: &str) -> ParsedTarget {
             // (which won't match any real session) so callers don't
             // fall through to "most recent session" for invalid IDs.
             result.session = Some(
-                crate::session::resolve_session_by_id(id)
-                    .unwrap_or_else(|| target.to_string())
+                crate::session::resolve_session_by_id(id).unwrap_or_else(|| target.to_string()),
             );
             return result;
         }
     }
-    
+
     let (session_part, window_pane_part) = if let Some(colon_pos) = target.find(':') {
         let session = if colon_pos == 0 {
             None
@@ -556,8 +555,7 @@ pub fn parse_target(target: &str) -> ParsedTarget {
             // $N session IDs (e.g. "$0:1") — resolve to session name
             if s.starts_with('$') {
                 if let Ok(id) = s[1..].parse::<usize>() {
-                    Some(crate::session::resolve_session_by_id(id)
-                        .unwrap_or_else(|| s.to_string()))
+                    Some(crate::session::resolve_session_by_id(id).unwrap_or_else(|| s.to_string()))
                 } else {
                     Some(s.to_string())
                 }
@@ -585,9 +583,9 @@ pub fn parse_target(target: &str) -> ParsedTarget {
         // Window/pane specifiers require explicit syntax like ":0" or ".1"
         (Some(target.to_string()), None)
     };
-    
+
     result.session = session_part;
-    
+
     if let Some(wp) = window_pane_part {
         if wp.starts_with('%') {
             if let Ok(pid) = wp[1..].parse::<usize>() {
@@ -619,7 +617,7 @@ pub fn parse_target(target: &str) -> ParsedTarget {
             }
         }
     }
-    
+
     result
 }
 
@@ -641,7 +639,8 @@ pub fn extract_flag_value<'a>(args: &[&'a str], flag: &str) -> Option<String> {
         return Some(w[1].to_string());
     }
     // Concatenated form: -Fvalue
-    if let Some(v) = args.iter()
+    if let Some(v) = args
+        .iter()
         .find(|a| a.starts_with(flag) && a.len() > flag.len())
         .map(|a| a[flag.len()..].to_string())
     {

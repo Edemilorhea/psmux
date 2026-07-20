@@ -94,7 +94,10 @@ fn reap_client_double_detach_keeps_counter_in_sync() {
         app.client_registry.len(),
         "attached_clients stays in lock-step with the registry"
     );
-    assert!(app.client_registry.contains_key(&20), "live client 20 survives");
+    assert!(
+        app.client_registry.contains_key(&20),
+        "live client 20 survives"
+    );
 }
 
 #[test]
@@ -125,8 +128,14 @@ fn reap_client_clears_sizes_and_prefix() {
     app.client_prefix_active = true;
     assert!(app.client_sizes.contains_key(&42));
     assert!(app.reap_client(42));
-    assert!(!app.client_sizes.contains_key(&42), "client size removed on reap");
-    assert!(!app.client_prefix_active, "stale prefix state cleared on reap");
+    assert!(
+        !app.client_sizes.contains_key(&42),
+        "client size removed on reap"
+    );
+    assert!(
+        !app.client_prefix_active,
+        "stale prefix state cleared on reap"
+    );
     assert_eq!(app.attached_clients, 0);
 }
 
@@ -139,5 +148,8 @@ fn reap_last_client_reaches_zero_once() {
     assert_eq!(app.attached_clients, 0, "reaches zero exactly once");
     // A stray duplicate must NOT drive it negative / re-fire teardown logic.
     assert!(!app.reap_client(1));
-    assert_eq!(app.attached_clients, 0, "stays zero, no spurious re-trigger");
+    assert_eq!(
+        app.attached_clients, 0,
+        "stays zero, no spurious re-trigger"
+    );
 }

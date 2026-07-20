@@ -9,10 +9,10 @@ use super::*;
 
 use std::fs;
 use std::io::{Read, Write as IoWrite};
-use std::path::PathBuf;
 use std::net::{TcpListener, TcpStream};
-use std::sync::mpsc;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
@@ -130,13 +130,17 @@ fn issue_250_late_auth_ack_is_not_reported_as_session_info() {
         &addr,
         "key",
         Duration::from_millis(200),
-        Duration::from_millis(80),  // shorter than the 120ms server delay
+        Duration::from_millis(80), // shorter than the 120ms server delay
     );
 
     // The critical assertion: even under the race, we never mis-report "OK"
     // as the info line. Either the real line makes it (if the read timeout
     // is generous) or we get None — but never Some("OK").
-    assert_ne!(info.as_deref(), Some("OK"), "late AUTH ack leaked as session info");
+    assert_ne!(
+        info.as_deref(),
+        Some("OK"),
+        "late AUTH ack leaked as session info"
+    );
     let _ = done.recv_timeout(Duration::from_secs(2));
 }
 
@@ -227,7 +231,10 @@ fn stale_cleanup_removes_registry_only_when_probe_confirms_stale() {
 
     cleanup_stale_port_files_in_with(&dir, |_, _| PortProbeResult::Stale);
 
-    assert!(!port_path.exists(), "confirmed-stale .port file should be removed");
+    assert!(
+        !port_path.exists(),
+        "confirmed-stale .port file should be removed"
+    );
     assert!(!key_path.exists(), "matching .key file should be removed");
     assert!(!sid_path.exists(), "matching .sid file should be removed");
     let _ = fs::remove_dir_all(dir.parent().unwrap());
@@ -236,12 +243,14 @@ fn stale_cleanup_removes_registry_only_when_probe_confirms_stale() {
 #[test]
 fn stale_cleanup_preserves_registry_when_probe_is_inconclusive() {
     let dir = temp_psmux_dir("stale_cleanup_inconclusive");
-    let (port_path, key_path, sid_path) =
-        write_registry_files(&dir, "maybe-live", "54322");
+    let (port_path, key_path, sid_path) = write_registry_files(&dir, "maybe-live", "54322");
 
     cleanup_stale_port_files_in_with(&dir, |_, _| PortProbeResult::Inconclusive);
 
-    assert!(port_path.exists(), "inconclusive probe must not remove .port");
+    assert!(
+        port_path.exists(),
+        "inconclusive probe must not remove .port"
+    );
     assert!(key_path.exists(), "inconclusive probe must not remove .key");
     assert!(sid_path.exists(), "inconclusive probe must not remove .sid");
     let _ = fs::remove_dir_all(dir.parent().unwrap());
@@ -256,7 +265,10 @@ fn stale_cleanup_preserves_registry_for_live_listener() {
 
     cleanup_stale_port_files_in(&dir);
 
-    assert!(port_path.exists(), "live listener .port should be preserved");
+    assert!(
+        port_path.exists(),
+        "live listener .port should be preserved"
+    );
     assert!(key_path.exists(), "live listener .key should be preserved");
     assert!(sid_path.exists(), "live listener .sid should be preserved");
     drop(listener);
@@ -294,7 +306,10 @@ fn stale_cleanup_removes_session_when_port_reused_by_other_server() {
 
     cleanup_stale_port_files_in(&dir);
 
-    assert!(!port_path.exists(), "key-rejected (reused) .port must be removed");
+    assert!(
+        !port_path.exists(),
+        "key-rejected (reused) .port must be removed"
+    );
     assert!(!key_path.exists(), "matching .key must be removed");
     assert!(!sid_path.exists(), "matching .sid must be removed");
     let _ = done.recv_timeout(Duration::from_secs(2));
@@ -331,16 +346,25 @@ fn pre_boot_registry_is_reaped_regardless_of_port() {
 
     // Written well before boot (previous boot) -> reap.
     let old = boot - Duration::from_secs(3600);
-    assert!(is_pre_boot(old, boot, margin), "pre-boot file must be reaped");
+    assert!(
+        is_pre_boot(old, boot, margin),
+        "pre-boot file must be reaped"
+    );
 
     // Written within the boot grace window -> keep (could be a server that
     // came up moments after boot).
     let recent = boot - Duration::from_secs(2);
-    assert!(!is_pre_boot(recent, boot, margin), "just-after-boot file must be kept");
+    assert!(
+        !is_pre_boot(recent, boot, margin),
+        "just-after-boot file must be kept"
+    );
 
     // Written after boot -> keep.
     let fresh = boot + Duration::from_secs(30);
-    assert!(!is_pre_boot(fresh, boot, margin), "post-boot file must be kept");
+    assert!(
+        !is_pre_boot(fresh, boot, margin),
+        "post-boot file must be kept"
+    );
 }
 
 #[test]
@@ -420,8 +444,15 @@ fn liveness_connected_but_silent_is_dead() {
         Duration::from_millis(150),
     );
 
-    assert_eq!(v, SessionLiveness::Dead, "silent peer must be Dead after timeout");
-    assert!(start.elapsed() < Duration::from_secs(2), "probe must stay bounded, not hang");
+    assert_eq!(
+        v,
+        SessionLiveness::Dead,
+        "silent peer must be Dead after timeout"
+    );
+    assert!(
+        start.elapsed() < Duration::from_secs(2),
+        "probe must stay bounded, not hang"
+    );
     drop(listener);
 }
 
@@ -432,9 +463,15 @@ fn liveness_connected_but_silent_is_dead() {
 
 #[test]
 fn parse_pid_file_contents_reads_both_forms() {
-    assert_eq!(parse_pid_file_contents("1234:567890"), Some((1234, Some(567890))));
+    assert_eq!(
+        parse_pid_file_contents("1234:567890"),
+        Some((1234, Some(567890)))
+    );
     assert_eq!(parse_pid_file_contents("1234"), Some((1234, None)));
-    assert_eq!(parse_pid_file_contents("  1234:567890 \n"), Some((1234, Some(567890))));
+    assert_eq!(
+        parse_pid_file_contents("  1234:567890 \n"),
+        Some((1234, Some(567890)))
+    );
     // Unparseable pid -> not a record at all.
     assert_eq!(parse_pid_file_contents("notanumber"), None);
     // Valid pid, unparseable creation time -> pid is kept, creation dropped.
@@ -461,7 +498,10 @@ fn force_kill_targets_reads_pid_files_in_its_dir() {
 
     assert_eq!(
         targets,
-        vec![PidTarget { pid: 1234, creation_time: 567890 }],
+        vec![PidTarget {
+            pid: 1234,
+            creation_time: 567890
+        }],
         "the .pid file's pid and creation time must be parsed and returned"
     );
     let _ = fs::remove_dir_all(dir.parent().unwrap());
@@ -478,7 +518,13 @@ fn force_kill_targets_is_scoped_to_its_dir() {
 
     let targets = force_kill_targets(&dir_a, None);
 
-    assert_eq!(targets, vec![PidTarget { pid: 111, creation_time: 1 }]);
+    assert_eq!(
+        targets,
+        vec![PidTarget {
+            pid: 111,
+            creation_time: 1
+        }]
+    );
     assert!(
         !targets.iter().any(|t| t.pid == 999),
         "dir A's selection must not include dir B's pid"
@@ -491,7 +537,7 @@ fn force_kill_targets_is_scoped_to_its_dir() {
 fn force_kill_targets_skips_bare_and_malformed_pid_files() {
     let dir = temp_psmux_dir("fkt_malformed");
     fs::write(dir.join("good.pid"), "5:6").unwrap();
-    fs::write(dir.join("bare.pid"), "12345").unwrap();          // no creation time -> no gate
+    fs::write(dir.join("bare.pid"), "12345").unwrap(); // no creation time -> no gate
     fs::write(dir.join("bad_pid.pid"), "notanumber:6").unwrap();
     fs::write(dir.join("bad_time.pid"), "7:notatime").unwrap();
 
@@ -499,7 +545,10 @@ fn force_kill_targets_skips_bare_and_malformed_pid_files() {
 
     assert_eq!(
         targets,
-        vec![PidTarget { pid: 5, creation_time: 6 }],
+        vec![PidTarget {
+            pid: 5,
+            creation_time: 6
+        }],
         "only well-formed pid:creation files are force-kill candidates"
     );
     let _ = fs::remove_dir_all(dir.parent().unwrap());

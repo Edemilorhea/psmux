@@ -65,9 +65,16 @@ fn flush_paste_pend_cjk_sends_as_text() {
     let mut cmds: Vec<String> = Vec::new();
     flush_paste_pend_as_text(&mut buf, &mut start, &mut stage2, &mut cmds);
     // Each character should be sent as individual send-text
-    assert!(cmds.len() > 1, "CJK should be sent as individual send-text commands");
+    assert!(
+        cmds.len() > 1,
+        "CJK should be sent as individual send-text commands"
+    );
     for cmd in &cmds {
-        assert!(cmd.starts_with("send-text "), "CJK char should be send-text, got: {}", cmd);
+        assert!(
+            cmd.starts_with("send-text "),
+            "CJK char should be send-text, got: {}",
+            cmd
+        );
     }
 }
 
@@ -143,35 +150,53 @@ fn non_control_key_not_buffered_even_when_paste_pending() {
 #[cfg(windows)]
 #[test]
 fn leading_enter_waits_past_zero_latency_flush_when_detection_on() {
-    assert!(!should_zero_latency_flush_paste_pend("\n", true, false, false));
+    assert!(!should_zero_latency_flush_paste_pend(
+        "\n", true, false, false
+    ));
 }
 
 #[cfg(windows)]
 #[test]
 fn leading_tab_waits_past_zero_latency_flush_when_detection_on() {
-    assert!(!should_zero_latency_flush_paste_pend("\t", true, false, false));
+    assert!(!should_zero_latency_flush_paste_pend(
+        "\t", true, false, false
+    ));
 }
 
 #[cfg(windows)]
 #[test]
 fn leading_control_flushes_immediately_when_detection_off() {
-    assert!(should_zero_latency_flush_paste_pend("\n", false, false, false));
-    assert!(should_zero_latency_flush_paste_pend("\t", false, false, false));
+    assert!(should_zero_latency_flush_paste_pend(
+        "\n", false, false, false
+    ));
+    assert!(should_zero_latency_flush_paste_pend(
+        "\t", false, false, false
+    ));
 }
 
 #[cfg(windows)]
 #[test]
 fn normal_short_typing_still_flushes_immediately() {
-    assert!(should_zero_latency_flush_paste_pend("a", true, false, false));
-    assert!(should_zero_latency_flush_paste_pend("ab", true, false, false));
+    assert!(should_zero_latency_flush_paste_pend(
+        "a", true, false, false
+    ));
+    assert!(should_zero_latency_flush_paste_pend(
+        "ab", true, false, false
+    ));
 }
 
 #[cfg(windows)]
 #[test]
 fn paste_states_do_not_zero_latency_flush() {
-    assert!(!should_zero_latency_flush_paste_pend("a", true, true, false));
-    assert!(!should_zero_latency_flush_paste_pend("a", true, false, true));
-    assert!(!should_zero_latency_flush_paste_pend("abc", true, false, false));
+    assert!(!should_zero_latency_flush_paste_pend(
+        "a", true, true, false
+    ));
+    assert!(!should_zero_latency_flush_paste_pend(
+        "a", true, false, true
+    ));
+    assert!(!should_zero_latency_flush_paste_pend(
+        "abc", true, false, false
+    ));
 }
 
 // ── Issue #164: status-format[] must parse inline styles end-to-end ──
@@ -195,12 +220,24 @@ fn status_format_inline_styles_end_to_end() {
     // Test line 0 (status_format[0]) rendering path
     {
         let use_status_format_0 = !status_format.is_empty() && !status_format[0].is_empty();
-        assert!(use_status_format_0, "status_format[0] should be detected as set");
+        assert!(
+            use_status_format_0,
+            "status_format[0] should be detected as set"
+        );
 
         let fmt0_spans = crate::style::parse_inline_styles(&status_format[0], sb_base);
-        assert_eq!(fmt0_spans.len(), 1, "Line 0 should produce 1 span, got {}", fmt0_spans.len());
-        assert_eq!(fmt0_spans[0].content.as_ref(), "Custom Line 1",
-            "Line 0 should NOT contain literal #[align=left], got: {:?}", fmt0_spans[0].content);
+        assert_eq!(
+            fmt0_spans.len(),
+            1,
+            "Line 0 should produce 1 span, got {}",
+            fmt0_spans.len()
+        );
+        assert_eq!(
+            fmt0_spans[0].content.as_ref(),
+            "Custom Line 1",
+            "Line 0 should NOT contain literal #[align=left], got: {:?}",
+            fmt0_spans[0].content
+        );
         // align=left is silently consumed, style stays at base
         assert_eq!(fmt0_spans[0].style.fg, Some(Color::White));
         assert_eq!(fmt0_spans[0].style.bg, Some(Color::Black));
@@ -210,24 +247,49 @@ fn status_format_inline_styles_end_to_end() {
     {
         let text = &status_format[1];
         let parsed_spans = crate::style::parse_inline_styles(text, sb_base);
-        assert_eq!(parsed_spans.len(), 1, "Line 1 should produce 1 span, got {}", parsed_spans.len());
-        assert_eq!(parsed_spans[0].content.as_ref(), "Custom Line 2",
-            "Line 1 should NOT contain literal #[fg=red], got: {:?}", parsed_spans[0].content);
-        assert_eq!(parsed_spans[0].style.fg, Some(Color::Red),
-            "Line 1 fg should be Red (parsed from #[fg=red]), got {:?}", parsed_spans[0].style.fg);
-        assert_eq!(parsed_spans[0].style.bg, Some(Color::Black),
-            "Line 1 bg should remain Black from base, got {:?}", parsed_spans[0].style.bg);
+        assert_eq!(
+            parsed_spans.len(),
+            1,
+            "Line 1 should produce 1 span, got {}",
+            parsed_spans.len()
+        );
+        assert_eq!(
+            parsed_spans[0].content.as_ref(),
+            "Custom Line 2",
+            "Line 1 should NOT contain literal #[fg=red], got: {:?}",
+            parsed_spans[0].content
+        );
+        assert_eq!(
+            parsed_spans[0].style.fg,
+            Some(Color::Red),
+            "Line 1 fg should be Red (parsed from #[fg=red]), got {:?}",
+            parsed_spans[0].style.fg
+        );
+        assert_eq!(
+            parsed_spans[0].style.bg,
+            Some(Color::Black),
+            "Line 1 bg should remain Black from base, got {:?}",
+            parsed_spans[0].style.bg
+        );
 
         // Also verify padding uses visible width, not raw text length
-        let visible_w: usize = parsed_spans.iter()
+        let visible_w: usize = parsed_spans
+            .iter()
             .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
             .sum();
-        assert_eq!(visible_w, 13, "Visible width should be 13 (Custom Line 2), got {}", visible_w);
+        assert_eq!(
+            visible_w, 13,
+            "Visible width should be 13 (Custom Line 2), got {}",
+            visible_w
+        );
         // The raw status_format[1] is 23 chars (#[fg=red]Custom Line 2)
         // but visible is only 13 chars — padding must use 13, not 23
-        assert!(text.len() > visible_w,
+        assert!(
+            text.len() > visible_w,
             "Raw text ({}) should be longer than visible width ({}) due to style directives",
-            text.len(), visible_w);
+            text.len(),
+            visible_w
+        );
     }
 }
 
@@ -247,10 +309,14 @@ fn status_format_json_roundtrip_preserves_styles() {
     let parsed: Partial = serde_json::from_str(json_fragment).unwrap();
     assert_eq!(parsed.status_format.len(), 3);
     assert_eq!(parsed.status_format[0], "");
-    assert_eq!(parsed.status_format[1], "#[fg=red]Hello",
-        "Style directives must survive JSON roundtrip");
-    assert_eq!(parsed.status_format[2], "#[fg=green,bg=blue]World",
-        "Multi-directive styles must survive JSON roundtrip");
+    assert_eq!(
+        parsed.status_format[1], "#[fg=red]Hello",
+        "Style directives must survive JSON roundtrip"
+    );
+    assert_eq!(
+        parsed.status_format[2], "#[fg=green,bg=blue]World",
+        "Multi-directive styles must survive JSON roundtrip"
+    );
 
     // Now verify parse_inline_styles produces correct output from deserialized data
     use ratatui::style::{Color, Style};
@@ -343,11 +409,7 @@ fn normalize_selection_block_mode() {
 #[cfg(windows)]
 #[test]
 fn row_chars_basic() {
-    let runs = vec![
-        make_run("AB", 2),
-        make_run("C", 1),
-        make_run(" ", 3),
-    ];
+    let runs = vec![make_run("AB", 2), make_run("C", 1), make_run(" ", 3)];
     let chars = row_chars(&runs, 6);
     assert_eq!(chars, vec!['A', 'B', 'C', ' ', ' ', ' ']);
 }
@@ -375,10 +437,7 @@ fn is_word_char_basics() {
 #[cfg(windows)]
 #[test]
 fn char_at_col_basics() {
-    let runs = vec![
-        make_run("He", 2),
-        make_run("llo", 3),
-    ];
+    let runs = vec![make_run("He", 2), make_run("llo", 3)];
     assert_eq!(char_at_col(&runs, 0), 'H');
     assert_eq!(char_at_col(&runs, 1), 'e');
     assert_eq!(char_at_col(&runs, 2), 'l');
@@ -440,7 +499,12 @@ fn extract_selection_text_clips_reading_order_to_origin_pane() {
             make_leaf(1, &["ABCDE", "FGHIJ", "KLMNO"]),
         ],
     };
-    let pane_clip = ratatui::layout::Rect { x: 0, y: 0, width: 5, height: 3 };
+    let pane_clip = ratatui::layout::Rect {
+        x: 0,
+        y: 0,
+        width: 5,
+        height: 3,
+    };
 
     let text = extract_selection_text(&layout, 11, 3, (1, 0), (3, 2), false, Some(pane_clip));
 
@@ -458,7 +522,12 @@ fn extract_selection_text_clips_block_mode_to_origin_pane() {
             make_leaf(1, &["ABCDE", "FGHIJ", "KLMNO"]),
         ],
     };
-    let pane_clip = ratatui::layout::Rect { x: 0, y: 0, width: 5, height: 3 };
+    let pane_clip = ratatui::layout::Rect {
+        x: 0,
+        y: 0,
+        width: 5,
+        height: 3,
+    };
 
     let text = extract_selection_text(&layout, 11, 3, (1, 0), (8, 2), true, Some(pane_clip));
 
@@ -488,31 +557,52 @@ fn word_bounds_at_finds_word() {
         copy_cursor_row: None,
         copy_cursor_col: None,
         content: Vec::new(),
-        rows_v2: vec![
-            make_row(vec![make_run("hello world_test   ", 19), make_run(" ", 1)]),
-        ],
+        rows_v2: vec![make_row(vec![
+            make_run("hello world_test   ", 19),
+            make_run(" ", 1),
+        ])],
         title: None,
     };
 
-    let pane_rect = ratatui::layout::Rect { x: 0, y: 0, width: 20, height: 1 };
+    let pane_rect = ratatui::layout::Rect {
+        x: 0,
+        y: 0,
+        width: 20,
+        height: 1,
+    };
 
     // Click on 'h' (col 0): word is "hello" -> (0, 4)
-    assert_eq!(word_bounds_at(&layout, 20, 1, pane_rect, 0, 0), Some((0, 4)));
+    assert_eq!(
+        word_bounds_at(&layout, 20, 1, pane_rect, 0, 0),
+        Some((0, 4))
+    );
     // Click on 'l' (col 3): still "hello" -> (0, 4)
-    assert_eq!(word_bounds_at(&layout, 20, 1, pane_rect, 3, 0), Some((0, 4)));
+    assert_eq!(
+        word_bounds_at(&layout, 20, 1, pane_rect, 3, 0),
+        Some((0, 4))
+    );
     // Click on space (col 5): no word
     assert_eq!(word_bounds_at(&layout, 20, 1, pane_rect, 5, 0), None);
     // Click on 'w' (col 6): "world_test" -> (6, 15)
-    assert_eq!(word_bounds_at(&layout, 20, 1, pane_rect, 6, 0), Some((6, 15)));
+    assert_eq!(
+        word_bounds_at(&layout, 20, 1, pane_rect, 6, 0),
+        Some((6, 15))
+    );
     // Click on '_' (col 11): still "world_test" since _ is a word char -> (6, 15)
-    assert_eq!(word_bounds_at(&layout, 20, 1, pane_rect, 11, 0), Some((6, 15)));
+    assert_eq!(
+        word_bounds_at(&layout, 20, 1, pane_rect, 11, 0),
+        Some((6, 15))
+    );
 }
 
 #[cfg(windows)]
 #[test]
 fn pwsh_mouse_selection_option_default_off() {
     let state = crate::types::AppState::new("test-session".to_string());
-    assert!(!state.pwsh_mouse_selection, "pwsh_mouse_selection should default to off");
+    assert!(
+        !state.pwsh_mouse_selection,
+        "pwsh_mouse_selection should default to off"
+    );
 }
 
 // ── Issue #290: paste must not leak past the command prompt ─────────────
@@ -529,10 +619,15 @@ fn paste_into_command_prompt_inserts_and_advances_cursor() {
     let mut window_idx_buf = String::new();
     let consumed = super::route_paste_to_overlay(
         "hello",
-        true, &mut command_buf, &mut command_cursor,
-        false, &mut rename_buf,
-        false, &mut pane_title_buf,
-        false, &mut window_idx_buf,
+        true,
+        &mut command_buf,
+        &mut command_cursor,
+        false,
+        &mut rename_buf,
+        false,
+        &mut pane_title_buf,
+        false,
+        &mut window_idx_buf,
     );
     assert!(consumed, "command_input overlay must consume paste");
     assert_eq!(command_buf, "hello");
@@ -549,10 +644,15 @@ fn paste_into_command_prompt_inserts_at_cursor_position() {
     let mut window_idx_buf = String::new();
     let consumed = super::route_paste_to_overlay(
         "c",
-        true, &mut command_buf, &mut command_cursor,
-        false, &mut rename_buf,
-        false, &mut pane_title_buf,
-        false, &mut window_idx_buf,
+        true,
+        &mut command_buf,
+        &mut command_cursor,
+        false,
+        &mut rename_buf,
+        false,
+        &mut pane_title_buf,
+        false,
+        &mut window_idx_buf,
     );
     assert!(consumed);
     assert_eq!(command_buf, "abcdef");
@@ -569,10 +669,15 @@ fn paste_with_no_overlay_active_is_not_consumed() {
     let mut window_idx_buf = String::new();
     let consumed = super::route_paste_to_overlay(
         "hello",
-        false, &mut command_buf, &mut command_cursor,
-        false, &mut rename_buf,
-        false, &mut pane_title_buf,
-        false, &mut window_idx_buf,
+        false,
+        &mut command_buf,
+        &mut command_cursor,
+        false,
+        &mut rename_buf,
+        false,
+        &mut pane_title_buf,
+        false,
+        &mut window_idx_buf,
     );
     assert!(!consumed);
     assert!(command_buf.is_empty());
@@ -590,10 +695,15 @@ fn paste_into_rename_prompt_appends() {
     let mut window_idx_buf = String::new();
     let consumed = super::route_paste_to_overlay(
         "bar",
-        false, &mut command_buf, &mut command_cursor,
-        true, &mut rename_buf,
-        false, &mut pane_title_buf,
-        false, &mut window_idx_buf,
+        false,
+        &mut command_buf,
+        &mut command_cursor,
+        true,
+        &mut rename_buf,
+        false,
+        &mut pane_title_buf,
+        false,
+        &mut window_idx_buf,
     );
     assert!(consumed);
     assert_eq!(rename_buf, "foobar");
@@ -608,10 +718,15 @@ fn paste_into_pane_title_appends() {
     let mut window_idx_buf = String::new();
     let consumed = super::route_paste_to_overlay(
         "-suffix",
-        false, &mut command_buf, &mut command_cursor,
-        false, &mut rename_buf,
-        true, &mut pane_title_buf,
-        false, &mut window_idx_buf,
+        false,
+        &mut command_buf,
+        &mut command_cursor,
+        false,
+        &mut rename_buf,
+        true,
+        &mut pane_title_buf,
+        false,
+        &mut window_idx_buf,
     );
     assert!(consumed);
     assert_eq!(pane_title_buf, "title-suffix");
@@ -626,10 +741,15 @@ fn paste_into_window_idx_prompt_keeps_only_digits() {
     let mut window_idx_buf = String::new();
     let consumed = super::route_paste_to_overlay(
         "1a2b3",
-        false, &mut command_buf, &mut command_cursor,
-        false, &mut rename_buf,
-        false, &mut pane_title_buf,
-        true, &mut window_idx_buf,
+        false,
+        &mut command_buf,
+        &mut command_cursor,
+        false,
+        &mut rename_buf,
+        false,
+        &mut pane_title_buf,
+        true,
+        &mut window_idx_buf,
     );
     assert!(consumed);
     assert_eq!(window_idx_buf, "123");
@@ -646,10 +766,15 @@ fn paste_command_prompt_takes_precedence_over_other_overlays() {
     let mut window_idx_buf = String::new();
     let consumed = super::route_paste_to_overlay(
         "x",
-        true, &mut command_buf, &mut command_cursor,
-        true, &mut rename_buf,
-        true, &mut pane_title_buf,
-        true, &mut window_idx_buf,
+        true,
+        &mut command_buf,
+        &mut command_cursor,
+        true,
+        &mut rename_buf,
+        true,
+        &mut pane_title_buf,
+        true,
+        &mut window_idx_buf,
     );
     assert!(consumed);
     assert_eq!(command_buf, "x");

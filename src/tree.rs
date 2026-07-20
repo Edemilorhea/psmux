@@ -1,15 +1,19 @@
-use std::io;
 use ratatui::prelude::*;
+use std::io;
 
-use crate::types::{AppState, Pane, Node, LayoutKind, DragState};
 use crate::platform::process_kill;
+use crate::types::{AppState, DragState, LayoutKind, Node, Pane};
 
 /// Split an area into sub-rects with 1px gaps between them for separator lines.
 /// Matches tmux-style gapless panes with single-character separators.
 pub fn split_with_gaps(is_horizontal: bool, sizes: &[u16], area: Rect) -> Vec<Rect> {
     let n = sizes.len();
-    if n == 0 { return vec![]; }
-    if n == 1 { return vec![area]; }
+    if n == 0 {
+        return vec![];
+    }
+    if n == 1 {
+        return vec![area];
+    }
 
     let gaps = (n - 1) as u16;
     let total_available = if is_horizontal {
@@ -19,7 +23,9 @@ pub fn split_with_gaps(is_horizontal: bool, sizes: &[u16], area: Rect) -> Vec<Re
     };
 
     let total_pct: u32 = sizes.iter().map(|&s| s as u32).sum();
-    if total_pct == 0 { return vec![area; n]; }
+    if total_pct == 0 {
+        return vec![area; n];
+    }
 
     // Compute proportional sizes first.
     let mut child_sizes: Vec<u16> = Vec::with_capacity(n);
@@ -43,16 +49,24 @@ pub fn split_with_gaps(is_horizontal: bool, sizes: &[u16], area: Rect) -> Vec<Re
         loop {
             let mut zero_idx: Option<usize> = None;
             for (i, &s) in child_sizes.iter().enumerate() {
-                if s == 0 { zero_idx = Some(i); break; }
+                if s == 0 {
+                    zero_idx = Some(i);
+                    break;
+                }
             }
             let Some(zi) = zero_idx else { break };
             // Find largest child with > 1 cell to steal from.
             let mut max_idx = 0usize;
             let mut max_val = 0u16;
             for (i, &s) in child_sizes.iter().enumerate() {
-                if s > max_val { max_val = s; max_idx = i; }
+                if s > max_val {
+                    max_val = s;
+                    max_idx = i;
+                }
             }
-            if max_val <= 1 { break; }
+            if max_val <= 1 {
+                break;
+            }
             child_sizes[max_idx] -= 1;
             child_sizes[zi] += 1;
         }
@@ -77,41 +91,83 @@ pub fn active_pane_mut<'a>(node: &'a mut Node, path: &Vec<usize>) -> Option<&'a 
     let mut cur = node;
     for &idx in path.iter() {
         match cur {
-            Node::Split { children, .. } => { cur = children.get_mut(idx)?; }
+            Node::Split { children, .. } => {
+                cur = children.get_mut(idx)?;
+            }
             Node::Leaf(_) => return None,
         }
     }
-    match cur { Node::Leaf(p) => Some(p), _ => None }
+    match cur {
+        Node::Leaf(p) => Some(p),
+        _ => None,
+    }
 }
 
-pub fn replace_leaf_with_split(node: &mut Node, path: &Vec<usize>, kind: LayoutKind, new_leaf: Node) {
+pub fn replace_leaf_with_split(
+    node: &mut Node,
+    path: &Vec<usize>,
+    kind: LayoutKind,
+    new_leaf: Node,
+) {
     if path.is_empty() {
-        let old = std::mem::replace(node, Node::Split { kind, sizes: vec![50,50], children: vec![] });
-        if let Node::Split { children, .. } = node { children.push(old); children.push(new_leaf); }
+        let old = std::mem::replace(
+            node,
+            Node::Split {
+                kind,
+                sizes: vec![50, 50],
+                children: vec![],
+            },
+        );
+        if let Node::Split { children, .. } = node {
+            children.push(old);
+            children.push(new_leaf);
+        }
         return;
     }
     let mut cur = node;
     for (depth, &idx) in path.iter().enumerate() {
         match cur {
             Node::Split { children, .. } => {
-                if depth == path.len()-1 {
-                    let leaf = std::mem::replace(&mut children[idx], Node::Split { kind, sizes: vec![50,50], children: vec![] });
-                    if let Node::Split { children: c, .. } = &mut children[idx] { c.push(leaf); c.push(new_leaf); }
+                if depth == path.len() - 1 {
+                    let leaf = std::mem::replace(
+                        &mut children[idx],
+                        Node::Split {
+                            kind,
+                            sizes: vec![50, 50],
+                            children: vec![],
+                        },
+                    );
+                    if let Node::Split { children: c, .. } = &mut children[idx] {
+                        c.push(leaf);
+                        c.push(new_leaf);
+                    }
                     return;
-                } else { cur = &mut children[idx]; }
+                } else {
+                    cur = &mut children[idx];
+                }
             }
             Node::Leaf(_) => {
                 // Path is invalid (points through a Leaf). Kill the new pane
                 // to prevent leaking its ConPTY handle and reader thread.
                 kill_node(new_leaf);
                 return;
-            },
+            }
         }
     }
 }
 
 pub fn kill_leaf(node: &mut Node, path: &Vec<usize>) {
-    *node = remove_node(std::mem::replace(node, Node::Split { kind: LayoutKind::Horizontal, sizes: vec![], children: vec![] }), path);
+    *node = remove_node(
+        std::mem::replace(
+            node,
+            Node::Split {
+                kind: LayoutKind::Horizontal,
+                sizes: vec![],
+                children: vec![],
+            },
+        ),
+        path,
+    );
 }
 
 /// Kill a node and all its child processes before dropping it.
@@ -119,7 +175,9 @@ pub fn kill_leaf(node: &mut Node, path: &Vec<usize>) {
 /// processes (shells, sub-processes, servers, etc.) are terminated.
 pub fn kill_node(mut n: Node) {
     match &mut n {
-        Node::Leaf(p) => { process_kill::kill_process_tree(&mut p.child); }
+        Node::Leaf(p) => {
+            process_kill::kill_process_tree(&mut p.child);
+        }
         Node::Split { children, .. } => {
             for child in children.iter_mut() {
                 kill_all_children(child);
@@ -130,27 +188,45 @@ pub fn kill_node(mut n: Node) {
 
 pub fn remove_node(n: Node, path: &Vec<usize>) -> Node {
     match n {
-        Node::Leaf(p) => {
-            Node::Leaf(p)
-        }
-        Node::Split { kind, sizes, children } => {
-            if path.is_empty() { return Node::Split { kind, sizes, children }; }
+        Node::Leaf(p) => Node::Leaf(p),
+        Node::Split {
+            kind,
+            sizes,
+            children,
+        } => {
+            if path.is_empty() {
+                return Node::Split {
+                    kind,
+                    sizes,
+                    children,
+                };
+            }
             let idx = path[0];
             let mut new_children: Vec<Node> = Vec::new();
             for (i, child) in children.into_iter().enumerate() {
                 if i == idx {
-                    if path.len() > 1 { new_children.push(remove_node(child, &path[1..].to_vec())); }
-                    else {
+                    if path.len() > 1 {
+                        new_children.push(remove_node(child, &path[1..].to_vec()));
+                    } else {
                         kill_node(child);
                     }
-                } else { new_children.push(child); }
+                } else {
+                    new_children.push(child);
+                }
             }
-            if new_children.len() == 1 { new_children.into_iter().next().unwrap() }
-            else {
+            if new_children.len() == 1 {
+                new_children.into_iter().next().unwrap()
+            } else {
                 let mut eq = vec![100 / new_children.len() as u16; new_children.len()];
                 let rem = 100 - eq.iter().sum::<u16>();
-                if let Some(last) = eq.last_mut() { *last += rem; }
-                Node::Split { kind, sizes: eq, children: new_children }
+                if let Some(last) = eq.last_mut() {
+                    *last += rem;
+                }
+                Node::Split {
+                    kind,
+                    sizes: eq,
+                    children: new_children,
+                }
             }
         }
     }
@@ -165,18 +241,32 @@ pub fn extract_node(root: Node, path: &[usize]) -> (Option<Node>, Option<Node>) 
     }
     match root {
         Node::Leaf(p) => (Some(Node::Leaf(p)), None), // path doesn't exist
-        Node::Split { kind, sizes, children } => {
+        Node::Split {
+            kind,
+            sizes,
+            children,
+        } => {
             let idx = path[0];
             if idx >= children.len() {
-                return (Some(Node::Split { kind, sizes, children }), None);
+                return (
+                    Some(Node::Split {
+                        kind,
+                        sizes,
+                        children,
+                    }),
+                    None,
+                );
             }
             if path.len() == 1 {
                 // Extract child at idx
                 let mut remaining: Vec<Node> = Vec::new();
                 let mut extracted: Option<Node> = None;
                 for (i, child) in children.into_iter().enumerate() {
-                    if i == idx { extracted = Some(child); }
-                    else { remaining.push(child); }
+                    if i == idx {
+                        extracted = Some(child);
+                    } else {
+                        remaining.push(child);
+                    }
                 }
                 let tree = if remaining.is_empty() {
                     None
@@ -185,8 +275,14 @@ pub fn extract_node(root: Node, path: &[usize]) -> (Option<Node>, Option<Node>) 
                 } else {
                     let mut eq = vec![100 / remaining.len() as u16; remaining.len()];
                     let rem = 100 - eq.iter().sum::<u16>();
-                    if let Some(last) = eq.last_mut() { *last += rem; }
-                    Some(Node::Split { kind, sizes: eq, children: remaining })
+                    if let Some(last) = eq.last_mut() {
+                        *last += rem;
+                    }
+                    Some(Node::Split {
+                        kind,
+                        sizes: eq,
+                        children: remaining,
+                    })
                 };
                 (tree, extracted)
             } else {
@@ -197,7 +293,9 @@ pub fn extract_node(root: Node, path: &[usize]) -> (Option<Node>, Option<Node>) 
                     if i == idx {
                         let (rem, ext) = extract_node(child, &path[1..]);
                         extracted = ext;
-                        if let Some(r) = rem { new_children.push(r); }
+                        if let Some(r) = rem {
+                            new_children.push(r);
+                        }
                     } else {
                         new_children.push(child);
                     }
@@ -209,8 +307,14 @@ pub fn extract_node(root: Node, path: &[usize]) -> (Option<Node>, Option<Node>) 
                 } else {
                     let mut eq = vec![100 / new_children.len() as u16; new_children.len()];
                     let rem = 100 - eq.iter().sum::<u16>();
-                    if let Some(last) = eq.last_mut() { *last += rem; }
-                    Some(Node::Split { kind, sizes: eq, children: new_children })
+                    if let Some(last) = eq.last_mut() {
+                        *last += rem;
+                    }
+                    Some(Node::Split {
+                        kind,
+                        sizes: eq,
+                        children: new_children,
+                    })
                 };
                 (tree, extracted)
             }
@@ -221,15 +325,27 @@ pub fn extract_node(root: Node, path: &[usize]) -> (Option<Node>, Option<Node>) 
 pub fn compute_rects(node: &Node, area: Rect, out: &mut Vec<(Vec<usize>, Rect)>) {
     fn rec(node: &Node, area: Rect, path: &mut Vec<usize>, out: &mut Vec<(Vec<usize>, Rect)>) {
         match node {
-            Node::Leaf(_) => { out.push((path.clone(), area)); }
-            Node::Split { kind, sizes, children } => {
+            Node::Leaf(_) => {
+                out.push((path.clone(), area));
+            }
+            Node::Split {
+                kind,
+                sizes,
+                children,
+            } => {
                 let effective_sizes: Vec<u16> = if sizes.len() == children.len() {
                     sizes.clone()
-                } else { vec![(100 / children.len().max(1)) as u16; children.len()] };
+                } else {
+                    vec![(100 / children.len().max(1)) as u16; children.len()]
+                };
                 let is_horizontal = matches!(*kind, LayoutKind::Horizontal);
                 let rects = split_with_gaps(is_horizontal, &effective_sizes, area);
                 for (i, child) in children.iter().enumerate() {
-                    if i < rects.len() { path.push(i); rec(child, rects[i], path, out); path.pop(); }
+                    if i < rects.len() {
+                        path.push(i);
+                        rec(child, rects[i], path, out);
+                        path.pop();
+                    }
                 }
             }
         }
@@ -240,16 +356,29 @@ pub fn compute_rects(node: &Node, area: Rect, out: &mut Vec<(Vec<usize>, Rect)>)
 
 /// Resize all panes in the current window to match their computed areas
 pub fn resize_all_panes(app: &mut AppState) {
-    if app.windows.is_empty() { return; }
+    if app.windows.is_empty() {
+        return;
+    }
     let area = app.last_window_area;
-    if area.width == 0 || area.height == 0 { return; }
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
     // Reserve 1 row per leaf pane when pane-border-status is enabled (#288)
-    let border_status_rows: u16 = match app.user_options.get("pane-border-status").map(|s| s.as_str()) {
+    let border_status_rows: u16 = match app
+        .user_options
+        .get("pane-border-status")
+        .map(|s| s.as_str())
+    {
         Some("top") | Some("bottom") => 1,
         _ => 0,
     };
-    
-    fn resize_node(node: &mut Node, rects: &[(Vec<usize>, Rect)], path: &mut Vec<usize>, border_rows: u16) {
+
+    fn resize_node(
+        node: &mut Node,
+        rects: &[(Vec<usize>, Rect)],
+        path: &mut Vec<usize>,
+        border_rows: u16,
+    ) {
         match node {
             Node::Leaf(pane) => {
                 if let Some((_, rect)) = rects.iter().find(|(p, _)| p == path) {
@@ -262,15 +391,18 @@ pub fn resize_all_panes(app: &mut AppState) {
                     }
                     // Clamp to MIN_PANE_DIM so ConPTY never receives a
                     // dimension small enough to crash the child process.
-                    let inner_height = rect.height.saturating_sub(border_rows).max(crate::pane::MIN_PANE_DIM);
+                    let inner_height = rect
+                        .height
+                        .saturating_sub(border_rows)
+                        .max(crate::pane::MIN_PANE_DIM);
                     let inner_width = rect.width.max(crate::pane::MIN_PANE_DIM);
-                    
+
                     if pane.last_rows != inner_height || pane.last_cols != inner_width {
                         let _ = pane.master.resize(portable_pty::PtySize {
                             rows: inner_height,
                             cols: inner_width,
                             pixel_width: 0,
-                            pixel_height: 0
+                            pixel_height: 0,
                         });
                         if let Ok(mut parser) = pane.term.lock() {
                             parser.screen_mut().set_size(inner_height, inner_width);
@@ -289,7 +421,7 @@ pub fn resize_all_panes(app: &mut AppState) {
             }
         }
     }
-    
+
     // Only resize the active window immediately — background windows will be
     // resized lazily when switched to.  This avoids O(total_panes) ConPTY
     // resize syscalls on every structural change.
@@ -316,16 +448,28 @@ pub fn resize_all_panes(app: &mut AppState) {
 
 pub fn kill_all_children(node: &mut Node) {
     match node {
-        Node::Leaf(p) => { process_kill::kill_process_tree(&mut p.child); }
-        Node::Split { children, .. } => { for child in children.iter_mut() { kill_all_children(child); } }
+        Node::Leaf(p) => {
+            process_kill::kill_process_tree(&mut p.child);
+        }
+        Node::Split { children, .. } => {
+            for child in children.iter_mut() {
+                kill_all_children(child);
+            }
+        }
     }
 }
 
 /// Collect mutable references to all child processes in a tree node.
 fn collect_child_refs<'a>(node: &'a mut Node, out: &mut Vec<&'a mut Box<dyn portable_pty::Child>>) {
     match node {
-        Node::Leaf(p) => { out.push(&mut p.child); }
-        Node::Split { children, .. } => { for child in children.iter_mut() { collect_child_refs(child, out); } }
+        Node::Leaf(p) => {
+            out.push(&mut p.child);
+        }
+        Node::Split { children, .. } => {
+            for child in children.iter_mut() {
+                collect_child_refs(child, out);
+            }
+        }
     }
 }
 
@@ -342,17 +486,36 @@ pub fn kill_all_children_batch(windows: &mut [crate::types::Window]) {
 }
 
 /// Returns borders as (path, kind, idx, pixel_pos, total_pixels_along_axis).
-pub fn compute_split_borders(node: &Node, area: Rect, out: &mut Vec<(Vec<usize>, LayoutKind, usize, u16, u16)>) {
-    fn rec(node: &Node, area: Rect, path: &mut Vec<usize>, out: &mut Vec<(Vec<usize>, LayoutKind, usize, u16, u16)>) {
+pub fn compute_split_borders(
+    node: &Node,
+    area: Rect,
+    out: &mut Vec<(Vec<usize>, LayoutKind, usize, u16, u16)>,
+) {
+    fn rec(
+        node: &Node,
+        area: Rect,
+        path: &mut Vec<usize>,
+        out: &mut Vec<(Vec<usize>, LayoutKind, usize, u16, u16)>,
+    ) {
         match node {
             Node::Leaf(_) => {}
-            Node::Split { kind, sizes, children } => {
+            Node::Split {
+                kind,
+                sizes,
+                children,
+            } => {
                 let effective_sizes: Vec<u16> = if sizes.len() == children.len() {
                     sizes.clone()
-                } else { vec![(100 / children.len().max(1)) as u16; children.len()] };
+                } else {
+                    vec![(100 / children.len().max(1)) as u16; children.len()]
+                };
                 let is_horizontal = matches!(*kind, LayoutKind::Horizontal);
                 let rects = split_with_gaps(is_horizontal, &effective_sizes, area);
-                let total_px = if is_horizontal { area.width } else { area.height };
+                let total_px = if is_horizontal {
+                    area.width
+                } else {
+                    area.height
+                };
                 for i in 0..children.len().saturating_sub(1) {
                     if i < rects.len() {
                         let pos = if is_horizontal {
@@ -364,7 +527,11 @@ pub fn compute_split_borders(node: &Node, area: Rect, out: &mut Vec<(Vec<usize>,
                     }
                 }
                 for (i, child) in children.iter().enumerate() {
-                    if i < rects.len() { path.push(i); rec(child, rects[i], path, out); path.pop(); }
+                    if i < rects.len() {
+                        path.push(i);
+                        rec(child, rects[i], path, out);
+                        path.pop();
+                    }
                 }
             }
         }
@@ -373,19 +540,30 @@ pub fn compute_split_borders(node: &Node, area: Rect, out: &mut Vec<(Vec<usize>,
     rec(node, area, &mut path, out);
 }
 
-pub fn split_sizes_at<'a>(node: &'a Node, path: Vec<usize>, idx: usize) -> Option<(u16,u16)> {
+pub fn split_sizes_at<'a>(node: &'a Node, path: Vec<usize>, idx: usize) -> Option<(u16, u16)> {
     let mut cur = node;
     for &i in path.iter() {
-        match cur { Node::Split { children, .. } => { cur = children.get(i)?; } _ => return None }
+        match cur {
+            Node::Split { children, .. } => {
+                cur = children.get(i)?;
+            }
+            _ => return None,
+        }
     }
     if let Node::Split { sizes, .. } = cur {
-        if idx+1 < sizes.len() { Some((sizes[idx], sizes[idx+1])) } else { None }
-    } else { None }
+        if idx + 1 < sizes.len() {
+            Some((sizes[idx], sizes[idx + 1]))
+        } else {
+            None
+        }
+    } else {
+        None
+    }
 }
 
 pub fn adjust_split_sizes(root: &mut Node, d: &DragState, x: u16, y: u16) {
     if let Some(Node::Split { sizes, .. }) = get_split_mut(root, &d.split_path) {
-        let total_pct = sizes[d.index] + sizes[d.index+1];
+        let total_pct = sizes[d.index] + sizes[d.index + 1];
         let min_pct = 5u16;
         // Convert pixel delta to percentage delta
         let pixel_delta: i32 = match d.kind {
@@ -394,17 +572,23 @@ pub fn adjust_split_sizes(root: &mut Node, d: &DragState, x: u16, y: u16) {
         };
         let total_px = d.total_pixels.max(1) as i32;
         let pct_delta = (pixel_delta * total_pct as i32) / total_px;
-        let left = (d.left_initial as i32 + pct_delta).clamp(min_pct as i32, (total_pct - min_pct) as i32) as u16;
+        let left = (d.left_initial as i32 + pct_delta)
+            .clamp(min_pct as i32, (total_pct - min_pct) as i32) as u16;
         let right = total_pct - left;
         sizes[d.index] = left;
-        sizes[d.index+1] = right;
+        sizes[d.index + 1] = right;
     }
 }
 
 pub fn get_split_mut<'a>(node: &'a mut Node, path: &Vec<usize>) -> Option<&'a mut Node> {
     let mut cur = node;
     for &idx in path.iter() {
-        match cur { Node::Split { children, .. } => { cur = children.get_mut(idx)?; } _ => return None }
+        match cur {
+            Node::Split { children, .. } => {
+                cur = children.get_mut(idx)?;
+            }
+            _ => return None,
+        }
     }
     Some(cur)
 }
@@ -413,10 +597,16 @@ pub fn get_split_mut<'a>(node: &'a mut Node, path: &Vec<usize>) -> Option<&'a mu
 /// - `newly_dead_count` tracks panes that transitioned alive→dead in this call
 ///   (remain-on-exit case), so callers can fire hooks even when the tree shape
 ///   doesn't change.
-pub fn prune_exited(n: Node, remain_on_exit: bool, kill_descendants: bool) -> (Option<Node>, usize) {
+pub fn prune_exited(
+    n: Node,
+    remain_on_exit: bool,
+    kill_descendants: bool,
+) -> (Option<Node>, usize) {
     match n {
         Node::Leaf(mut p) => {
-            if p.dead { return (Some(Node::Leaf(p)), 0); }
+            if p.dead {
+                return (Some(Node::Leaf(p)), 0);
+            }
             match p.child.try_wait() {
                 Ok(Some(_)) => {
                     if remain_on_exit {
@@ -440,7 +630,11 @@ pub fn prune_exited(n: Node, remain_on_exit: bool, kill_descendants: bool) -> (O
                 _ => (Some(Node::Leaf(p)), 0),
             }
         }
-        Node::Split { kind, sizes, children } => {
+        Node::Split {
+            kind,
+            sizes,
+            children,
+        } => {
             let mut new_children: Vec<Node> = Vec::new();
             let mut new_sizes: Vec<u16> = Vec::new();
             let mut newly_dead = 0;
@@ -452,9 +646,11 @@ pub fn prune_exited(n: Node, remain_on_exit: bool, kill_descendants: bool) -> (O
                     new_sizes.push(sizes.get(i).copied().unwrap_or(0));
                 }
             }
-            if new_children.is_empty() { (None, newly_dead) }
-            else if new_children.len() == 1 { (Some(new_children.remove(0)), newly_dead) }
-            else {
+            if new_children.is_empty() {
+                (None, newly_dead)
+            } else if new_children.len() == 1 {
+                (Some(new_children.remove(0)), newly_dead)
+            } else {
                 // Redistribute removed pane's percentage proportionally among survivors
                 let total: u16 = new_sizes.iter().sum();
                 if total == 0 || total == 100 {
@@ -462,16 +658,30 @@ pub fn prune_exited(n: Node, remain_on_exit: bool, kill_descendants: bool) -> (O
                     if total == 0 {
                         new_sizes = vec![100 / new_children.len() as u16; new_children.len()];
                         let rem = 100 - new_sizes.iter().sum::<u16>();
-                        if let Some(last) = new_sizes.last_mut() { *last += rem; }
+                        if let Some(last) = new_sizes.last_mut() {
+                            *last += rem;
+                        }
                     }
                 } else {
                     // Scale proportionally to sum to 100
-                    let mut scaled: Vec<u16> = new_sizes.iter().map(|&s| (s as u32 * 100 / total as u32) as u16).collect();
+                    let mut scaled: Vec<u16> = new_sizes
+                        .iter()
+                        .map(|&s| (s as u32 * 100 / total as u32) as u16)
+                        .collect();
                     let rem = 100u16.saturating_sub(scaled.iter().sum::<u16>());
-                    if let Some(last) = scaled.last_mut() { *last += rem; }
+                    if let Some(last) = scaled.last_mut() {
+                        *last += rem;
+                    }
                     new_sizes = scaled;
                 }
-                (Some(Node::Split { kind, sizes: new_sizes, children: new_children }), newly_dead)
+                (
+                    Some(Node::Split {
+                        kind,
+                        sizes: new_sizes,
+                        children: new_children,
+                    }),
+                    newly_dead,
+                )
             }
         }
     }
@@ -482,7 +692,11 @@ pub fn path_exists(node: &Node, path: &Vec<usize>) -> bool {
     for &idx in path.iter() {
         match cur {
             Node::Split { children, .. } => {
-                if let Some(next) = children.get(idx) { cur = next; } else { return false; }
+                if let Some(next) = children.get(idx) {
+                    cur = next;
+                } else {
+                    return false;
+                }
             }
             Node::Leaf(_) => return false,
         }
@@ -497,7 +711,9 @@ pub fn first_leaf_path(node: &Node) -> Vec<usize> {
             Node::Split { children, .. } => {
                 for (i, child) in children.iter().enumerate() {
                     path.push(i);
-                    if let Some(p) = rec(child, path) { return Some(p); }
+                    if let Some(p) = rec(child, path) {
+                        return Some(p);
+                    }
                     path.pop();
                 }
                 None
@@ -511,11 +727,19 @@ pub fn first_leaf_path(node: &Node) -> Vec<usize> {
 pub fn find_path_by_id(node: &Node, id: usize) -> Option<Vec<usize>> {
     fn rec(n: &Node, id: usize, path: &mut Vec<usize>) -> Option<Vec<usize>> {
         match n {
-            Node::Leaf(p) => if p.id == id { Some(path.clone()) } else { None },
+            Node::Leaf(p) => {
+                if p.id == id {
+                    Some(path.clone())
+                } else {
+                    None
+                }
+            }
             Node::Split { children, .. } => {
                 for (i, c) in children.iter().enumerate() {
                     path.push(i);
-                    if let Some(p) = rec(c, id, path) { return Some(p); }
+                    if let Some(p) = rec(c, id, path) {
+                        return Some(p);
+                    }
                     path.pop();
                 }
                 None
@@ -551,7 +775,9 @@ pub fn node_at_mut<'a>(node: &'a mut Node, path: &[usize]) -> Option<&'a mut Nod
     let mut cur = node;
     for &idx in path {
         match cur {
-            Node::Split { children, .. } => { cur = children.get_mut(idx)?; }
+            Node::Split { children, .. } => {
+                cur = children.get_mut(idx)?;
+            }
             Node::Leaf(_) => return None,
         }
     }
@@ -563,65 +789,112 @@ pub fn node_at_mut<'a>(node: &'a mut Node, path: &[usize]) -> Option<&'a mut Nod
 /// prefix of the other — which always holds for two distinct leaf paths.
 /// The split `sizes` are untouched, so only the pane *contents* change slots.
 pub fn swap_nodes(root: &mut Node, a: &[usize], b: &[usize]) -> bool {
-    if a == b || a.is_empty() || b.is_empty() { return false; }
+    if a == b || a.is_empty() || b.is_empty() {
+        return false;
+    }
     let min = a.len().min(b.len());
-    if a[..min] == b[..min] { return false; } // one path is an ancestor of the other
-    let pa = match node_at_mut(root, a) { Some(n) => n as *mut Node, None => return false };
-    let pb = match node_at_mut(root, b) { Some(n) => n as *mut Node, None => return false };
-    if pa == pb { return false; }
+    if a[..min] == b[..min] {
+        return false;
+    } // one path is an ancestor of the other
+    let pa = match node_at_mut(root, a) {
+        Some(n) => n as *mut Node,
+        None => return false,
+    };
+    let pb = match node_at_mut(root, b) {
+        Some(n) => n as *mut Node,
+        None => return false,
+    };
+    if pa == pb {
+        return false;
+    }
     // SAFETY: `pa` and `pb` point to distinct, non-overlapping nodes (the paths
     // are distinct and neither is a prefix of the other), so the swap cannot
     // create aliasing.
-    unsafe { std::ptr::swap(pa, pb); }
+    unsafe {
+        std::ptr::swap(pa, pb);
+    }
     true
 }
 
 #[cfg(test)]
 mod swap_node_tests {
-    use crate::types::{Node, LayoutKind};
+    use crate::types::{LayoutKind, Node};
     // Use empty Splits as distinguishable markers (avoids constructing a Pane).
     fn marker(n: u16) -> Node {
-        Node::Split { kind: LayoutKind::Vertical, sizes: vec![n], children: vec![] }
+        Node::Split {
+            kind: LayoutKind::Vertical,
+            sizes: vec![n],
+            children: vec![],
+        }
     }
     fn sz(n: &Node) -> Vec<u16> {
-        match n { Node::Split { sizes, .. } => sizes.clone(), _ => vec![] }
+        match n {
+            Node::Split { sizes, .. } => sizes.clone(),
+            _ => vec![],
+        }
     }
     #[test]
     fn swap_nonsibling_positions() {
         // H[ A(10), V[ B(20), C(30) ] ] ; swap [0] <-> [1,1]
-        let mut root = Node::Split { kind: LayoutKind::Horizontal, sizes: vec![1, 1], children: vec![
-            marker(10),
-            Node::Split { kind: LayoutKind::Vertical, sizes: vec![1, 1], children: vec![marker(20), marker(30)] },
-        ]};
+        let mut root = Node::Split {
+            kind: LayoutKind::Horizontal,
+            sizes: vec![1, 1],
+            children: vec![
+                marker(10),
+                Node::Split {
+                    kind: LayoutKind::Vertical,
+                    sizes: vec![1, 1],
+                    children: vec![marker(20), marker(30)],
+                },
+            ],
+        };
         assert!(super::swap_nodes(&mut root, &[0], &[1, 1]));
         if let Node::Split { children, .. } = &root {
             assert_eq!(sz(&children[0]), vec![30], "slot [0] should now hold C(30)");
             if let Node::Split { children: c2, .. } = &children[1] {
                 assert_eq!(sz(&c2[0]), vec![20], "B(20) unchanged");
                 assert_eq!(sz(&c2[1]), vec![10], "slot [1,1] should now hold A(10)");
-            } else { panic!("expected inner split"); }
-        } else { panic!("expected split"); }
+            } else {
+                panic!("expected inner split");
+            }
+        } else {
+            panic!("expected split");
+        }
     }
     #[test]
     fn swap_siblings() {
-        let mut root = Node::Split { kind: LayoutKind::Horizontal, sizes: vec![1, 1], children: vec![marker(1), marker(2)] };
+        let mut root = Node::Split {
+            kind: LayoutKind::Horizontal,
+            sizes: vec![1, 1],
+            children: vec![marker(1), marker(2)],
+        };
         assert!(super::swap_nodes(&mut root, &[0], &[1]));
         if let Node::Split { children, .. } = &root {
             assert_eq!(sz(&children[0]), vec![2]);
             assert_eq!(sz(&children[1]), vec![1]);
-        } else { panic!(); }
+        } else {
+            panic!();
+        }
     }
     #[test]
     fn swap_rejects_invalid() {
-        let mut root = Node::Split { kind: LayoutKind::Horizontal, sizes: vec![1], children: vec![marker(1)] };
-        assert!(!super::swap_nodes(&mut root, &[0], &[0]));    // identical paths
-        assert!(!super::swap_nodes(&mut root, &[], &[0]));     // empty path
+        let mut root = Node::Split {
+            kind: LayoutKind::Horizontal,
+            sizes: vec![1],
+            children: vec![marker(1)],
+        };
+        assert!(!super::swap_nodes(&mut root, &[0], &[0])); // identical paths
+        assert!(!super::swap_nodes(&mut root, &[], &[0])); // empty path
         assert!(!super::swap_nodes(&mut root, &[0], &[0, 0])); // ancestor/descendant
     }
 }
 
 /// Public wrapper for collect_leaf_paths (used by join-pane to resolve pane index to path).
-pub fn collect_leaf_paths_pub(node: &Node, path: &mut Vec<usize>, out: &mut Vec<(usize, Vec<usize>)>) {
+pub fn collect_leaf_paths_pub(
+    node: &Node,
+    path: &mut Vec<usize>,
+    out: &mut Vec<(usize, Vec<usize>)>,
+) {
     collect_leaf_paths(node, path, out);
 }
 
@@ -641,7 +914,9 @@ pub fn remove_from_mru(mru: &mut Vec<usize>, pane_id: usize) {
 
 /// Get the MRU rank of a pane ID (0 = most recent). Returns usize::MAX if not found.
 pub fn mru_rank(mru: &[usize], pane_id: usize) -> usize {
-    mru.iter().position(|&id| id == pane_id).unwrap_or(usize::MAX)
+    mru.iter()
+        .position(|&id| id == pane_id)
+        .unwrap_or(usize::MAX)
 }
 
 /// Visit every pane in a tree node (DFS order), calling `f` on each.
@@ -649,7 +924,9 @@ pub fn for_each_pane(node: &Node, f: &mut dyn FnMut(&Pane)) {
     match node {
         Node::Leaf(p) => f(p),
         Node::Split { children, .. } => {
-            for c in children { for_each_pane(c, f); }
+            for c in children {
+                for_each_pane(c, f);
+            }
         }
     }
 }
@@ -661,7 +938,9 @@ pub fn collect_pane_ids(node: &Node) -> Vec<usize> {
         match node {
             Node::Leaf(p) => ids.push(p.id),
             Node::Split { children, .. } => {
-                for c in children { rec(c, ids); }
+                for c in children {
+                    rec(c, ids);
+                }
             }
         }
     }
@@ -674,9 +953,18 @@ pub fn collect_pane_ids(node: &Node) -> Vec<usize> {
 pub fn next_leaf_path(node: &Node, active_path: &[usize]) -> Option<Vec<usize>> {
     let mut leaves = Vec::new();
     collect_leaf_paths(node, &mut Vec::new(), &mut leaves);
-    if leaves.len() <= 1 { return None; }
-    let pos = leaves.iter().position(|(_, p)| p.as_slice() == active_path).unwrap_or(0);
-    let next = if pos + 1 < leaves.len() { pos + 1 } else { pos.saturating_sub(1) };
+    if leaves.len() <= 1 {
+        return None;
+    }
+    let pos = leaves
+        .iter()
+        .position(|(_, p)| p.as_slice() == active_path)
+        .unwrap_or(0);
+    let next = if pos + 1 < leaves.len() {
+        pos + 1
+    } else {
+        pos.saturating_sub(1)
+    };
     Some(leaves[next].1.clone())
 }
 
@@ -707,7 +995,9 @@ pub fn get_pane_position_in_window(node: &Node, target_id: usize) -> Option<usiz
         match node {
             Node::Leaf(p) => ids.push(p.id),
             Node::Split { children, .. } => {
-                for c in children { collect_ids(c, ids); }
+                for c in children {
+                    collect_ids(c, ids);
+                }
             }
         }
     }
@@ -735,7 +1025,9 @@ pub fn get_nth_pane(node: &Node, n: usize) -> Option<&Pane> {
         match node {
             Node::Leaf(p) => panes.push(p),
             Node::Split { children, .. } => {
-                for c in children { collect_panes(c, panes); }
+                for c in children {
+                    collect_panes(c, panes);
+                }
             }
         }
     }
@@ -762,9 +1054,20 @@ pub fn focus_pane_by_id_no_mru(app: &mut AppState, pid: usize) {
 fn focus_pane_by_id_inner(app: &mut AppState, pid: usize, update_mru: bool) {
     fn rec(node: &Node, path: &mut Vec<usize>, found: &mut Option<Vec<usize>>, pid: usize) {
         match node {
-            Node::Leaf(p) => { if p.id == pid { *found = Some(path.clone()); } }
+            Node::Leaf(p) => {
+                if p.id == pid {
+                    *found = Some(path.clone());
+                }
+            }
             Node::Split { children, .. } => {
-                for (i, c) in children.iter().enumerate() { path.push(i); rec(c, path, found, pid); path.pop(); if found.is_some() { return; } }
+                for (i, c) in children.iter().enumerate() {
+                    path.push(i);
+                    rec(c, path, found, pid);
+                    path.pop();
+                    if found.is_some() {
+                        return;
+                    }
+                }
             }
         }
     }
@@ -772,14 +1075,24 @@ fn focus_pane_by_id_inner(app: &mut AppState, pid: usize, update_mru: bool) {
         let mut path = Vec::new();
         let mut found = None;
         rec(&w.root, &mut path, &mut found, pid);
-        if let Some(p) = found { app.active_idx = wi; let win = &mut app.windows[wi]; win.active_path = p; if update_mru { touch_mru(&mut win.pane_mru, pid); } return; }
+        if let Some(p) = found {
+            app.active_idx = wi;
+            let win = &mut app.windows[wi];
+            win.active_path = p;
+            if update_mru {
+                touch_mru(&mut win.pane_mru, pid);
+            }
+            return;
+        }
     }
 }
 
 pub fn focus_pane_by_index(app: &mut AppState, idx: usize) {
     fn collect_pane_paths(node: &Node, path: &mut Vec<usize>, panes: &mut Vec<Vec<usize>>) {
         match node {
-            Node::Leaf(_) => { panes.push(path.clone()); }
+            Node::Leaf(_) => {
+                panes.push(path.clone());
+            }
             Node::Split { children, .. } => {
                 for (i, c) in children.iter().enumerate() {
                     path.push(i);
@@ -811,7 +1124,9 @@ pub fn active_pane<'a>(node: &'a Node, path: &[usize]) -> Option<&'a Pane> {
     match node {
         Node::Leaf(p) => Some(p),
         Node::Split { children, .. } => {
-            if path.is_empty() { return None; }
+            if path.is_empty() {
+                return None;
+            }
             let idx = path[0].min(children.len().saturating_sub(1));
             active_pane(&children[idx], &path[1..])
         }
@@ -827,19 +1142,27 @@ pub fn pane_index_in_window(node: &Node, path: &[usize]) -> Option<usize> {
     fn walk(n: &Node, target_id: usize, idx: &mut usize) -> bool {
         match n {
             Node::Leaf(p) => {
-                if p.id == target_id { return true; }
+                if p.id == target_id {
+                    return true;
+                }
                 *idx += 1;
                 false
             }
             Node::Split { children, .. } => {
                 for c in children {
-                    if walk(c, target_id, idx) { return true; }
+                    if walk(c, target_id, idx) {
+                        return true;
+                    }
                 }
                 false
             }
         }
     }
-    if walk(node, target_id, &mut idx) { Some(idx) } else { None }
+    if walk(node, target_id, &mut idx) {
+        Some(idx)
+    } else {
+        None
+    }
 }
 
 /// Reap exited children from the app.
@@ -855,12 +1178,12 @@ pub fn pane_index_in_window(node: &Node, path: &[usize]) -> Option<usize> {
 fn has_any_exited(node: &mut Node) -> bool {
     match node {
         Node::Leaf(p) => {
-            if p.dead { return false; } // Already dead, handled
+            if p.dead {
+                return false;
+            } // Already dead, handled
             matches!(p.child.try_wait(), Ok(Some(_)))
         }
-        Node::Split { children, .. } => {
-            children.iter_mut().any(|c| has_any_exited(c))
-        }
+        Node::Split { children, .. } => children.iter_mut().any(|c| has_any_exited(c)),
     }
 }
 
@@ -876,7 +1199,14 @@ pub fn reap_children(app: &mut AppState) -> io::Result<(bool, bool, bool)> {
         }
         let leaves_before = count_panes(&app.windows[i].root);
         let active_pane_id = get_active_pane_id(&app.windows[i].root, &app.windows[i].active_path);
-        let root = std::mem::replace(&mut app.windows[i].root, Node::Split { kind: LayoutKind::Horizontal, sizes: vec![], children: vec![] });
+        let root = std::mem::replace(
+            &mut app.windows[i].root,
+            Node::Split {
+                kind: LayoutKind::Horizontal,
+                sizes: vec![],
+                children: vec![],
+            },
+        );
         let (pruned_result, newly_dead_count) = prune_exited(root, remain, kill_descendants);
         if newly_dead_count > 0 {
             any_newly_dead = true;
@@ -888,22 +1218,31 @@ pub fn reap_children(app: &mut AppState) -> io::Result<(bool, bool, bool)> {
                     any_pruned = true;
                     // Clean up MRU: remove IDs of panes that no longer exist
                     let surviving_ids = collect_pane_ids(&new_root);
-                    app.windows[i].pane_mru.retain(|id| surviving_ids.contains(id));
+                    app.windows[i]
+                        .pane_mru
+                        .retain(|id| surviving_ids.contains(id));
                 }
                 app.windows[i].root = new_root;
                 // After tree restructuring, the old active_path indices may
                 // still be in-range but point to a different pane (issue #140).
                 // Always verify by pane ID, not just path validity.
-                let current_id = get_active_pane_id(&app.windows[i].root, &app.windows[i].active_path);
-                if current_id != active_pane_id || !path_exists(&app.windows[i].root, &app.windows[i].active_path) {
+                let current_id =
+                    get_active_pane_id(&app.windows[i].root, &app.windows[i].active_path);
+                if current_id != active_pane_id
+                    || !path_exists(&app.windows[i].root, &app.windows[i].active_path)
+                {
                     // The active pane's path shifted due to tree restructuring.
                     // Try to find it by ID first, then by MRU order (issue #71).
-                    let found = active_pane_id.and_then(|id| find_path_by_id(&app.windows[i].root, id))
+                    let found = active_pane_id
+                        .and_then(|id| find_path_by_id(&app.windows[i].root, id))
                         .or_else(|| {
-                            app.windows[i].pane_mru.iter()
+                            app.windows[i]
+                                .pane_mru
+                                .iter()
                                 .find_map(|&id| find_path_by_id(&app.windows[i].root, id))
                         });
-                    app.windows[i].active_path = found.unwrap_or_else(|| first_leaf_path(&app.windows[i].root));
+                    app.windows[i].active_path =
+                        found.unwrap_or_else(|| first_leaf_path(&app.windows[i].root));
                 }
             }
             None => {
@@ -920,8 +1259,13 @@ pub fn reap_children(app: &mut AppState) -> io::Result<(bool, bool, bool)> {
                     }
                 }
                 if app.active_idx != _old {
-                    crate::debug_log::server_log("switch", &format!(
-                        "REAP: active_idx {} -> {} after removing window at index {}", _old, app.active_idx, i));
+                    crate::debug_log::server_log(
+                        "switch",
+                        &format!(
+                            "REAP: active_idx {} -> {} after removing window at index {}",
+                            _old, app.active_idx, i
+                        ),
+                    );
                 }
             }
         }

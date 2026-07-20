@@ -22,7 +22,11 @@ fn mock_app() -> AppState {
 
 fn make_window(name: &str, id: usize) -> crate::types::Window {
     crate::types::Window {
-        root: Node::Split { kind: LayoutKind::Horizontal, sizes: vec![], children: vec![] },
+        root: Node::Split {
+            kind: LayoutKind::Horizontal,
+            sizes: vec![],
+            children: vec![],
+        },
         active_path: vec![],
         name: name.to_string(),
         id,
@@ -57,8 +61,13 @@ fn mock_app_with_windows(names: &[&str]) -> AppState {
 
 fn extract_popup(app: &AppState) -> (&str, &str) {
     match &app.mode {
-        Mode::PopupMode { command, output, .. } => (command, output),
-        other => panic!("expected PopupMode, got {:?}", std::mem::discriminant(other)),
+        Mode::PopupMode {
+            command, output, ..
+        } => (command, output),
+        other => panic!(
+            "expected PopupMode, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
@@ -72,28 +81,44 @@ fn extract_popup(app: &AppState) -> (&str, &str) {
 fn generate_show_options_includes_user_options() {
     // generate_show_options must include @-prefixed user options in its output
     let mut app = mock_app_with_window();
-    app.user_options.insert("@resurrect-capture-pane-contents".to_string(), "on".to_string());
-    app.user_options.insert("@plugin".to_string(), "psmux-plugins/psmux-resurrect".to_string());
+    app.user_options.insert(
+        "@resurrect-capture-pane-contents".to_string(),
+        "on".to_string(),
+    );
+    app.user_options.insert(
+        "@plugin".to_string(),
+        "psmux-plugins/psmux-resurrect".to_string(),
+    );
 
     let output = generate_show_options(&app);
 
-    assert!(output.contains("@resurrect-capture-pane-contents"),
-        "show-options output must include @resurrect-capture-pane-contents, got:\n{}", output);
-    assert!(output.contains("@plugin"),
-        "show-options output must include @plugin, got:\n{}", output);
+    assert!(
+        output.contains("@resurrect-capture-pane-contents"),
+        "show-options output must include @resurrect-capture-pane-contents, got:\n{}",
+        output
+    );
+    assert!(
+        output.contains("@plugin"),
+        "show-options output must include @plugin, got:\n{}",
+        output
+    );
 }
 
 #[test]
 fn generate_show_options_user_option_value_is_quoted() {
     // User option values with spaces are quoted in generate_show_options
     let mut app = mock_app_with_window();
-    app.user_options.insert("@my-opt".to_string(), "hello world".to_string());
+    app.user_options
+        .insert("@my-opt".to_string(), "hello world".to_string());
 
     let output = generate_show_options(&app);
 
     // Format is: @my-opt "hello world"
-    assert!(output.contains(r#"@my-opt "hello world""#),
-        "user option should appear as '@my-opt \"hello world\"', got:\n{}", output);
+    assert!(
+        output.contains(r#"@my-opt "hello world""#),
+        "user option should appear as '@my-opt \"hello world\"', got:\n{}",
+        output
+    );
 }
 
 #[test]
@@ -101,16 +126,25 @@ fn show_options_popup_includes_user_options() {
     // execute_command_string("show-options") local path uses generate_show_options
     // and shows in PopupMode, so @options must be visible
     let mut app = mock_app_with_window();
-    app.user_options.insert("@resurrect-dir".to_string(), "~/.psmux/resurrect".to_string());
+    app.user_options.insert(
+        "@resurrect-dir".to_string(),
+        "~/.psmux/resurrect".to_string(),
+    );
 
     execute_command_string(&mut app, "show-options").unwrap();
     let (cmd, out) = extract_popup(&app);
 
     assert_eq!(cmd, "show-options");
-    assert!(out.contains("@resurrect-dir"),
-        "show-options popup must display @resurrect-dir, got:\n{}", out);
-    assert!(out.contains("~/.psmux/resurrect"),
-        "show-options popup must display the value, got:\n{}", out);
+    assert!(
+        out.contains("@resurrect-dir"),
+        "show-options popup must display @resurrect-dir, got:\n{}",
+        out
+    );
+    assert!(
+        out.contains("~/.psmux/resurrect"),
+        "show-options popup must display the value, got:\n{}",
+        out
+    );
 }
 
 #[test]
@@ -118,34 +152,46 @@ fn show_options_includes_builtin_and_user_options_together() {
     // Both built-in options (prefix, mouse, etc.) and @user options
     // must appear in the same output
     let mut app = mock_app_with_window();
-    app.user_options.insert("@continuum-save-interval".to_string(), "15".to_string());
+    app.user_options
+        .insert("@continuum-save-interval".to_string(), "15".to_string());
 
     execute_command_string(&mut app, "show-options").unwrap();
     let (_, out) = extract_popup(&app);
 
     assert!(out.contains("prefix"), "must include builtin 'prefix'");
     assert!(out.contains("mouse"), "must include builtin 'mouse'");
-    assert!(out.contains("@continuum-save-interval"),
-        "must include user option '@continuum-save-interval'");
+    assert!(
+        out.contains("@continuum-save-interval"),
+        "must include user option '@continuum-save-interval'"
+    );
 }
 
 #[test]
 fn get_option_value_returns_user_option() {
     // get_option_value in server/options.rs must resolve @-prefixed options
     let mut app = mock_app();
-    app.user_options.insert("@resurrect-capture-pane-contents".to_string(), "on".to_string());
+    app.user_options.insert(
+        "@resurrect-capture-pane-contents".to_string(),
+        "on".to_string(),
+    );
 
     let val = crate::server::options::get_option_value(&app, "@resurrect-capture-pane-contents");
-    assert_eq!(val, "on",
-        "get_option_value('@resurrect-capture-pane-contents') must return 'on', got: '{}'", val);
+    assert_eq!(
+        val, "on",
+        "get_option_value('@resurrect-capture-pane-contents') must return 'on', got: '{}'",
+        val
+    );
 }
 
 #[test]
 fn get_option_value_returns_empty_for_unset_user_option() {
     let app = mock_app();
     let val = crate::server::options::get_option_value(&app, "@nonexistent-option");
-    assert_eq!(val, "",
-        "get_option_value for unset @option must return empty string, got: '{}'", val);
+    assert_eq!(
+        val, "",
+        "get_option_value for unset @option must return empty string, got: '{}'",
+        val
+    );
 }
 
 #[test]
@@ -155,18 +201,26 @@ fn get_option_value_user_option_after_set_option() {
     execute_command_string(&mut app, "set-option -g @my-test-opt test-value").unwrap();
 
     let val = crate::server::options::get_option_value(&app, "@my-test-opt");
-    assert_eq!(val, "test-value",
-        "get_option_value after set-option should return 'test-value', got: '{}'", val);
+    assert_eq!(
+        val, "test-value",
+        "get_option_value after set-option should return 'test-value', got: '{}'",
+        val
+    );
 }
 
 #[test]
 fn get_option_value_builtin_options_still_work() {
     // Ensure @option support does not break built-in option lookup
     let app = mock_app();
-    assert_eq!(crate::server::options::get_option_value(&app, "base-index"), "0");
+    assert_eq!(
+        crate::server::options::get_option_value(&app, "base-index"),
+        "0"
+    );
     assert!(!crate::server::options::get_option_value(&app, "prefix").is_empty());
-    assert!(crate::server::options::get_option_value(&app, "mouse") == "on"
-        || crate::server::options::get_option_value(&app, "mouse") == "off");
+    assert!(
+        crate::server::options::get_option_value(&app, "mouse") == "on"
+            || crate::server::options::get_option_value(&app, "mouse") == "off"
+    );
 }
 
 #[test]
@@ -177,35 +231,49 @@ fn set_option_user_option_overwrite() {
     execute_command_string(&mut app, "set-option -g @my-opt second").unwrap();
 
     let val = crate::server::options::get_option_value(&app, "@my-opt");
-    assert_eq!(val, "second",
-        "second set-option should overwrite first, got: '{}'", val);
+    assert_eq!(
+        val, "second",
+        "second set-option should overwrite first, got: '{}'",
+        val
+    );
 }
 
 #[test]
 fn set_option_unset_user_option() {
     // set-option -gu @key should remove the user option
     let mut app = mock_app_with_window();
-    app.user_options.insert("@to-remove".to_string(), "value".to_string());
+    app.user_options
+        .insert("@to-remove".to_string(), "value".to_string());
     execute_command_string(&mut app, "set-option -gu @to-remove").unwrap();
 
     let val = crate::server::options::get_option_value(&app, "@to-remove");
-    assert_eq!(val, "",
-        "unset @option should return empty, got: '{}'", val);
+    assert_eq!(val, "", "unset @option should return empty, got: '{}'", val);
 }
 
 #[test]
 fn multiple_user_options_in_show_options() {
     // Multiple @options should all appear
     let mut app = mock_app_with_window();
-    app.user_options.insert("@plugin".to_string(), "psmux-resurrect".to_string());
-    app.user_options.insert("@resurrect-strategy-vim".to_string(), "session".to_string());
-    app.user_options.insert("@resurrect-capture-pane-contents".to_string(), "on".to_string());
+    app.user_options
+        .insert("@plugin".to_string(), "psmux-resurrect".to_string());
+    app.user_options
+        .insert("@resurrect-strategy-vim".to_string(), "session".to_string());
+    app.user_options.insert(
+        "@resurrect-capture-pane-contents".to_string(),
+        "on".to_string(),
+    );
 
     let output = generate_show_options(&app);
 
     assert!(output.contains("@plugin"), "must contain @plugin");
-    assert!(output.contains("@resurrect-strategy-vim"), "must contain @resurrect-strategy-vim");
-    assert!(output.contains("@resurrect-capture-pane-contents"), "must contain @resurrect-capture-pane-contents");
+    assert!(
+        output.contains("@resurrect-strategy-vim"),
+        "must contain @resurrect-strategy-vim"
+    );
+    assert!(
+        output.contains("@resurrect-capture-pane-contents"),
+        "must contain @resurrect-capture-pane-contents"
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -218,24 +286,33 @@ fn multiple_user_options_in_show_options() {
 fn expand_format_session_name() {
     let app = mock_app_with_windows(&["editor", "build"]);
     let result = crate::format::expand_format("#{session_name}", &app);
-    assert_eq!(result, "test_session",
-        "#{{session_name}} must expand to 'test_session', got: '{}'", result);
+    assert_eq!(
+        result, "test_session",
+        "#{{session_name}} must expand to 'test_session', got: '{}'",
+        result
+    );
 }
 
 #[test]
 fn expand_format_session_windows_count() {
     let app = mock_app_with_windows(&["editor", "build", "logs"]);
     let result = crate::format::expand_format("#{session_windows}", &app);
-    assert_eq!(result, "3",
-        "#{{session_windows}} must expand to '3' for 3 windows, got: '{}'", result);
+    assert_eq!(
+        result, "3",
+        "#{{session_windows}} must expand to '3' for 3 windows, got: '{}'",
+        result
+    );
 }
 
 #[test]
 fn expand_format_session_id() {
     let app = mock_app();
     let result = crate::format::expand_format("#{session_id}", &app);
-    assert!(result.starts_with('$'),
-        "#{{session_id}} must start with '$', got: '{}'", result);
+    assert!(
+        result.starts_with('$'),
+        "#{{session_id}} must start with '$', got: '{}'",
+        result
+    );
 }
 
 #[test]
@@ -243,8 +320,11 @@ fn expand_format_combined_session_vars() {
     // This is the exact pattern psmux-resurrect uses
     let app = mock_app_with_windows(&["editor", "build"]);
     let result = crate::format::expand_format("#{session_name}:#{session_windows}", &app);
-    assert_eq!(result, "test_session:2",
-        "combined format must expand correctly, got: '{}'", result);
+    assert_eq!(
+        result, "test_session:2",
+        "combined format must expand correctly, got: '{}'",
+        result
+    );
 }
 
 #[test]
@@ -252,10 +332,16 @@ fn expand_format_session_name_only_no_extra_data() {
     // Crucial for resurrect: format must NOT include timestamps or other data
     let app = mock_app_with_windows(&["shell"]);
     let result = crate::format::expand_format("#{session_name}", &app);
-    assert!(!result.contains("windows"),
-        "#{{session_name}} must not contain 'windows', got: '{}'", result);
-    assert!(!result.contains("created"),
-        "#{{session_name}} must not contain 'created', got: '{}'", result);
+    assert!(
+        !result.contains("windows"),
+        "#{{session_name}} must not contain 'windows', got: '{}'",
+        result
+    );
+    assert!(
+        !result.contains("created"),
+        "#{{session_name}} must not contain 'created', got: '{}'",
+        result
+    );
     assert_eq!(result, "test_session");
 }
 
@@ -263,19 +349,26 @@ fn expand_format_session_name_only_no_extra_data() {
 fn expand_format_user_option_variable() {
     // #{@option_name} should expand from user_options
     let mut app = mock_app_with_window();
-    app.user_options.insert("@my-custom-var".to_string(), "custom_value".to_string());
+    app.user_options
+        .insert("@my-custom-var".to_string(), "custom_value".to_string());
 
     let result = crate::format::expand_format("#{@my-custom-var}", &app);
-    assert_eq!(result, "custom_value",
-        "#{{@my-custom-var}} must expand to 'custom_value', got: '{}'", result);
+    assert_eq!(
+        result, "custom_value",
+        "#{{@my-custom-var}} must expand to 'custom_value', got: '{}'",
+        result
+    );
 }
 
 #[test]
 fn expand_format_unset_user_option_is_empty() {
     let app = mock_app_with_window();
     let result = crate::format::expand_format("#{@nonexistent}", &app);
-    assert_eq!(result, "",
-        "#{{@nonexistent}} must expand to empty string, got: '{}'", result);
+    assert_eq!(
+        result, "",
+        "#{{@nonexistent}} must expand to empty string, got: '{}'",
+        result
+    );
 }
 
 #[test]
@@ -285,8 +378,11 @@ fn expand_format_hash_s_shorthand() {
     app.session_name = "my_project".to_string();
 
     let result = crate::format::expand_format("#S", &app);
-    assert_eq!(result, "my_project",
-        "#S must expand to session name 'my_project', got: '{}'", result);
+    assert_eq!(
+        result, "my_project",
+        "#S must expand to session name 'my_project', got: '{}'",
+        result
+    );
 }
 
 #[test]
@@ -295,7 +391,7 @@ fn expand_format_mixed_session_and_window_vars() {
     let app = mock_app_with_windows(&["editor"]);
     let result = crate::format::expand_format(
         "#{session_name} | #{window_name} | #{session_windows}",
-        &app
+        &app,
     );
     assert!(result.contains("test_session"), "must contain session name");
     assert!(result.contains("editor"), "must contain window name");
@@ -368,10 +464,11 @@ fn set_then_show_user_option_round_trip() {
     execute_command_string(&mut app, "show-options").unwrap();
     let (_, out) = extract_popup(&app);
 
-    assert!(out.contains("@resurrect-save-interval"),
-        "show-options after set-option must include @resurrect-save-interval");
-    assert!(out.contains("60"),
-        "show-options must show the value '60'");
+    assert!(
+        out.contains("@resurrect-save-interval"),
+        "show-options after set-option must include @resurrect-save-interval"
+    );
+    assert!(out.contains("60"), "show-options must show the value '60'");
 }
 
 #[test]
@@ -381,8 +478,11 @@ fn format_expansion_uses_set_option_values() {
     execute_command_string(&mut app, "set-option -g @my-flag enabled").unwrap();
 
     let result = crate::format::expand_format("#{@my-flag}", &app);
-    assert_eq!(result, "enabled",
-        "format expansion of #{{@my-flag}} after set-option must be 'enabled', got: '{}'", result);
+    assert_eq!(
+        result, "enabled",
+        "format expansion of #{{@my-flag}} after set-option must be 'enabled', got: '{}'",
+        result
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -396,8 +496,13 @@ fn combined_has_parses_gqv_all_flags() {
     let args = vec!["-gqv", "@resurrect-capture-pane-contents"];
     let combined_has = |ch: char| -> bool {
         args.iter().any(|a| {
-            if *a == format!("-{}", ch) { return true; }
-            a.starts_with('-') && a.len() > 2 && a.chars().skip(1).all(|c| c.is_ascii_alphabetic()) && a.contains(ch)
+            if *a == format!("-{}", ch) {
+                return true;
+            }
+            a.starts_with('-')
+                && a.len() > 2
+                && a.chars().skip(1).all(|c| c.is_ascii_alphabetic())
+                && a.contains(ch)
         })
     };
     assert!(combined_has('g'), "-gqv must contain 'g'");
@@ -412,8 +517,13 @@ fn combined_has_parses_gv_flags() {
     let args = vec!["-gv", "base-index"];
     let combined_has = |ch: char| -> bool {
         args.iter().any(|a| {
-            if *a == format!("-{}", ch) { return true; }
-            a.starts_with('-') && a.len() > 2 && a.chars().skip(1).all(|c| c.is_ascii_alphabetic()) && a.contains(ch)
+            if *a == format!("-{}", ch) {
+                return true;
+            }
+            a.starts_with('-')
+                && a.len() > 2
+                && a.chars().skip(1).all(|c| c.is_ascii_alphabetic())
+                && a.contains(ch)
         })
     };
     assert!(combined_has('g'), "-gv must contain 'g'");
@@ -426,8 +536,13 @@ fn combined_has_separate_g_q_v_flags() {
     let args = vec!["-g", "-q", "-v", "@plugin"];
     let combined_has = |ch: char| -> bool {
         args.iter().any(|a| {
-            if *a == format!("-{}", ch) { return true; }
-            a.starts_with('-') && a.len() > 2 && a.chars().skip(1).all(|c| c.is_ascii_alphabetic()) && a.contains(ch)
+            if *a == format!("-{}", ch) {
+                return true;
+            }
+            a.starts_with('-')
+                && a.len() > 2
+                && a.chars().skip(1).all(|c| c.is_ascii_alphabetic())
+                && a.contains(ch)
         })
     };
     assert!(combined_has('g'), "separate -g must be found");
@@ -440,8 +555,13 @@ fn combined_has_v_only() {
     let args = vec!["-v", "prefix"];
     let combined_has = |ch: char| -> bool {
         args.iter().any(|a| {
-            if *a == format!("-{}", ch) { return true; }
-            a.starts_with('-') && a.len() > 2 && a.chars().skip(1).all(|c| c.is_ascii_alphabetic()) && a.contains(ch)
+            if *a == format!("-{}", ch) {
+                return true;
+            }
+            a.starts_with('-')
+                && a.len() > 2
+                && a.chars().skip(1).all(|c| c.is_ascii_alphabetic())
+                && a.contains(ch)
         })
     };
     assert!(combined_has('v'), "-v must be found");
@@ -455,13 +575,24 @@ fn combined_has_ignores_option_names_starting_with_at() {
     let args = vec!["-gqv", "@resurrect-dir"];
     let combined_has = |ch: char| -> bool {
         args.iter().any(|a| {
-            if *a == format!("-{}", ch) { return true; }
-            a.starts_with('-') && a.len() > 2 && a.chars().skip(1).all(|c| c.is_ascii_alphabetic()) && a.contains(ch)
+            if *a == format!("-{}", ch) {
+                return true;
+            }
+            a.starts_with('-')
+                && a.len() > 2
+                && a.chars().skip(1).all(|c| c.is_ascii_alphabetic())
+                && a.contains(ch)
         })
     };
     // The @resurrect-dir arg starts with @, not -, so it is not a flag
-    assert!(!combined_has('r'), "@resurrect-dir must not be parsed as flag");
-    assert!(!combined_has('d'), "@resurrect-dir must not be parsed as flag");
+    assert!(
+        !combined_has('r'),
+        "@resurrect-dir must not be parsed as flag"
+    );
+    assert!(
+        !combined_has('d'),
+        "@resurrect-dir must not be parsed as flag"
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -482,22 +613,34 @@ fn show_options_v_output_format_value_only() {
     // With -v (value only): what the client receives
     let with_v = format!("{}\n", resolved);
     assert_eq!(with_v, "on\n");
-    assert!(!with_v.contains(name), "with -v, output must not contain option name");
+    assert!(
+        !with_v.contains(name),
+        "with -v, output must not contain option name"
+    );
 
     // Without -v (name + value): what the client receives
     let without_v = format!("{} {}\n", name, resolved);
-    assert!(without_v.contains(name), "without -v, output must contain option name");
-    assert!(without_v.contains(resolved), "without -v, output must contain value");
+    assert!(
+        without_v.contains(name),
+        "without -v, output must contain option name"
+    );
+    assert!(
+        without_v.contains(resolved),
+        "without -v, output must contain value"
+    );
 }
 
 #[test]
 fn show_options_values_only_strips_names() {
     // When -v without option name, connection.rs strips names from all lines
     let full_output = "prefix C-b\nbase-index 0\nmouse on\n@plugin \"psmux-resurrect\"\n";
-    let values_only: String = full_output.lines()
+    let values_only: String = full_output
+        .lines()
         .filter_map(|line| {
             let trimmed = line.trim();
-            if trimmed.is_empty() { return None; }
+            if trimmed.is_empty() {
+                return None;
+            }
             if let Some(pos) = trimmed.find(' ') {
                 Some(&trimmed[pos + 1..])
             } else {
@@ -508,6 +651,12 @@ fn show_options_values_only_strips_names() {
         .join("\n");
 
     assert_eq!(values_only, "C-b\n0\non\n\"psmux-resurrect\"");
-    assert!(!values_only.contains("prefix"), "values-only must not contain 'prefix'");
-    assert!(!values_only.contains("@plugin"), "values-only must not contain '@plugin'");
+    assert!(
+        !values_only.contains("prefix"),
+        "values-only must not contain 'prefix'"
+    );
+    assert!(
+        !values_only.contains("@plugin"),
+        "values-only must not contain '@plugin'"
+    );
 }

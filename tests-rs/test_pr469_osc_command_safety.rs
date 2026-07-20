@@ -44,17 +44,17 @@ fn grid_text(p: &vt100::Parser) -> String {
 #[test]
 fn malformed_percent_encoding_never_panics() {
     let payloads: &[&[u8]] = &[
-        b"133;C;cmdline_url=%",           // lone percent at end
-        b"133;C;cmdline_url=%A",          // one hex digit then EOF
-        b"133;C;cmdline_url=%ZZ",         // non-hex digits
-        b"133;C;cmdline_url=%GG%HH",      // repeated bad hex
-        b"133;C;cmdline_url=abc%",        // trailing percent after text
-        b"133;C;cmdline_url=%2",          // truncated in the middle
-        b"133;C;cmdline_url=%00",         // decodes to NUL byte
-        b"133;C;cmdline_url=%ff%fe%fd",   // invalid UTF-8 after decode -> dropped
-        b"133;C;cmdline_url=",            // empty value
-        b"133;C;cmdline_url",             // no '=' at all
-        b"133;C;",                        // empty param slot
+        b"133;C;cmdline_url=%",         // lone percent at end
+        b"133;C;cmdline_url=%A",        // one hex digit then EOF
+        b"133;C;cmdline_url=%ZZ",       // non-hex digits
+        b"133;C;cmdline_url=%GG%HH",    // repeated bad hex
+        b"133;C;cmdline_url=abc%",      // trailing percent after text
+        b"133;C;cmdline_url=%2",        // truncated in the middle
+        b"133;C;cmdline_url=%00",       // decodes to NUL byte
+        b"133;C;cmdline_url=%ff%fe%fd", // invalid UTF-8 after decode -> dropped
+        b"133;C;cmdline_url=",          // empty value
+        b"133;C;cmdline_url",           // no '=' at all
+        b"133;C;",                      // empty param slot
     ];
     for body in payloads {
         for term in [ST, BEL] {
@@ -75,8 +75,14 @@ fn percent_decode_null_and_highbytes_do_not_corrupt_grid() {
     // Whatever the decoder decided, none of the raw OSC framing should show up
     // on screen.
     let text = grid_text(&p);
-    assert!(!text.contains("cmdline_url"), "OSC param leaked into grid: {text:?}");
-    assert!(!text.contains("133"), "OSC command number leaked into grid: {text:?}");
+    assert!(
+        !text.contains("cmdline_url"),
+        "OSC param leaked into grid: {text:?}"
+    );
+    assert!(
+        !text.contains("133"),
+        "OSC command number leaked into grid: {text:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -87,14 +93,14 @@ fn percent_decode_null_and_highbytes_do_not_corrupt_grid() {
 #[test]
 fn malformed_base64_wezterm_prog_never_panics_and_is_dropped() {
     let payloads: &[&[u8]] = &[
-        b"1337;SetUserVar=WEZTERM_PROG=!!!!",        // illegal chars
-        b"1337;SetUserVar=WEZTERM_PROG=A",           // single leftover char
-        b"1337;SetUserVar=WEZTERM_PROG=AB=",         // odd padding
-        b"1337;SetUserVar=WEZTERM_PROG=====",        // all padding
-        b"1337;SetUserVar=WEZTERM_PROG=",            // empty value
-        b"1337;SetUserVar=WEZTERM_PROG",             // no '=' value sep
-        b"1337;SetUserVar=",                         // no name
-        b"1337;SetUserVar=WEZTERM_PROG=/w==",        // decodes to non-UTF8 -> dropped
+        b"1337;SetUserVar=WEZTERM_PROG=!!!!", // illegal chars
+        b"1337;SetUserVar=WEZTERM_PROG=A",    // single leftover char
+        b"1337;SetUserVar=WEZTERM_PROG=AB=",  // odd padding
+        b"1337;SetUserVar=WEZTERM_PROG=====", // all padding
+        b"1337;SetUserVar=WEZTERM_PROG=",     // empty value
+        b"1337;SetUserVar=WEZTERM_PROG",      // no '=' value sep
+        b"1337;SetUserVar=",                  // no name
+        b"1337;SetUserVar=WEZTERM_PROG=/w==", // decodes to non-UTF8 -> dropped
     ];
     for body in payloads {
         for term in [ST, BEL] {
@@ -167,10 +173,10 @@ fn adversarial_payload_split_at_every_byte_offset() {
 #[test]
 fn osc633e_weird_bytes_never_panic_or_leak() {
     let payloads: &[&[u8]] = &[
-        b"633;E;",                        // empty command
-        b"633;E;normal-cmd",              // plain
+        b"633;E;",                         // empty command
+        b"633;E;normal-cmd",               // plain
         b"633;E;cmd\\x3bwith\\x3bescapes", // VS Code escaped semicolons (verbatim)
-        b"633;E;a;b;c;d",                 // multiple segments (nonce-ish)
+        b"633;E;a;b;c;d",                  // multiple segments (nonce-ish)
     ];
     for body in payloads {
         for term in [ST, BEL] {
@@ -196,7 +202,10 @@ fn command_sequence_is_invisible_but_text_prints() {
     let text = grid_text(&p);
     assert!(text.contains("before"), "printed text before OSC missing");
     assert!(text.contains("after"), "printed text after OSC missing");
-    assert!(!text.contains("vim"), "command identity leaked into grid: {text:?}");
+    assert!(
+        !text.contains("vim"),
+        "command identity leaked into grid: {text:?}"
+    );
     assert!(!text.contains("cmdline_url"), "OSC param leaked into grid");
     assert_eq!(p.screen().shell_command(), Some("vim a.txt"));
 }

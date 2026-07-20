@@ -10,16 +10,34 @@ use super::*;
 #[test]
 fn split_pane_bare_maps_to_split_vertical() {
     // Bare split-window is a vertical split; split-pane must match.
-    assert!(matches!(parse_command_to_action("split-window"), Some(Action::SplitVertical)));
-    assert!(matches!(parse_command_to_action("split-pane"),   Some(Action::SplitVertical)));
-    assert!(matches!(parse_command_to_action("splitp"),       Some(Action::SplitVertical)));
+    assert!(matches!(
+        parse_command_to_action("split-window"),
+        Some(Action::SplitVertical)
+    ));
+    assert!(matches!(
+        parse_command_to_action("split-pane"),
+        Some(Action::SplitVertical)
+    ));
+    assert!(matches!(
+        parse_command_to_action("splitp"),
+        Some(Action::SplitVertical)
+    ));
 }
 
 #[test]
 fn split_pane_dash_h_maps_to_split_horizontal() {
-    assert!(matches!(parse_command_to_action("split-window -h"), Some(Action::SplitHorizontal)));
-    assert!(matches!(parse_command_to_action("split-pane -h"),   Some(Action::SplitHorizontal)));
-    assert!(matches!(parse_command_to_action("splitp -h"),       Some(Action::SplitHorizontal)));
+    assert!(matches!(
+        parse_command_to_action("split-window -h"),
+        Some(Action::SplitHorizontal)
+    ));
+    assert!(matches!(
+        parse_command_to_action("split-pane -h"),
+        Some(Action::SplitHorizontal)
+    ));
+    assert!(matches!(
+        parse_command_to_action("splitp -h"),
+        Some(Action::SplitHorizontal)
+    ));
 }
 
 #[test]

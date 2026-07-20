@@ -20,7 +20,11 @@ fn mock_app() -> AppState {
 
 fn make_window(name: &str, id: usize) -> crate::types::Window {
     crate::types::Window {
-        root: Node::Split { kind: LayoutKind::Horizontal, sizes: vec![], children: vec![] },
+        root: Node::Split {
+            kind: LayoutKind::Horizontal,
+            sizes: vec![],
+            children: vec![],
+        },
         active_path: vec![],
         name: name.to_string(),
         id,
@@ -84,8 +88,13 @@ fn capture_control_request() -> (u16, mpsc::Receiver<String>) {
 /// Extract popup output text, panicking with context if not PopupMode.
 fn extract_popup(app: &AppState) -> (&str, &str) {
     match &app.mode {
-        Mode::PopupMode { command, output, .. } => (command, output),
-        other => panic!("expected PopupMode, got {:?}", std::mem::discriminant(other)),
+        Mode::PopupMode {
+            command, output, ..
+        } => (command, output),
+        other => panic!(
+            "expected PopupMode, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
@@ -115,7 +124,11 @@ fn display_message_expands_session_name_format() {
     app.session_name = "my_project".to_string();
     execute_command_string(&mut app, "display-message #S").unwrap();
     let msg = extract_status_message(&app);
-    assert!(msg.contains("my_project"), "format #S should expand to session name, got: {}", msg);
+    assert!(
+        msg.contains("my_project"),
+        "format #S should expand to session name, got: {}",
+        msg
+    );
 }
 
 #[test]
@@ -165,7 +178,10 @@ fn show_options_reflects_current_settings() {
     execute_command_string(&mut app, "show-options").unwrap();
     let (_, out) = extract_popup(&app);
     assert!(out.contains("mouse off"), "mouse should be off");
-    assert!(out.contains("history-limit 5000"), "history-limit should be 5000");
+    assert!(
+        out.contains("history-limit 5000"),
+        "history-limit should be 5000"
+    );
 }
 
 #[test]
@@ -192,29 +208,41 @@ fn showw_alias_same_as_show_options() {
 fn set_environment_updates_local_env() {
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, "set-environment MY_TEST_VAR hello_world").unwrap();
-    assert_eq!(app.environment.get("MY_TEST_VAR").map(|s| s.as_str()), Some("hello_world"));
+    assert_eq!(
+        app.environment.get("MY_TEST_VAR").map(|s| s.as_str()),
+        Some("hello_world")
+    );
 }
 
 #[test]
 fn setenv_alias_works() {
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, "setenv ALIAS_VAR value123").unwrap();
-    assert_eq!(app.environment.get("ALIAS_VAR").map(|s| s.as_str()), Some("value123"));
+    assert_eq!(
+        app.environment.get("ALIAS_VAR").map(|s| s.as_str()),
+        Some("value123")
+    );
 }
 
 #[test]
 fn set_environment_unset_removes_var() {
     let mut app = mock_app_with_window();
-    app.environment.insert("REMOVE_ME".to_string(), "old_value".to_string());
+    app.environment
+        .insert("REMOVE_ME".to_string(), "old_value".to_string());
     execute_command_string(&mut app, "set-environment -u REMOVE_ME").unwrap();
-    assert!(app.environment.get("REMOVE_ME").is_none(), "unset var should be removed");
+    assert!(
+        app.environment.get("REMOVE_ME").is_none(),
+        "unset var should be removed"
+    );
 }
 
 #[test]
 fn show_environment_displays_vars_in_popup() {
     let mut app = mock_app_with_window();
-    app.environment.insert("KEY1".to_string(), "val1".to_string());
-    app.environment.insert("KEY2".to_string(), "val2".to_string());
+    app.environment
+        .insert("KEY1".to_string(), "val1".to_string());
+    app.environment
+        .insert("KEY2".to_string(), "val2".to_string());
     execute_command_string(&mut app, "show-environment").unwrap();
     let (cmd, out) = extract_popup(&app);
     assert_eq!(cmd, "show-environment");
@@ -227,13 +255,17 @@ fn show_environment_empty_shows_message() {
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, "show-environment").unwrap();
     let (_, out) = extract_popup(&app);
-    assert!(out.contains("no environment"), "empty env should show feedback message");
+    assert!(
+        out.contains("no environment"),
+        "empty env should show feedback message"
+    );
 }
 
 #[test]
 fn showenv_alias_works() {
     let mut app = mock_app_with_window();
-    app.environment.insert("TESTVAR".to_string(), "tv".to_string());
+    app.environment
+        .insert("TESTVAR".to_string(), "tv".to_string());
     execute_command_string(&mut app, "showenv").unwrap();
     let (cmd, out) = extract_popup(&app);
     assert_eq!(cmd, "show-environment");
@@ -247,15 +279,26 @@ fn showenv_alias_works() {
 #[test]
 fn set_hook_creates_new_hook() {
     let mut app = mock_app_with_window();
-    execute_command_string(&mut app, "set-hook after-new-window display-message created").unwrap();
-    assert!(app.hooks.contains_key("after-new-window"), "hook should be created");
-    assert_eq!(app.hooks["after-new-window"], vec!["display-message created"]);
+    execute_command_string(
+        &mut app,
+        "set-hook after-new-window display-message created",
+    )
+    .unwrap();
+    assert!(
+        app.hooks.contains_key("after-new-window"),
+        "hook should be created"
+    );
+    assert_eq!(
+        app.hooks["after-new-window"],
+        vec!["display-message created"]
+    );
 }
 
 #[test]
 fn set_hook_append_adds_to_existing() {
     let mut app = mock_app_with_window();
-    app.hooks.insert("after-new-window".to_string(), vec!["cmd1".to_string()]);
+    app.hooks
+        .insert("after-new-window".to_string(), vec!["cmd1".to_string()]);
     execute_command_string(&mut app, "set-hook -a after-new-window cmd2").unwrap();
     assert_eq!(app.hooks["after-new-window"].len(), 2);
     assert_eq!(app.hooks["after-new-window"][1], "cmd2");
@@ -264,9 +307,13 @@ fn set_hook_append_adds_to_existing() {
 #[test]
 fn set_hook_unset_removes_hook() {
     let mut app = mock_app_with_window();
-    app.hooks.insert("my-hook".to_string(), vec!["command".to_string()]);
+    app.hooks
+        .insert("my-hook".to_string(), vec!["command".to_string()]);
     execute_command_string(&mut app, "set-hook -u my-hook").unwrap();
-    assert!(!app.hooks.contains_key("my-hook"), "hook should be removed after -u");
+    assert!(
+        !app.hooks.contains_key("my-hook"),
+        "hook should be removed after -u"
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -291,7 +338,10 @@ fn find_window_no_match_shows_feedback() {
     let mut app = mock_app_with_windows(&["alpha", "beta"]);
     execute_command_string(&mut app, "find-window nonexistent").unwrap();
     let (_, out) = extract_popup(&app);
-    assert!(out.contains("no windows matching"), "should show feedback for no matches");
+    assert!(
+        out.contains("no windows matching"),
+        "should show feedback for no matches"
+    );
 }
 
 #[test]
@@ -385,7 +435,10 @@ fn lock_server_shows_not_available_message() {
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, "lock-server").unwrap();
     let msg = extract_status_message(&app);
-    assert!(msg.contains("not available"), "lock-server should show not-available message");
+    assert!(
+        msg.contains("not available"),
+        "lock-server should show not-available message"
+    );
 }
 
 #[test]
@@ -437,7 +490,10 @@ fn suspend_client_shows_not_available() {
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, "suspend-client").unwrap();
     let msg = extract_status_message(&app);
-    assert!(msg.contains("not available"), "suspend should show not-available");
+    assert!(
+        msg.contains("not available"),
+        "suspend should show not-available"
+    );
 }
 
 #[test]
@@ -457,8 +513,11 @@ fn choose_client_shows_single_client_message() {
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, "choose-client").unwrap();
     let msg = extract_status_message(&app);
-    assert!(msg.contains("single-client") || msg.contains("only client"),
-        "choose-client should show single-client feedback, got: {}", msg);
+    assert!(
+        msg.contains("single-client") || msg.contains("only client"),
+        "choose-client should show single-client feedback, got: {}",
+        msg
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -471,10 +530,19 @@ fn customize_mode_shows_options_popup() {
     execute_command_string(&mut app, "customize-mode").unwrap();
     match &app.mode {
         Mode::CustomizeMode { options, .. } => {
-            assert!(options.iter().any(|(n, _, _)| n == "mouse"), "should display options including mouse");
-            assert!(options.iter().any(|(n, _, _)| n == "prefix"), "should display options including prefix");
+            assert!(
+                options.iter().any(|(n, _, _)| n == "mouse"),
+                "should display options including mouse"
+            );
+            assert!(
+                options.iter().any(|(n, _, _)| n == "prefix"),
+                "should display options including prefix"
+            );
         }
-        other => panic!("expected CustomizeMode for customize-mode, got {:?}", std::mem::discriminant(other)),
+        other => panic!(
+            "expected CustomizeMode for customize-mode, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
@@ -487,7 +555,11 @@ fn refresh_client_shows_status_message() {
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, "refresh-client").unwrap();
     let msg = extract_status_message(&app);
-    assert!(msg.contains("refresh"), "refresh should show feedback, got: {}", msg);
+    assert!(
+        msg.contains("refresh"),
+        "refresh should show feedback, got: {}",
+        msg
+    );
 }
 
 #[test]
@@ -531,7 +603,10 @@ fn show_messages_shows_popup() {
     execute_command_string(&mut app, "show-messages").unwrap();
     let (cmd, out) = extract_popup(&app);
     assert_eq!(cmd, "show-messages");
-    assert!(out.contains("no messages"), "empty messages log should show feedback");
+    assert!(
+        out.contains("no messages"),
+        "empty messages log should show feedback"
+    );
 }
 
 #[test]
@@ -551,14 +626,20 @@ fn set_option_local_changes_mouse() {
     let mut app = mock_app_with_window();
     app.mouse_enabled = true;
     execute_command_string(&mut app, "set-option mouse off").unwrap();
-    assert!(!app.mouse_enabled, "set-option mouse off should disable mouse locally");
+    assert!(
+        !app.mouse_enabled,
+        "set-option mouse off should disable mouse locally"
+    );
 }
 
 #[test]
 fn set_option_local_changes_history_limit() {
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, "set history-limit 9999").unwrap();
-    assert_eq!(app.history_limit, 9999, "set history-limit should update app state");
+    assert_eq!(
+        app.history_limit, 9999,
+        "set history-limit should update app state"
+    );
 }
 
 #[test]
@@ -567,8 +648,14 @@ fn bind_key_local_adds_binding() {
     execute_command_string(&mut app, "bind-key -T prefix z kill-pane").unwrap();
     // Verify a binding was added to the prefix table
     let prefix_binds = app.key_tables.get("prefix");
-    assert!(prefix_binds.is_some(), "prefix table should exist after bind-key");
-    let has_z = prefix_binds.unwrap().iter().any(|b| matches!(b.key.0, crossterm::event::KeyCode::Char('z')));
+    assert!(
+        prefix_binds.is_some(),
+        "prefix table should exist after bind-key"
+    );
+    let has_z = prefix_binds
+        .unwrap()
+        .iter()
+        .any(|b| matches!(b.key.0, crossterm::event::KeyCode::Char('z')));
     assert!(has_z, "should have a binding for 'z' key");
 }
 
@@ -585,7 +672,10 @@ fn source_file_loads_config_locally() {
     std::fs::write(&tmp_file, "set -g history-limit 7777\n").unwrap();
     execute_command_string(&mut app, &format!("source-file {}", tmp_file.display())).unwrap();
     let _ = std::fs::remove_file(&tmp_file);
-    assert_eq!(app.history_limit, 7777, "source-file should load config and change history-limit");
+    assert_eq!(
+        app.history_limit, 7777,
+        "source-file should load config and change history-limit"
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -607,7 +697,10 @@ fn if_shell_format_mode_false_runs_false_cmd() {
     app.active_idx = 1;
     // With -F, 0 is false
     execute_command_string(&mut app, "if-shell -F 0 next-window previous-window").unwrap();
-    assert_eq!(app.active_idx, 0, "false condition should run previous-window");
+    assert_eq!(
+        app.active_idx, 0,
+        "false condition should run previous-window"
+    );
 }
 
 #[test]
@@ -615,7 +708,10 @@ fn if_shell_literal_true_runs_true_cmd() {
     let mut app = mock_app_with_windows(&["a", "b"]);
     app.active_idx = 0;
     execute_command_string(&mut app, "if-shell true next-window").unwrap();
-    assert_eq!(app.active_idx, 1, "condition 'true' should run the true command");
+    assert_eq!(
+        app.active_idx, 1,
+        "condition 'true' should run the true command"
+    );
 }
 
 #[test]
@@ -624,7 +720,10 @@ fn if_shell_literal_false_runs_false_cmd() {
     app.active_idx = 0;
     execute_command_string(&mut app, "if-shell false next-window previous-window").unwrap();
     // "false" condition: runs previous-window, which wraps from 0 to 1
-    assert_eq!(app.active_idx, 1, "condition 'false' should run the false command");
+    assert_eq!(
+        app.active_idx, 1,
+        "condition 'false' should run the false command"
+    );
 }
 
 // Regression: #183 — if-shell -F must expand format variables before truthiness check
@@ -633,10 +732,18 @@ fn if_shell_format_expands_user_option_truthy() {
     let mut app = mock_app_with_windows(&["a", "b", "c"]);
     app.active_idx = 0;
     // Set @pane-is-vim to "1" (truthy)
-    app.user_options.insert("@pane-is-vim".to_string(), "1".to_string());
+    app.user_options
+        .insert("@pane-is-vim".to_string(), "1".to_string());
     // The format string #{@pane-is-vim} must be expanded to "1" before evaluation
-    execute_command_string(&mut app, r##"if-shell -F "#{@pane-is-vim}" next-window previous-window"##).unwrap();
-    assert_eq!(app.active_idx, 1, "@pane-is-vim=1 should expand to truthy, running next-window");
+    execute_command_string(
+        &mut app,
+        r##"if-shell -F "#{@pane-is-vim}" next-window previous-window"##,
+    )
+    .unwrap();
+    assert_eq!(
+        app.active_idx, 1,
+        "@pane-is-vim=1 should expand to truthy, running next-window"
+    );
 }
 
 #[test]
@@ -644,9 +751,17 @@ fn if_shell_format_expands_user_option_falsy() {
     let mut app = mock_app_with_windows(&["a", "b", "c"]);
     app.active_idx = 1;
     // Set @pane-is-vim to "0" (falsy)
-    app.user_options.insert("@pane-is-vim".to_string(), "0".to_string());
-    execute_command_string(&mut app, r##"if-shell -F "#{@pane-is-vim}" next-window previous-window"##).unwrap();
-    assert_eq!(app.active_idx, 0, "@pane-is-vim=0 should expand to falsy, running previous-window");
+    app.user_options
+        .insert("@pane-is-vim".to_string(), "0".to_string());
+    execute_command_string(
+        &mut app,
+        r##"if-shell -F "#{@pane-is-vim}" next-window previous-window"##,
+    )
+    .unwrap();
+    assert_eq!(
+        app.active_idx, 0,
+        "@pane-is-vim=0 should expand to falsy, running previous-window"
+    );
 }
 
 #[test]
@@ -654,8 +769,15 @@ fn if_shell_format_expands_unset_option_as_falsy() {
     let mut app = mock_app_with_windows(&["a", "b", "c"]);
     app.active_idx = 1;
     // @pane-is-vim is NOT set, so #{@pane-is-vim} should expand to "" (empty = falsy)
-    execute_command_string(&mut app, r##"if-shell -F "#{@pane-is-vim}" next-window previous-window"##).unwrap();
-    assert_eq!(app.active_idx, 0, "unset @pane-is-vim should expand to empty (falsy), running previous-window");
+    execute_command_string(
+        &mut app,
+        r##"if-shell -F "#{@pane-is-vim}" next-window previous-window"##,
+    )
+    .unwrap();
+    assert_eq!(
+        app.active_idx, 0,
+        "unset @pane-is-vim should expand to empty (falsy), running previous-window"
+    );
 }
 
 #[test]
@@ -663,8 +785,15 @@ fn if_shell_format_expands_session_name() {
     let mut app = mock_app_with_windows(&["a", "b", "c"]);
     app.active_idx = 0;
     // #{session_name} is always non-empty ("test_session"), so true branch should run
-    execute_command_string(&mut app, r##"if-shell -F "#{session_name}" next-window previous-window"##).unwrap();
-    assert_eq!(app.active_idx, 1, "session_name should expand to non-empty truthy value");
+    execute_command_string(
+        &mut app,
+        r##"if-shell -F "#{session_name}" next-window previous-window"##,
+    )
+    .unwrap();
+    assert_eq!(
+        app.active_idx, 1,
+        "session_name should expand to non-empty truthy value"
+    );
 }
 
 #[test]
@@ -672,8 +801,15 @@ fn if_shell_format_expands_window_zoomed_flag() {
     let mut app = mock_app_with_windows(&["a", "b", "c"]);
     app.active_idx = 1;
     // window_zoomed_flag is 0 when not zoomed, should be falsy
-    execute_command_string(&mut app, r##"if-shell -F "#{window_zoomed_flag}" next-window previous-window"##).unwrap();
-    assert_eq!(app.active_idx, 0, "window_zoomed_flag=0 (not zoomed) should be falsy");
+    execute_command_string(
+        &mut app,
+        r##"if-shell -F "#{window_zoomed_flag}" next-window previous-window"##,
+    )
+    .unwrap();
+    assert_eq!(
+        app.active_idx, 0,
+        "window_zoomed_flag=0 (not zoomed) should be falsy"
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -690,7 +826,10 @@ fn previous_layout_changes_layout_index() {
     let new_idx = app.windows[0].layout_index;
     // If there is only one empty window the layout might not visually change,
     // but the layout_index bookkeeping should still advance.
-    assert!(new_idx != orig_idx || orig_idx == 0, "layout index should change or start at 0");
+    assert!(
+        new_idx != orig_idx || orig_idx == 0,
+        "layout index should change or start at 0"
+    );
 }
 
 #[test]
@@ -727,7 +866,10 @@ fn next_layout_changes_layout_index() {
     let orig_idx = app.windows[0].layout_index;
     execute_command_string(&mut app, "next-layout").unwrap();
     let new_idx = app.windows[0].layout_index;
-    assert!(new_idx != orig_idx || orig_idx == 0, "layout index should change");
+    assert!(
+        new_idx != orig_idx || orig_idx == 0,
+        "layout index should change"
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -889,34 +1031,93 @@ fn resizep_alias_zoom() {
 #[test]
 fn every_listed_command_parses_to_action() {
     let commands = [
-        "attach-session", "detach-client", "has-session", "kill-server",
-        "kill-session", "list-sessions", "new-session", "rename-session foo",
-        "switch-client", "choose-tree", "find-window test", "kill-window",
-        "last-window", "link-window", "list-windows", "move-window -t 0",
-        "new-window", "next-window", "previous-window", "rename-window test",
-        "resize-window", "respawn-window", "rotate-window", "select-window -t 0",
-        "swap-window -t 0", "unlink-window", "break-pane", "capture-pane",
-        "display-panes", "join-pane -t 0", "kill-pane", "last-pane",
-        "move-pane -t 0", "pipe-pane", "resize-pane -Z", "respawn-pane",
-        "select-pane -U", "split-window", "swap-pane -D",
-        "next-layout", "previous-layout", "select-layout tiled",
-        "choose-buffer", "clear-history", "copy-mode", "delete-buffer",
-        "list-buffers", "load-buffer /tmp/test", "paste-buffer",
-        "save-buffer /tmp/test", "set-buffer hello", "show-buffer",
-        "bind-key -T prefix x kill-pane", "list-keys", "unbind-key x",
-        "set-option mouse on", "set-window-option", "show-options",
-        "show-window-options", "source-file /tmp/test.conf",
-        "clock-mode", "command-prompt", "display-menu",
-        "display-message hello", "display-popup", "list-commands",
-        "server-info", "confirm-before kill-server", "if-shell true echo",
-        "list-clients", "refresh-client", "run-shell echo",
-        "send-keys hello", "set-environment FOO bar", "set-hook after-new-window echo",
-        "show-environment", "show-hooks", "show-messages",
+        "attach-session",
+        "detach-client",
+        "has-session",
+        "kill-server",
+        "kill-session",
+        "list-sessions",
+        "new-session",
+        "rename-session foo",
+        "switch-client",
+        "choose-tree",
+        "find-window test",
+        "kill-window",
+        "last-window",
+        "link-window",
+        "list-windows",
+        "move-window -t 0",
+        "new-window",
+        "next-window",
+        "previous-window",
+        "rename-window test",
+        "resize-window",
+        "respawn-window",
+        "rotate-window",
+        "select-window -t 0",
+        "swap-window -t 0",
+        "unlink-window",
+        "break-pane",
+        "capture-pane",
+        "display-panes",
+        "join-pane -t 0",
+        "kill-pane",
+        "last-pane",
+        "move-pane -t 0",
+        "pipe-pane",
+        "resize-pane -Z",
+        "respawn-pane",
+        "select-pane -U",
+        "split-window",
+        "swap-pane -D",
+        "next-layout",
+        "previous-layout",
+        "select-layout tiled",
+        "choose-buffer",
+        "clear-history",
+        "copy-mode",
+        "delete-buffer",
+        "list-buffers",
+        "load-buffer /tmp/test",
+        "paste-buffer",
+        "save-buffer /tmp/test",
+        "set-buffer hello",
+        "show-buffer",
+        "bind-key -T prefix x kill-pane",
+        "list-keys",
+        "unbind-key x",
+        "set-option mouse on",
+        "set-window-option",
+        "show-options",
+        "show-window-options",
+        "source-file /tmp/test.conf",
+        "clock-mode",
+        "command-prompt",
+        "display-menu",
+        "display-message hello",
+        "display-popup",
+        "list-commands",
+        "server-info",
+        "confirm-before kill-server",
+        "if-shell true echo",
+        "list-clients",
+        "refresh-client",
+        "run-shell echo",
+        "send-keys hello",
+        "set-environment FOO bar",
+        "set-hook after-new-window echo",
+        "show-environment",
+        "show-hooks",
+        "show-messages",
         "wait-for test-channel",
     ];
     for cmd in &commands {
         let action = parse_command_to_action(cmd);
-        assert!(action.is_some(), "command '{}' should parse to an Action", cmd);
+        assert!(
+            action.is_some(),
+            "command '{}' should parse to an Action",
+            cmd
+        );
     }
 }
 
@@ -929,36 +1130,61 @@ fn every_command_does_not_panic_embedded_mode() {
     // Commands that should complete without panicking in embedded mode
     // (no control_port, so local fallbacks are exercised)
     let safe_commands = [
-        "list-windows", "list-panes", "list-clients", "list-commands",
-        "list-keys", "list-sessions", "list-buffers",
-        "show-hooks", "show-buffer", "show-options", "show-window-options",
-        "show-messages", "show-environment",
-        "choose-tree", "choose-buffer",
-        "clock-mode", "command-prompt", "copy-mode",
+        "list-windows",
+        "list-panes",
+        "list-clients",
+        "list-commands",
+        "list-keys",
+        "list-sessions",
+        "list-buffers",
+        "show-hooks",
+        "show-buffer",
+        "show-options",
+        "show-window-options",
+        "show-messages",
+        "show-environment",
+        "choose-tree",
+        "choose-buffer",
+        "clock-mode",
+        "command-prompt",
+        "copy-mode",
         "display-panes",
         "display-message hello",
-        "set-buffer testdata", "delete-buffer",
-        "rename-window newname", "rename-session newsess",
+        "set-buffer testdata",
+        "delete-buffer",
+        "rename-window newname",
+        "rename-session newsess",
         "toggle-sync",
         "set-option mouse on",
         "set-environment TEST_VAR value",
         "set-hook my-hook echo",
         "find-window shell",
         "confirm-before echo",
-        "has-session", "start-server",
+        "has-session",
+        "start-server",
         "server-info",
-        "lock-server", "lock-client", "lock-session",
-        "suspend-client", "choose-client", "customize-mode",
+        "lock-server",
+        "lock-client",
+        "lock-session",
+        "suspend-client",
+        "choose-client",
+        "customize-mode",
         "refresh-client",
-        "break-pane", "swap-pane -D", "rotate-window",
+        "break-pane",
+        "swap-pane -D",
+        "rotate-window",
         "respawn-pane",
-        "swap-window -t 0", "move-window -t 0",
+        "swap-window -t 0",
+        "move-window -t 0",
         "unlink-window",
-        "next-layout", "previous-layout",
+        "next-layout",
+        "previous-layout",
         "select-layout tiled",
         "clear-history",
-        "resize-pane -U", "resize-pane -D",
-        "resize-pane -L", "resize-pane -R",
+        "resize-pane -U",
+        "resize-pane -D",
+        "resize-pane -L",
+        "resize-pane -R",
         "link-window",
         "if-shell -F 1 list-windows",
     ];
@@ -966,6 +1192,11 @@ fn every_command_does_not_panic_embedded_mode() {
         let mut app = mock_app_with_windows(&["test1", "test2"]);
         app.paste_buffers.push("buffer_data".to_string());
         let result = execute_command_string(&mut app, cmd);
-        assert!(result.is_ok(), "command '{}' panicked or returned error: {:?}", cmd, result);
+        assert!(
+            result.is_ok(),
+            "command '{}' panicked or returned error: {:?}",
+            cmd,
+            result
+        );
     }
 }

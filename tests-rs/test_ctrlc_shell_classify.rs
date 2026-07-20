@@ -6,14 +6,26 @@
 // itself (live raw-mode TUIs).  Misclassifying a TUI as a shell reintroduces
 // the bug, so lock the classification down here.
 
+use super::mouse_inject::{ctrl_c_mode_action, CtrlCModeAction};
 use super::process_info::is_shell_exe;
 
 #[test]
 fn shells_are_classified_as_shell() {
     for s in [
-        "pwsh.exe", "pwsh", "powershell.exe", "powershell",
-        "cmd.exe", "cmd", "bash", "bash.exe", "sh", "dash",
-        "zsh", "fish.exe", "nu.exe", "busybox.exe",
+        "pwsh.exe",
+        "pwsh",
+        "powershell.exe",
+        "powershell",
+        "cmd.exe",
+        "cmd",
+        "bash",
+        "bash.exe",
+        "sh",
+        "dash",
+        "zsh",
+        "fish.exe",
+        "nu.exe",
+        "busybox.exe",
     ] {
         assert!(is_shell_exe(s), "{s:?} should be classified as a shell");
     }
@@ -23,8 +35,15 @@ fn shells_are_classified_as_shell() {
 fn raw_mode_tui_apps_are_not_shells() {
     // These get raw 0x03 and decide copy-vs-interrupt themselves.
     for s in [
-        "copilot.exe", "copilot", "node.exe", "node",
-        "vim.exe", "nvim.exe", "nvim", "python.exe", "btop.exe",
+        "copilot.exe",
+        "copilot",
+        "node.exe",
+        "node",
+        "vim.exe",
+        "nvim.exe",
+        "nvim",
+        "python.exe",
+        "btop.exe",
     ] {
         assert!(!is_shell_exe(s), "{s:?} must NOT be classified as a shell");
     }
@@ -36,4 +55,25 @@ fn cooked_console_app_is_not_shell() {
     // still gets the signal via the processed-input branch, not via shell
     // classification.  It must not be classified as a shell.
     assert!(!is_shell_exe("ping.exe"));
+}
+
+#[test]
+fn cooked_console_sends_signal() {
+    assert_eq!(ctrl_c_mode_action(true, false), CtrlCModeAction::SendSignal);
+}
+
+#[test]
+fn ordinary_ctrl_c_skips_signal_in_raw_mode() {
+    assert_eq!(
+        ctrl_c_mode_action(false, false),
+        CtrlCModeAction::SkipSignal
+    );
+}
+
+#[test]
+fn forced_ctrl_c_enables_processed_input_in_raw_mode() {
+    assert_eq!(
+        ctrl_c_mode_action(false, true),
+        CtrlCModeAction::EnableProcessedAndSend
+    );
 }

@@ -66,8 +66,20 @@ fn rgb_color_and_modifiers_emitted() {
 #[test]
 fn two_runs_each_wrapped() {
     let runs = vec![
-        HyperlinkRun { x: 0, y: 0, text: "a".into(), uri: "u1".into(), style: Style::default() },
-        HyperlinkRun { x: 3, y: 1, text: "b".into(), uri: "u2".into(), style: Style::default() },
+        HyperlinkRun {
+            x: 0,
+            y: 0,
+            text: "a".into(),
+            uri: "u1".into(),
+            style: Style::default(),
+        },
+        HyperlinkRun {
+            x: 3,
+            y: 1,
+            text: "b".into(),
+            uri: "u2".into(),
+            style: Style::default(),
+        },
     ];
     let s = build_osc8_overlay(&runs);
     assert!(s.contains("\x1b]8;;u1\x1b\\a\x1b]8;;\x1b\\"));

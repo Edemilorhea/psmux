@@ -45,8 +45,11 @@ fn b64_decode(input: &[u8]) -> Vec<u8> {
         }
         r
     }
-    let trimmed: Vec<u8> =
-        input.iter().copied().filter(|b| *b != b'=' && !b.is_ascii_whitespace()).collect();
+    let trimmed: Vec<u8> = input
+        .iter()
+        .copied()
+        .filter(|b| *b != b'=' && !b.is_ascii_whitespace())
+        .collect();
     let mut out = Vec::new();
     let mut acc: u32 = 0;
     let mut bits = 0;
@@ -66,14 +69,11 @@ fn b64_decode(input: &[u8]) -> Vec<u8> {
 }
 
 fn b64_encode(input: &[u8]) -> String {
-    const ALPHA: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const ALPHA: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::new();
     let mut i = 0;
     while i + 3 <= input.len() {
-        let n = ((input[i] as u32) << 16)
-            | ((input[i + 1] as u32) << 8)
-            | (input[i + 2] as u32);
+        let n = ((input[i] as u32) << 16) | ((input[i + 1] as u32) << 8) | (input[i + 2] as u32);
         out.push(ALPHA[((n >> 18) & 0x3f) as usize] as char);
         out.push(ALPHA[((n >> 12) & 0x3f) as usize] as char);
         out.push(ALPHA[((n >> 6) & 0x3f) as usize] as char);
@@ -119,7 +119,9 @@ struct MockApp {
 
 impl MockApp {
     fn new() -> Self {
-        Self { clipboard_osc52: None }
+        Self {
+            clipboard_osc52: None,
+        }
     }
 
     /// Mirror of the server drain step (see top-of-file comment).
@@ -159,7 +161,10 @@ fn pipeline(child_payload: &str) -> Vec<u8> {
     // (3) Server drains the staged slot.
     let mut app = MockApp::new();
     app.drain_pane(&mut parser);
-    assert!(app.clipboard_osc52.is_some(), "server drain must have staged text");
+    assert!(
+        app.clipboard_osc52.is_some(),
+        "server drain must have staged text"
+    );
 
     // (4) Client emits OSC 52 to its stdout (what Windows Terminal sees).
     let mut client_stdout = Vec::new();
@@ -183,11 +188,15 @@ fn end_to_end_round_trips_simple_ascii() {
     let after = &client_out[pos + intro.len()..];
 
     // BEL terminator.
-    let bel_pos = after.iter().position(|b| *b == 0x07).expect("BEL terminator");
+    let bel_pos = after
+        .iter()
+        .position(|b| *b == 0x07)
+        .expect("BEL terminator");
     let b64 = &after[..bel_pos];
     let decoded = b64_decode(b64);
     assert_eq!(
-        decoded, payload.as_bytes(),
+        decoded,
+        payload.as_bytes(),
         "OSC 52 on client stdout must carry the original child payload"
     );
 }
@@ -227,8 +236,7 @@ fn end_to_end_claude_code_slash_copy_shape() {
     // The actual shape Claude Code's /copy emits is a moderately large
     // multi-line block.  Make sure base64 padding and lengths > 80 work
     // through the whole pipeline.
-    let payload =
-        "First line of code\n\
+    let payload = "First line of code\n\
          fn foo() -> i32 {\n\
          \x20\x20\x20\x20let x = 42;\n\
          \x20\x20\x20\x20x + 1\n\
@@ -244,7 +252,8 @@ fn end_to_end_claude_code_slash_copy_shape() {
     let bel_pos = after.iter().position(|b| *b == 0x07).unwrap();
     let decoded = b64_decode(&after[..bel_pos]);
     assert_eq!(
-        decoded, payload.as_bytes(),
+        decoded,
+        payload.as_bytes(),
         "Claude /copy payload must round-trip end-to-end"
     );
 }

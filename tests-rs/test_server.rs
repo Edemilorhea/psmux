@@ -1,5 +1,5 @@
-use super::should_spawn_warm_server;
 use super::helpers::{combined_data_version, list_windows_json_with_tabs};
+use super::should_spawn_warm_server;
 use crate::types::AppState;
 
 // ── Hook set/replace/unset tests (issue #133) ───────────────────
@@ -7,8 +7,14 @@ use crate::types::AppState;
 #[test]
 fn set_hook_replaces_existing_hook() {
     let mut app = AppState::new("test".to_string());
-    crate::config::parse_config_line(&mut app, "set-hook -g client-attached 'display-message first'");
-    crate::config::parse_config_line(&mut app, "set-hook -g client-attached 'display-message second'");
+    crate::config::parse_config_line(
+        &mut app,
+        "set-hook -g client-attached 'display-message first'",
+    );
+    crate::config::parse_config_line(
+        &mut app,
+        "set-hook -g client-attached 'display-message second'",
+    );
     let cmds = app.hooks.get("client-attached").unwrap();
     assert_eq!(cmds.len(), 1, "hook should be replaced, not appended");
     assert_eq!(cmds[0], "display-message second");
@@ -17,10 +23,16 @@ fn set_hook_replaces_existing_hook() {
 #[test]
 fn set_hook_unset_removes_hook() {
     let mut app = AppState::new("test".to_string());
-    crate::config::parse_config_line(&mut app, "set-hook -g client-attached 'display-message hello'");
+    crate::config::parse_config_line(
+        &mut app,
+        "set-hook -g client-attached 'display-message hello'",
+    );
     assert!(app.hooks.contains_key("client-attached"));
     crate::config::parse_config_line(&mut app, "set-hook -gu client-attached");
-    assert!(!app.hooks.contains_key("client-attached"), "hook should be removed by -gu");
+    assert!(
+        !app.hooks.contains_key("client-attached"),
+        "hook should be removed by -gu"
+    );
 }
 
 #[test]
@@ -49,7 +61,10 @@ fn set_hook_unset_with_u_flag() {
     let mut app = AppState::new("test".to_string());
     crate::config::parse_config_line(&mut app, "set-hook -g client-attached 'hello'");
     crate::config::parse_config_line(&mut app, "set-hook -u client-attached");
-    assert!(!app.hooks.contains_key("client-attached"), "hook should be removed by -u");
+    assert!(
+        !app.hooks.contains_key("client-attached"),
+        "hook should be removed by -u"
+    );
 }
 
 // ── Hook -ga (append) tests (issue #133 follow-up) ─────────────
@@ -57,8 +72,14 @@ fn set_hook_unset_with_u_flag() {
 #[test]
 fn set_hook_ga_appends_to_existing() {
     let mut app = AppState::new("test".to_string());
-    crate::config::parse_config_line(&mut app, "set-hook -g client-attached 'display-message first'");
-    crate::config::parse_config_line(&mut app, "set-hook -ga client-attached 'display-message second'");
+    crate::config::parse_config_line(
+        &mut app,
+        "set-hook -g client-attached 'display-message first'",
+    );
+    crate::config::parse_config_line(
+        &mut app,
+        "set-hook -ga client-attached 'display-message second'",
+    );
     let cmds = app.hooks.get("client-attached").unwrap();
     assert_eq!(cmds.len(), 2, "-ga should append, giving 2 handlers");
     assert_eq!(cmds[0], "display-message first");
@@ -68,7 +89,10 @@ fn set_hook_ga_appends_to_existing() {
 #[test]
 fn set_hook_ga_creates_if_missing() {
     let mut app = AppState::new("test".to_string());
-    crate::config::parse_config_line(&mut app, "set-hook -ga client-attached 'display-message only'");
+    crate::config::parse_config_line(
+        &mut app,
+        "set-hook -ga client-attached 'display-message only'",
+    );
     let cmds = app.hooks.get("client-attached").unwrap();
     assert_eq!(cmds.len(), 1, "-ga on missing hook should create it");
     assert_eq!(cmds[0], "display-message only");
@@ -95,7 +119,10 @@ fn set_hook_gu_removes_all_appended_hooks() {
     crate::config::parse_config_line(&mut app, "set-hook -ga client-attached 'cmd-b'");
     assert_eq!(app.hooks["client-attached"].len(), 2);
     crate::config::parse_config_line(&mut app, "set-hook -gu client-attached");
-    assert!(!app.hooks.contains_key("client-attached"), "-gu should remove all handlers");
+    assert!(
+        !app.hooks.contains_key("client-attached"),
+        "-gu should remove all handlers"
+    );
 }
 
 #[test]
@@ -169,7 +196,10 @@ fn warm_server_does_not_run_status_interval_timer() {
 fn is_warm_server_tracks_the_reserved_name() {
     // Guards the double-fire fix; see AppState::is_warm_server.
     let mut app = AppState::new("__warm__".to_string());
-    assert!(app.is_warm_server(), "the __warm__ pre-spawn server is warm");
+    assert!(
+        app.is_warm_server(),
+        "the __warm__ pre-spawn server is warm"
+    );
 
     // Claiming a warm server renames it to the real session; it is no longer warm.
     app.session_name = "main".to_string();
@@ -228,9 +258,9 @@ fn set_option_silence_action() {
 
 // ── Root table binding tests (discussion #130: vim-style C-hjkl nav) ────
 
-use crossterm::event::{KeyCode, KeyModifiers};
 use crate::config::{normalize_key_for_binding, parse_bind_key};
 use crate::types::{Action, FocusDir};
+use crossterm::event::{KeyCode, KeyModifiers};
 
 #[test]
 fn bind_key_n_creates_root_binding() {
@@ -239,8 +269,10 @@ fn bind_key_n_creates_root_binding() {
     let root = app.key_tables.get("root").expect("root table should exist");
     assert_eq!(root.len(), 1, "root table should have one binding");
     let bind = &root[0];
-    assert!(matches!(bind.action, Action::MoveFocus(FocusDir::Left)),
-        "C-h should be bound to select-pane -L");
+    assert!(
+        matches!(bind.action, Action::MoveFocus(FocusDir::Left)),
+        "C-h should be bound to select-pane -L"
+    );
 }
 
 #[test]
@@ -261,10 +293,16 @@ fn bind_key_n_all_vim_directions() {
     ];
     for (ch, dir) in expected {
         let key = normalize_key_for_binding((KeyCode::Char(ch), KeyModifiers::CONTROL));
-        let bind = root.iter().find(|b| b.key == key)
+        let bind = root
+            .iter()
+            .find(|b| b.key == key)
             .unwrap_or_else(|| panic!("binding for C-{} should exist", ch));
-        assert!(matches!(&bind.action, Action::MoveFocus(d) if *d == dir),
-            "C-{} should be bound to {:?}", ch, dir);
+        assert!(
+            matches!(&bind.action, Action::MoveFocus(d) if *d == dir),
+            "C-{} should be bound to {:?}",
+            ch,
+            dir
+        );
     }
 }
 
@@ -276,8 +314,10 @@ fn ctrl_h_binding_matches_windows_key_event() {
     let root = app.key_tables.get("root").unwrap();
 
     let win_key = normalize_key_for_binding((KeyCode::Char('h'), KeyModifiers::CONTROL));
-    assert!(root.iter().any(|b| b.key == win_key),
-        "C-h binding must match Char('h')+CONTROL key event");
+    assert!(
+        root.iter().any(|b| b.key == win_key),
+        "C-h binding must match Char('h')+CONTROL key event"
+    );
 }
 
 #[test]
@@ -285,24 +325,24 @@ fn backspace_and_ctrl_h_are_distinct_on_windows() {
     // On Windows, Backspace and Ctrl+H are distinct keys — they must NOT alias
     let backspace = normalize_key_for_binding((KeyCode::Backspace, KeyModifiers::empty()));
     let ctrl_h = normalize_key_for_binding((KeyCode::Char('h'), KeyModifiers::CONTROL));
-    assert_ne!(backspace, ctrl_h,
-        "Backspace and C-h must be distinct on Windows (no Unix aliasing)");
+    assert_ne!(
+        backspace, ctrl_h,
+        "Backspace and C-h must be distinct on Windows (no Unix aliasing)"
+    );
 }
 
 #[test]
 fn tab_and_ctrl_i_are_distinct_on_windows() {
     let tab = normalize_key_for_binding((KeyCode::Tab, KeyModifiers::empty()));
     let ctrl_i = normalize_key_for_binding((KeyCode::Char('i'), KeyModifiers::CONTROL));
-    assert_ne!(tab, ctrl_i,
-        "Tab and C-i must be distinct on Windows");
+    assert_ne!(tab, ctrl_i, "Tab and C-i must be distinct on Windows");
 }
 
 #[test]
 fn enter_and_ctrl_m_are_distinct_on_windows() {
     let enter = normalize_key_for_binding((KeyCode::Enter, KeyModifiers::empty()));
     let ctrl_m = normalize_key_for_binding((KeyCode::Char('m'), KeyModifiers::CONTROL));
-    assert_ne!(enter, ctrl_m,
-        "Enter and C-m must be distinct on Windows");
+    assert_ne!(enter, ctrl_m, "Enter and C-m must be distinct on Windows");
 }
 
 #[test]
@@ -325,16 +365,26 @@ fn bind_key_select_pane_z_stays_as_command() {
     crate::config::parse_bind_key(&mut app, "bind-key -n C-h select-pane -Z -L");
     let root = app.key_tables.get("root").expect("root table should exist");
     let bind = &root[0];
-    assert!(matches!(&bind.action, crate::types::Action::Command(cmd) if cmd == "select-pane -Z -L"));
+    assert!(
+        matches!(&bind.action, crate::types::Action::Command(cmd) if cmd == "select-pane -Z -L")
+    );
 }
 
 #[test]
 fn parse_config_line_select_pane_z_stays_as_command() {
     let mut app = AppState::new("test".to_string());
     crate::config::parse_config_line(&mut app, "bind-key -r h select-pane -Z -L");
-    let prefix = app.key_tables.get("prefix").expect("prefix table should exist");
-    let bind = prefix.iter().find(|b| matches!(b.key.0, KeyCode::Char('h'))).expect("h binding should exist");
-    assert!(matches!(&bind.action, crate::types::Action::Command(cmd) if cmd == "select-pane -Z -L"));
+    let prefix = app
+        .key_tables
+        .get("prefix")
+        .expect("prefix table should exist");
+    let bind = prefix
+        .iter()
+        .find(|b| matches!(b.key.0, KeyCode::Char('h')))
+        .expect("h binding should exist");
+    assert!(
+        matches!(&bind.action, crate::types::Action::Command(cmd) if cmd == "select-pane -Z -L")
+    );
 }
 
 #[test]
@@ -358,7 +408,10 @@ fn combined_data_version_changes_on_copy_pos() {
 
     app.copy_pos = Some((5, 11));
     let v3 = combined_data_version(&app);
-    assert_ne!(v2, v3, "version must change when copy cursor column changes");
+    assert_ne!(
+        v2, v3,
+        "version must change when copy cursor column changes"
+    );
 
     app.copy_pos = Some((6, 11));
     let v4 = combined_data_version(&app);
@@ -372,11 +425,17 @@ fn combined_data_version_changes_on_scroll_offset() {
 
     app.copy_scroll_offset = 5;
     let v2 = combined_data_version(&app);
-    assert_ne!(v1, v2, "version must change when copy_scroll_offset changes");
+    assert_ne!(
+        v1, v2,
+        "version must change when copy_scroll_offset changes"
+    );
 
     app.copy_scroll_offset = 6;
     let v3 = combined_data_version(&app);
-    assert_ne!(v2, v3, "version must change on each scroll offset increment");
+    assert_ne!(
+        v2, v3,
+        "version must change on each scroll offset increment"
+    );
 }
 
 #[test]
@@ -417,7 +476,10 @@ fn bell_action_none_suppresses_bell_forward() {
     // With bell-action none, check_window_activity should never set bell_forward
     // (no panes to trigger, but verify the option is accepted)
     let hooks = super::helpers::check_window_activity(&mut app);
-    assert!(!app.bell_forward, "bell_forward must stay false with bell-action none");
+    assert!(
+        !app.bell_forward,
+        "bell_forward must stay false with bell-action none"
+    );
     assert!(hooks.is_empty());
 }
 
@@ -486,8 +548,11 @@ fn list_windows_tab_text_reflects_zoom_flag() {
 
     // Before zoom: tab_text should NOT contain +
     let json_before = list_windows_json_with_tabs(&app).unwrap();
-    assert!(json_before.contains("editor  ") || !json_before.contains("editor +"),
-        "before zoom, tab_text should not show +, got: {}", json_before);
+    assert!(
+        json_before.contains("editor  ") || !json_before.contains("editor +"),
+        "before zoom, tab_text should not show +, got: {}",
+        json_before
+    );
 
     // Simulate zoom toggle
     app.windows[0].zoom_saved = Some(vec![(vec![], vec![50, 50])]);
@@ -496,8 +561,11 @@ fn list_windows_tab_text_reflects_zoom_flag() {
     // list_windows_json_with_tabs is actually re-called, which
     // requires meta_dirty = true in the server loop)
     let json_after = list_windows_json_with_tabs(&app).unwrap();
-    assert!(json_after.contains("editor +"),
-        "after zoom, tab_text must show +, got: {}", json_after);
+    assert!(
+        json_after.contains("editor +"),
+        "after zoom, tab_text must show +, got: {}",
+        json_after
+    );
 }
 
 #[test]
@@ -519,7 +587,15 @@ fn list_windows_tab_text_per_window_zoom() {
 
     let json = list_windows_json_with_tabs(&app).unwrap();
     // Window 0 (zoomed) should show +
-    assert!(json.contains("editor +"), "zoomed window 0 must show +, got: {}", json);
+    assert!(
+        json.contains("editor +"),
+        "zoomed window 0 must show +, got: {}",
+        json
+    );
     // Window 1 (not zoomed) should show space, not +
-    assert!(!json.contains("shell +"), "non-zoomed window 1 must not show +, got: {}", json);
+    assert!(
+        !json.contains("shell +"),
+        "non-zoomed window 1 must not show +, got: {}",
+        json
+    );
 }

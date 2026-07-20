@@ -29,15 +29,25 @@ ENABLE_VIRTUAL_TERMINAL_INPUT = 0x0200
 
 hIn = k32.GetStdHandle(STD_INPUT_HANDLE)
 old = wintypes.DWORD()
-k32.GetConsoleMode(hIn, ctypes.byref(old))
+initial_ok = k32.GetConsoleMode(hIn, ctypes.byref(old))
 
 # Raw + VT input, exactly like a real TUI app.
 new_mode = ENABLE_VIRTUAL_TERMINAL_INPUT
 ok = k32.SetConsoleMode(hIn, new_mode)
+actual = wintypes.DWORD()
+readback_ok = k32.GetConsoleMode(hIn, ctypes.byref(actual))
+mode_ok = bool(initial_ok and ok and readback_ok and actual.value == new_mode)
 
 with open(logpath, "w") as f:
-    f.write("READER_START old_mode=0x%04x set_ok=%s new_mode=0x%04x\n" % (old.value, bool(ok), new_mode))
+    f.write(
+        "READER_START old_mode=0x%04x set_ok=%s new_mode=0x%04x "
+        "actual_mode=0x%04x mode_ok=%s\n"
+        % (old.value, bool(ok), new_mode, actual.value, mode_ok)
+    )
     f.flush()
+
+if not mode_ok:
+    sys.exit(2)
 
 # Read raw bytes and log hex of each.
 while True:

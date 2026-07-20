@@ -19,7 +19,11 @@ fn mk_app() -> AppState {
 
 fn mk_window(name: &str, id: usize) -> crate::types::Window {
     crate::types::Window {
-        root: Node::Split { kind: crate::types::LayoutKind::Horizontal, sizes: vec![], children: vec![] },
+        root: Node::Split {
+            kind: crate::types::LayoutKind::Horizontal,
+            sizes: vec![],
+            children: vec![],
+        },
         active_path: vec![],
         name: name.to_string(),
         id,
@@ -52,11 +56,26 @@ fn append_extra_style_json_emits_all_five_dropped_styles() {
     append_extra_style_json(&mut buf, &app);
 
     // Every dropped option is now present with its configured value.
-    assert!(buf.contains("\"status_left_style\":\"fg=colour201\""), "status-left-style missing: {buf}");
-    assert!(buf.contains("\"status_right_style\":\"bg=colour21\""), "status-right-style missing: {buf}");
-    assert!(buf.contains("\"wsa_style\":\"reverse\""), "activity-style missing: {buf}");
-    assert!(buf.contains("\"wsb_style\":\"bg=blue\""), "bell-style missing: {buf}");
-    assert!(buf.contains("\"wsl_style\":\"fg=green\""), "last-style missing: {buf}");
+    assert!(
+        buf.contains("\"status_left_style\":\"fg=colour201\""),
+        "status-left-style missing: {buf}"
+    );
+    assert!(
+        buf.contains("\"status_right_style\":\"bg=colour21\""),
+        "status-right-style missing: {buf}"
+    );
+    assert!(
+        buf.contains("\"wsa_style\":\"reverse\""),
+        "activity-style missing: {buf}"
+    );
+    assert!(
+        buf.contains("\"wsb_style\":\"bg=blue\""),
+        "bell-style missing: {buf}"
+    );
+    assert!(
+        buf.contains("\"wsl_style\":\"fg=green\""),
+        "last-style missing: {buf}"
+    );
 
     // Result must remain a single valid JSON object.
     assert!(buf.ends_with('}'));
@@ -81,8 +100,8 @@ fn list_windows_json_carries_bell_activity_last_flags() {
     let mut app = mk_app();
     app.windows.push(mk_window("w0", 0));
     app.windows.push(mk_window("w1", 1));
-    app.active_idx = 1;        // w1 is current
-    app.last_window_idx = 0;   // w0 is the last-active window
+    app.active_idx = 1; // w1 is current
+    app.last_window_idx = 0; // w0 is the last-active window
     app.windows[0].activity_flag = true;
     app.windows[0].bell_flag = true;
 
@@ -93,7 +112,10 @@ fn list_windows_json_carries_bell_activity_last_flags() {
     // w0: not active, but bell + activity + last flags all set.
     assert_eq!(arr[0]["active"], false);
     assert_eq!(arr[0]["bell"], true, "bell flag not plumbed: {json}");
-    assert_eq!(arr[0]["activity"], true, "activity flag not plumbed: {json}");
+    assert_eq!(
+        arr[0]["activity"], true,
+        "activity flag not plumbed: {json}"
+    );
     assert_eq!(arr[0]["last"], true, "last flag not plumbed: {json}");
 
     // w1: active, and definitely not the last window.

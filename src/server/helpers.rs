@@ -57,9 +57,15 @@ pub(crate) fn serialize_bindings_json(app: &AppState) -> String {
 /// Ships the option value, the active pane's scrollback size (for absolute /
 /// hybrid numbering), and the optional gutter styles.
 pub(crate) fn append_copy_ln_json(app: &AppState, buf: &mut String) {
-    let Some(cln) = app.user_options.get("copy-mode-line-numbers") else { return; };
-    if cln == "off" || !buf.ends_with('}') { return; }
-    let hsize = app.windows.get(app.active_idx)
+    let Some(cln) = app.user_options.get("copy-mode-line-numbers") else {
+        return;
+    };
+    if cln == "off" || !buf.ends_with('}') {
+        return;
+    }
+    let hsize = app
+        .windows
+        .get(app.active_idx)
         .and_then(|win| crate::tree::active_pane(&win.root, &win.active_path))
         .and_then(|p| p.term.lock().ok().map(|g| g.screen().scrollback_filled()))
         .unwrap_or(0);
@@ -84,9 +90,13 @@ pub(crate) fn append_copy_ln_json(app: &AppState, buf: &mut String) {
 /// Append the active window's floating-pane overlays to a JSON object buffer
 /// that currently ends with `}`. Emits nothing when there are no floats.
 pub(crate) fn append_floats_json(app: &AppState, buf: &mut String) {
-    if !buf.ends_with('}') { return; }
+    if !buf.ends_with('}') {
+        return;
+    }
     let frag = crate::popup::serialize_floats_json(app);
-    if frag.is_empty() { return; }
+    if frag.is_empty() {
+        return;
+    }
     buf.pop();
     buf.push_str(&frag);
     buf.push('}');
@@ -119,7 +129,9 @@ pub(crate) fn json_escape_string(s: &str) -> String {
 /// the same way `clock_colour` and the pane-border extras are (pop the trailing
 /// `}`, add fields, re-close), so the giant format-string arg list is untouched.
 pub(crate) fn append_extra_style_json(buf: &mut String, app: &AppState) {
-    if !buf.ends_with('}') { return; }
+    if !buf.ends_with('}') {
+        return;
+    }
     buf.pop();
     for (key, raw) in [
         ("status_left_style", &app.status_left_style),
@@ -187,7 +199,8 @@ pub(crate) fn combined_data_version(app: &AppState) -> u64 {
     // status bar shows the bell or activity indicator only after some
     // incidental repaint trigger like a mouse move or window switch (#162).
     for (i, w) in app.windows.iter().enumerate() {
-        let bits = (w.bell_flag as u64) | ((w.activity_flag as u64) << 1) | ((w.silence_flag as u64) << 2);
+        let bits =
+            (w.bell_flag as u64) | ((w.activity_flag as u64) << 1) | ((w.silence_flag as u64) << 2);
         v = v.wrapping_add(bits.wrapping_mul(0x50011).wrapping_add(i as u64));
     }
     // Include mode discriminant so overlay state changes (PopupMode, MenuMode,

@@ -52,10 +52,20 @@ fn fresh_parser(rows: u16, cols: u16) -> Arc<Mutex<vt100::Parser>> {
 /// Assemble a Pane around a given parser + optional live child pid. Only the
 /// fields `is_fullscreen_tui` / `pane_wants_mouse` read are meaningful; the pty
 /// plumbing is a throwaway cmd.exe so the struct is valid.
-fn make_pane(term: Arc<Mutex<vt100::Parser>>, rows: u16, cols: u16, child_pid: Option<u32>) -> crate::types::Pane {
+fn make_pane(
+    term: Arc<Mutex<vt100::Parser>>,
+    rows: u16,
+    cols: u16,
+    child_pid: Option<u32>,
+) -> crate::types::Pane {
     let pty = portable_pty::native_pty_system();
     let pair = pty
-        .openpty(portable_pty::PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+        .openpty(portable_pty::PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
         .expect("openpty");
     let mut cmd = portable_pty::CommandBuilder::new("cmd.exe");
     cmd.arg("/c");
@@ -103,7 +113,7 @@ fn spawn_live_bash() -> Option<Child> {
     }
     Command::new(GIT_BASH)
         .args(["--norc", "-i"])
-        .stdin(Stdio::piped())   // held open so bash blocks on read and stays alive
+        .stdin(Stdio::piped()) // held open so bash blocks on read and stays alive
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -139,8 +149,14 @@ fn issue381_filled_shell_screen_is_misdetected_as_fullscreen_tui() {
     // The false positive: a plain shell whose output filled the screen is
     // classified as a fullscreen TUI, which is what forwards mouse motion to
     // the shell as the raw SGR text reported in #381.
-    assert!(fullscreen, "root cause not reproduced: heuristic should false-positive on a filled shell screen");
-    assert!(wants_mouse, "consequence: pane_wants_mouse must be true when the heuristic false-positives");
+    assert!(
+        fullscreen,
+        "root cause not reproduced: heuristic should false-positive on a filled shell screen"
+    );
+    assert!(
+        wants_mouse,
+        "consequence: pane_wants_mouse must be true when the heuristic false-positives"
+    );
 }
 
 #[test]
@@ -149,7 +165,10 @@ fn issue381_fresh_shell_prompt_is_not_fullscreen() {
     // trigger to "screen filled + cursor at bottom".
     let term = fresh_parser(10, 40);
     let pane = make_pane(term, 10, 40, None);
-    assert!(!is_fullscreen_tui(&pane), "a fresh top-of-screen prompt must not be a fullscreen TUI");
+    assert!(
+        !is_fullscreen_tui(&pane),
+        "a fresh top-of-screen prompt must not be a fullscreen TUI"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -167,7 +186,11 @@ fn issue381_foreground_is_shell_classifies_live_processes() {
         eprintln!("[classifier] live bash pid={} -> {:?}", bash.id(), verdict);
         let _ = bash.kill();
         let _ = bash.wait();
-        assert_eq!(verdict, Some(true), "a live git bash foreground must classify as a shell");
+        assert_eq!(
+            verdict,
+            Some(true),
+            "a live git bash foreground must classify as a shell"
+        );
     } else {
         eprintln!("git bash unavailable — skipping shell-classification assertion");
     }
@@ -178,7 +201,11 @@ fn issue381_foreground_is_shell_classifies_live_processes() {
         eprintln!("[classifier] live ping pid={} -> {:?}", ping.id(), verdict);
         let _ = ping.kill();
         let _ = ping.wait();
-        assert_eq!(verdict, Some(false), "a live ping foreground must classify as NON-shell");
+        assert_eq!(
+            verdict,
+            Some(false),
+            "a live ping foreground must classify as NON-shell"
+        );
     }
 }
 
@@ -196,23 +223,35 @@ fn issue381_foreground_is_shell_classifies_live_processes() {
 fn issue381_pr407_is_some_predicate_would_break_real_tui() {
     let ping = match spawn_live_nonshell() {
         Some(c) => c,
-        None => { eprintln!("ping unavailable — skipping PR-regression proof"); return; }
+        None => {
+            eprintln!("ping unavailable — skipping PR-regression proof");
+            return;
+        }
     };
     let mut ping = ping;
     std::thread::sleep(Duration::from_millis(400));
     let pid = Some(ping.id());
 
     // Exactly the PR's expression:
-    let pr407_flag = pid.and_then(crate::platform::process_info::foreground_is_shell).is_some();
+    let pr407_flag = pid
+        .and_then(crate::platform::process_info::foreground_is_shell)
+        .is_some();
     // The correct expression:
-    let correct_flag = pid.and_then(crate::platform::process_info::foreground_is_shell) == Some(true);
+    let correct_flag =
+        pid.and_then(crate::platform::process_info::foreground_is_shell) == Some(true);
 
     eprintln!("[pr-defect] non-shell foreground: pr407(.is_some)={pr407_flag}  correct(==Some(true))={correct_flag}");
     let _ = ping.kill();
     let _ = ping.wait();
 
-    assert!(pr407_flag, "demonstrates the PR predicate fires even for a NON-shell (Some(false).is_some()==true)");
-    assert!(!correct_flag, "the correct predicate must NOT fire for a non-shell foreground");
+    assert!(
+        pr407_flag,
+        "demonstrates the PR predicate fires even for a NON-shell (Some(false).is_some()==true)"
+    );
+    assert!(
+        !correct_flag,
+        "the correct predicate must NOT fire for a non-shell foreground"
+    );
     // Net: with the PR as written, a genuine fullscreen TUI (Some(false)) would
     // be forced to `return false` from is_fullscreen_tui → regression of #285.
 }
@@ -229,14 +268,19 @@ fn issue381_pr407_is_some_predicate_would_break_real_tui() {
 fn issue381_fixed_shell_foreground_not_fullscreen() {
     let bash = match spawn_live_bash() {
         Some(c) => c,
-        None => { eprintln!("git bash unavailable — skipping fixed-behavior (shell) assertion"); return; }
+        None => {
+            eprintln!("git bash unavailable — skipping fixed-behavior (shell) assertion");
+            return;
+        }
     };
     let mut bash = bash;
     std::thread::sleep(Duration::from_millis(400));
     let term = filled_parser(10, 40);
     let pane = make_pane(term, 10, 40, Some(bash.id()));
     let fullscreen = is_fullscreen_tui(&pane);
-    eprintln!("[fixed:shell] filled screen + live bash foreground -> is_fullscreen_tui={fullscreen}");
+    eprintln!(
+        "[fixed:shell] filled screen + live bash foreground -> is_fullscreen_tui={fullscreen}"
+    );
     let _ = bash.kill();
     let _ = bash.wait();
     assert!(!fullscreen, "FIX CONTRACT: filled shell screen must NOT be a fullscreen TUI once the foreground is a shell");
@@ -246,7 +290,10 @@ fn issue381_fixed_shell_foreground_not_fullscreen() {
 fn issue381_fixed_nonshell_foreground_still_fullscreen() {
     let ping = match spawn_live_nonshell() {
         Some(c) => c,
-        None => { eprintln!("ping unavailable — skipping fixed-behavior (non-shell) assertion"); return; }
+        None => {
+            eprintln!("ping unavailable — skipping fixed-behavior (non-shell) assertion");
+            return;
+        }
     };
     let mut ping = ping;
     std::thread::sleep(Duration::from_millis(400));

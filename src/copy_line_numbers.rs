@@ -89,7 +89,14 @@ pub fn line_number(mode: CopyLnMode, py: usize, oy: usize, cy: usize, hsize: usi
 
 /// Format the gutter cell for row `py`: the number right-aligned in
 /// `width - 1` columns followed by a single space, exactly `width` columns.
-pub fn gutter_text(mode: CopyLnMode, width: usize, py: usize, oy: usize, cy: usize, hsize: usize) -> String {
+pub fn gutter_text(
+    mode: CopyLnMode,
+    width: usize,
+    py: usize,
+    oy: usize,
+    cy: usize,
+    hsize: usize,
+) -> String {
     if width == 0 {
         return String::new();
     }
@@ -162,6 +169,9 @@ mod tests {
     fn gutter_text_is_right_aligned_with_trailing_space() {
         // width 4 -> 3-wide number + space.
         assert_eq!(gutter_text(CopyLnMode::Relative, 4, 2, 0, 5, 100), "  3 ");
-        assert_eq!(gutter_text(CopyLnMode::Absolute, 6, 0, 0, 5, 9959), " 9960 ");
+        assert_eq!(
+            gutter_text(CopyLnMode::Absolute, 6, 0, 0, 5, 9959),
+            " 9960 "
+        );
     }
 }

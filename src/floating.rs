@@ -11,7 +11,12 @@
 
 /// A directional move step for `-U`/`-D`/`-L`/`-R`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MoveDir { Up, Down, Left, Right }
+pub enum MoveDir {
+    Up,
+    Down,
+    Left,
+    Right,
+}
 
 impl MoveDir {
     pub fn parse(flag: &str) -> Option<MoveDir> {
@@ -27,8 +32,16 @@ impl MoveDir {
 
 /// Recognised `-P` position keywords (tmux-style corner/edge/centre anchors).
 pub const POSITIONS: &[&str] = &[
-    "top-left", "top-right", "bottom-left", "bottom-right",
-    "top", "bottom", "left", "right", "centre", "center",
+    "top-left",
+    "top-right",
+    "bottom-left",
+    "bottom-right",
+    "top",
+    "bottom",
+    "left",
+    "right",
+    "centre",
+    "center",
 ];
 
 /// Resolve a `-P` position keyword to a top-left `(x, y)` for a `w`x`h` float
@@ -39,16 +52,16 @@ pub fn resolve_position(pos: &str, win_w: u16, win_h: u16, w: u16, h: u16) -> (u
     let cx = max_x / 2;
     let cy = max_y / 2;
     match pos.trim().to_ascii_lowercase().as_str() {
-        "top-left"     => (0, 0),
-        "top-right"    => (max_x, 0),
-        "bottom-left"  => (0, max_y),
+        "top-left" => (0, 0),
+        "top-right" => (max_x, 0),
+        "bottom-left" => (0, max_y),
         "bottom-right" => (max_x, max_y),
-        "top"          => (cx, 0),
-        "bottom"       => (cx, max_y),
-        "left"         => (0, cy),
-        "right"        => (max_x, cy),
+        "top" => (cx, 0),
+        "bottom" => (cx, max_y),
+        "left" => (0, cy),
+        "right" => (max_x, cy),
         // "centre", "center", and anything unrecognised.
-        _              => (cx, cy),
+        _ => (cx, cy),
     }
 }
 
@@ -61,11 +74,20 @@ pub fn clamp_into(x: u16, y: u16, w: u16, h: u16, win_w: u16, win_h: u16) -> (u1
 }
 
 /// Apply a directional step of `step` cells to `(x, y)`, then clamp into bounds.
-pub fn move_step(dir: MoveDir, x: u16, y: u16, w: u16, h: u16, win_w: u16, win_h: u16, step: u16) -> (u16, u16) {
+pub fn move_step(
+    dir: MoveDir,
+    x: u16,
+    y: u16,
+    w: u16,
+    h: u16,
+    win_w: u16,
+    win_h: u16,
+    step: u16,
+) -> (u16, u16) {
     let (nx, ny) = match dir {
-        MoveDir::Up    => (x, y.saturating_sub(step)),
-        MoveDir::Down  => (x, y.saturating_add(step)),
-        MoveDir::Left  => (x.saturating_sub(step), y),
+        MoveDir::Up => (x, y.saturating_sub(step)),
+        MoveDir::Down => (x, y.saturating_add(step)),
+        MoveDir::Left => (x.saturating_sub(step), y),
         MoveDir::Right => (x.saturating_add(step), y),
     };
     clamp_into(nx, ny, w, h, win_w, win_h)
@@ -117,9 +139,15 @@ mod tests {
         // Move up past the top clamps to 0.
         assert_eq!(move_step(MoveDir::Up, 10, 1, 40, 10, 100, 30, 5), (10, 0));
         // Move right past the edge clamps to max_x = 60.
-        assert_eq!(move_step(MoveDir::Right, 55, 5, 40, 10, 100, 30, 20), (60, 5));
+        assert_eq!(
+            move_step(MoveDir::Right, 55, 5, 40, 10, 100, 30, 20),
+            (60, 5)
+        );
         // Move down past the bottom clamps to max_y = 20.
-        assert_eq!(move_step(MoveDir::Down, 10, 18, 40, 10, 100, 30, 10), (10, 20));
+        assert_eq!(
+            move_step(MoveDir::Down, 10, 18, 40, 10, 100, 30, 10),
+            (10, 20)
+        );
     }
 
     #[test]

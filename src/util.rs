@@ -1,6 +1,6 @@
 use std::io;
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 use crate::types::{AppState, Node};
 
@@ -30,7 +30,7 @@ pub fn expand_run_shell_path(cmd: &str) -> String {
             .or_else(|_| std::env::var("HOME"))
             .unwrap_or_default();
         cmd.replace("~/", &format!("{}/", home))
-           .replace("~\\", &format!("{}\\", home))
+            .replace("~\\", &format!("{}\\", home))
     } else {
         cmd.to_string()
     };
@@ -43,13 +43,16 @@ pub fn expand_run_shell_path(cmd: &str) -> String {
     let classic_win = format!("{}\\.psmux\\plugins\\", home);
     if cmd.contains(&classic_fwd) || cmd.contains(&classic_win) {
         let classic_dir = std::path::Path::new(&home).join(".psmux").join("plugins");
-        let xdg_base = std::env::var("XDG_CONFIG_HOME")
-            .unwrap_or_else(|_| format!("{}\\.config", home));
-        let xdg_dir = std::path::Path::new(&xdg_base).join("psmux").join("plugins");
+        let xdg_base =
+            std::env::var("XDG_CONFIG_HOME").unwrap_or_else(|_| format!("{}\\.config", home));
+        let xdg_dir = std::path::Path::new(&xdg_base)
+            .join("psmux")
+            .join("plugins");
         if !classic_dir.is_dir() && xdg_dir.is_dir() {
             let xdg_fwd = format!("{}/psmux/plugins/", xdg_base.replace('\\', "/"));
             let xdg_win = format!("{}\\psmux\\plugins\\", xdg_base);
-            cmd.replace(&classic_fwd, &xdg_fwd).replace(&classic_win, &xdg_win)
+            cmd.replace(&classic_fwd, &xdg_fwd)
+                .replace(&classic_win, &xdg_win)
         } else {
             cmd
         }
@@ -63,11 +66,23 @@ pub fn infer_title_from_prompt(screen: &vt100::Screen, rows: u16, cols: u16) -> 
     let cursor_row = screen.cursor_position().0;
     let mut candidate_row: Option<u16> = None;
     // Try cursor row first, then scan downward, then scan upward
-    for &r in [cursor_row].iter().chain((cursor_row + 1..rows).collect::<Vec<_>>().iter()).chain((0..cursor_row).rev().collect::<Vec<_>>().iter()) {
+    for &r in [cursor_row]
+        .iter()
+        .chain((cursor_row + 1..rows).collect::<Vec<_>>().iter())
+        .chain((0..cursor_row).rev().collect::<Vec<_>>().iter())
+    {
         let mut s = String::new();
-        for c in 0..cols { if let Some(cell) = screen.cell(r, c) { s.push_str(cell.contents()); } else { s.push(' '); } }
+        for c in 0..cols {
+            if let Some(cell) = screen.cell(r, c) {
+                s.push_str(cell.contents());
+            } else {
+                s.push(' ');
+            }
+        }
         let t = s.trim_end();
-        if !t.is_empty() && (t.contains('>') || t.contains('$') || t.contains('#') || t.contains(':')) {
+        if !t.is_empty()
+            && (t.contains('>') || t.contains('$') || t.contains('#') || t.contains(':'))
+        {
             candidate_row = Some(r);
             break;
         }
@@ -75,11 +90,20 @@ pub fn infer_title_from_prompt(screen: &vt100::Screen, rows: u16, cols: u16) -> 
     // Fall back: use the row the cursor is on even if no prompt marker
     let row = candidate_row.unwrap_or(cursor_row);
     let mut s = String::new();
-    for c in 0..cols { if let Some(cell) = screen.cell(row, c) { s.push_str(cell.contents()); } else { s.push(' '); } }
+    for c in 0..cols {
+        if let Some(cell) = screen.cell(row, c) {
+            s.push_str(cell.contents());
+        } else {
+            s.push(' ');
+        }
+    }
     let trimmed = s.trim().to_string();
-    if trimmed.is_empty() { return None; }
+    if trimmed.is_empty() {
+        return None;
+    }
     // Only infer title from lines that look like prompts (contain a prompt marker)
-    let has_prompt_marker = trimmed.contains('>') || trimmed.ends_with('$') || trimmed.ends_with('#');
+    let has_prompt_marker =
+        trimmed.contains('>') || trimmed.ends_with('$') || trimmed.ends_with('#');
     if !has_prompt_marker {
         // If no prompt marker, don't change the title — this is likely command output
         return None;
@@ -87,26 +111,59 @@ pub fn infer_title_from_prompt(screen: &vt100::Screen, rows: u16, cols: u16) -> 
     if let Some(pos) = trimmed.rfind('>') {
         let before = trimmed[..pos].trim().to_string();
         if before.contains("\\") || before.contains("/") {
-            let parts: Vec<&str> = before.trim_matches(|ch: char| ch == '"').split(['\\','/']).collect();
-            if let Some(base) = parts.last() { return Some(base.to_string()); }
+            let parts: Vec<&str> = before
+                .trim_matches(|ch: char| ch == '"')
+                .split(['\\', '/'])
+                .collect();
+            if let Some(base) = parts.last() {
+                return Some(base.to_string());
+            }
         }
         return Some(before);
     }
-    if let Some(pos) = trimmed.rfind('$') { return Some(trimmed[..pos].trim().to_string()); }
-    if let Some(pos) = trimmed.rfind('#') { return Some(trimmed[..pos].trim().to_string()); }
+    if let Some(pos) = trimmed.rfind('$') {
+        return Some(trimmed[..pos].trim().to_string());
+    }
+    if let Some(pos) = trimmed.rfind('#') {
+        return Some(trimmed[..pos].trim().to_string());
+    }
     Some(trimmed)
 }
 
 // resolve_last_session_name and resolve_default_session_name are in session.rs
 
 #[derive(Serialize, Deserialize)]
-pub struct WinInfo { pub id: usize, pub name: String, pub active: bool, #[serde(default)] pub activity: bool, #[serde(default)] pub bell: bool, #[serde(default)] pub last: bool, #[serde(default)] pub tab_text: String, #[serde(default)] pub idx: usize }
+pub struct WinInfo {
+    pub id: usize,
+    pub name: String,
+    pub active: bool,
+    #[serde(default)]
+    pub activity: bool,
+    #[serde(default)]
+    pub bell: bool,
+    #[serde(default)]
+    pub last: bool,
+    #[serde(default)]
+    pub tab_text: String,
+    #[serde(default)]
+    pub idx: usize,
+}
 
 #[derive(Serialize, Deserialize)]
-pub struct PaneInfo { pub id: usize, pub title: String }
+pub struct PaneInfo {
+    pub id: usize,
+    pub title: String,
+}
 
 #[derive(Serialize, Deserialize)]
-pub struct WinTree { pub id: usize, pub name: String, pub active: bool, pub panes: Vec<PaneInfo>, #[serde(default)] pub idx: usize }
+pub struct WinTree {
+    pub id: usize,
+    pub name: String,
+    pub active: bool,
+    pub panes: Vec<PaneInfo>,
+    #[serde(default)]
+    pub idx: usize,
+}
 
 /// Lightweight layout description for cross-session preview rendering
 /// (issue #257). Mirrors the structural part of `LayoutJson` without any
@@ -116,15 +173,35 @@ pub struct WinTree { pub id: usize, pub name: String, pub active: bool, pub pane
 #[serde(tag = "type")]
 pub enum LayoutSimple {
     #[serde(rename = "split")]
-    Split { kind: String, sizes: Vec<u16>, children: Vec<LayoutSimple> },
+    Split {
+        kind: String,
+        sizes: Vec<u16>,
+        children: Vec<LayoutSimple>,
+    },
     #[serde(rename = "leaf")]
-    Leaf { id: usize, #[serde(default)] active: bool },
+    Leaf {
+        id: usize,
+        #[serde(default)]
+        active: bool,
+    },
 }
 
 pub fn list_windows_json(app: &AppState) -> io::Result<String> {
     let mut v: Vec<WinInfo> = Vec::new();
-    for (i, w) in app.windows.iter().enumerate() { v.push(WinInfo { id: w.id, name: w.name.clone(), active: i == app.active_idx, activity: w.activity_flag, bell: w.bell_flag, last: i == app.last_window_idx, tab_text: String::new(), idx: app.win_display_index(i) }); }
-    let s = serde_json::to_string(&v).map_err(|e| io::Error::new(io::ErrorKind::Other, format!("json error: {e}")))?;
+    for (i, w) in app.windows.iter().enumerate() {
+        v.push(WinInfo {
+            id: w.id,
+            name: w.name.clone(),
+            active: i == app.active_idx,
+            activity: w.activity_flag,
+            bell: w.bell_flag,
+            last: i == app.last_window_idx,
+            tab_text: String::new(),
+            idx: app.win_display_index(i),
+        });
+    }
+    let s = serde_json::to_string(&v)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("json error: {e}")))?;
     Ok(s)
 }
 
@@ -140,12 +217,28 @@ pub fn list_windows_tmux(app: &AppState) -> String {
     }
     let mut lines = Vec::new();
     for (i, w) in app.windows.iter().enumerate() {
-        let flag = if i == app.active_idx { "*" } else if w.activity_flag { "#" } else { "-" };
+        let flag = if i == app.active_idx {
+            "*"
+        } else if w.activity_flag {
+            "#"
+        } else {
+            "-"
+        };
         let pane_count = count_panes(&w.root);
         let (width, height) = if let Some(p) = active_pane(&w.root, &w.active_path) {
             (p.last_cols, p.last_rows)
-        } else { (120, 30) };
-        lines.push(format!("{}: {}{} ({} panes) [{}x{}]", app.win_display_index(i), w.name, flag, pane_count, width, height));
+        } else {
+            (120, 30)
+        };
+        lines.push(format!(
+            "{}: {}{} ({} panes) [{}x{}]",
+            app.win_display_index(i),
+            w.name,
+            flag,
+            pane_count,
+            width,
+            height
+        ));
     }
     lines.join("\n")
 }
@@ -153,17 +246,33 @@ pub fn list_windows_tmux(app: &AppState) -> String {
 pub fn list_tree_json(app: &AppState) -> io::Result<String> {
     fn collect_panes(node: &Node, out: &mut Vec<PaneInfo>) {
         match node {
-            Node::Leaf(p) => { out.push(PaneInfo { id: p.id, title: p.title.clone() }); }
-            Node::Split { children, .. } => { for c in children.iter() { collect_panes(c, out); } }
+            Node::Leaf(p) => {
+                out.push(PaneInfo {
+                    id: p.id,
+                    title: p.title.clone(),
+                });
+            }
+            Node::Split { children, .. } => {
+                for c in children.iter() {
+                    collect_panes(c, out);
+                }
+            }
         }
     }
     let mut v: Vec<WinTree> = Vec::new();
     for (i, w) in app.windows.iter().enumerate() {
         let mut panes = Vec::new();
         collect_panes(&w.root, &mut panes);
-        v.push(WinTree { id: w.id, name: w.name.clone(), active: i == app.active_idx, panes, idx: app.win_display_index(i) });
+        v.push(WinTree {
+            id: w.id,
+            name: w.name.clone(),
+            active: i == app.active_idx,
+            panes,
+            idx: app.win_display_index(i),
+        });
     }
-    let s = serde_json::to_string(&v).map_err(|e| io::Error::new(io::ErrorKind::Other, format!("json error: {e}")))?;
+    let s = serde_json::to_string(&v)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("json error: {e}")))?;
     Ok(s)
 }
 
@@ -172,7 +281,11 @@ pub fn list_tree_json(app: &AppState) -> io::Result<String> {
 pub fn window_layout_simple(app: &AppState, win_id: usize) -> Option<LayoutSimple> {
     fn build(node: &Node, active_path: &[usize], cur_path: &mut Vec<usize>) -> LayoutSimple {
         match node {
-            Node::Split { kind, sizes, children } => {
+            Node::Split {
+                kind,
+                sizes,
+                children,
+            } => {
                 let k = match *kind {
                     crate::types::LayoutKind::Horizontal => "Horizontal".to_string(),
                     crate::types::LayoutKind::Vertical => "Vertical".to_string(),
@@ -183,7 +296,11 @@ pub fn window_layout_simple(app: &AppState, win_id: usize) -> Option<LayoutSimpl
                     ch.push(build(c, active_path, cur_path));
                     cur_path.pop();
                 }
-                LayoutSimple::Split { kind: k, sizes: sizes.clone(), children: ch }
+                LayoutSimple::Split {
+                    kind: k,
+                    sizes: sizes.clone(),
+                    children: ch,
+                }
             }
             Node::Leaf(p) => LayoutSimple::Leaf {
                 id: p.id,
@@ -232,7 +349,9 @@ pub fn base64_decode(encoded: &str) -> Option<String> {
     let mut result = Vec::new();
     let chars: Vec<u8> = encoded.bytes().filter(|&b| b != b'=').collect();
     for chunk in chars.chunks(4) {
-        if chunk.len() < 2 { break; }
+        if chunk.len() < 2 {
+            break;
+        }
         let b0 = BASE64_CHARS.iter().position(|&c| c == chunk[0])? as u8;
         let b1 = BASE64_CHARS.iter().position(|&c| c == chunk[1])? as u8;
         result.push((b0 << 2) | (b1 >> 4));
@@ -299,7 +418,10 @@ fn is_valid_env_var_name(name: &str) -> bool {
 }
 
 /// Merge CLI `new-session -e` pairs into session environment.
-pub fn merge_session_env_into_app(app: &mut crate::types::AppState, session_env: &[(String, String)]) {
+pub fn merge_session_env_into_app(
+    app: &mut crate::types::AppState,
+    session_env: &[(String, String)],
+) {
     for (k, v) in session_env {
         app.environment.insert(k.clone(), v.clone());
     }
@@ -381,7 +503,10 @@ mod tests {
         let path = "C:\\Program Files\\psmux\\config.conf";
         let cmd = format!("source-file {}", quote_arg(path));
         let args = parse_command_line(&cmd);
-        assert_eq!(args, vec!["source-file", "C:\\Program Files\\psmux\\config.conf"]);
+        assert_eq!(
+            args,
+            vec!["source-file", "C:\\Program Files\\psmux\\config.conf"]
+        );
     }
 
     #[test]
@@ -390,7 +515,14 @@ mod tests {
         let cwd = "C:\\Users\\My Name\\Documents";
         let cmd = format!("claim-session {} {}", quote_arg(name), quote_arg(cwd));
         let args = parse_command_line(&cmd);
-        assert_eq!(args, vec!["claim-session", "my session", "C:\\Users\\My Name\\Documents"]);
+        assert_eq!(
+            args,
+            vec![
+                "claim-session",
+                "my session",
+                "C:\\Users\\My Name\\Documents"
+            ]
+        );
     }
 
     #[test]
@@ -434,7 +566,10 @@ mod tests {
         let cwd = "C:\\Program Files\\My App\\Data";
         let cmd = format!("claim-session s1 {}", quote_arg(cwd));
         let args = parse_command_line(&cmd);
-        assert_eq!(args, vec!["claim-session", "s1", "C:\\Program Files\\My App\\Data"]);
+        assert_eq!(
+            args,
+            vec!["claim-session", "s1", "C:\\Program Files\\My App\\Data"]
+        );
     }
 
     #[test]
@@ -450,7 +585,10 @@ mod tests {
         let cwd = "\\\\server\\share\\folder";
         let cmd = format!("claim-session s1 {}", quote_arg(cwd));
         let args = parse_command_line(&cmd);
-        assert_eq!(args, vec!["claim-session", "s1", "\\\\server\\share\\folder"]);
+        assert_eq!(
+            args,
+            vec!["claim-session", "s1", "\\\\server\\share\\folder"]
+        );
     }
 
     #[test]
@@ -458,7 +596,10 @@ mod tests {
         let cwd = "C:\\Program Files (x86)\\App";
         let cmd = format!("claim-session s1 {}", quote_arg(cwd));
         let args = parse_command_line(&cmd);
-        assert_eq!(args, vec!["claim-session", "s1", "C:\\Program Files (x86)\\App"]);
+        assert_eq!(
+            args,
+            vec!["claim-session", "s1", "C:\\Program Files (x86)\\App"]
+        );
     }
 
     #[test]
@@ -545,9 +686,16 @@ mod tests {
     #[test]
     fn collect_server_session_env_skips_after_dd() {
         let args: Vec<String> = vec![
-            "psmux".into(), "server".into(), "-s".into(), "s1".into(),
-            "-e".into(), "A=1".into(),
-            "--".into(), "cmd".into(), "-e".into(), "IGNORE=me".into(),
+            "psmux".into(),
+            "server".into(),
+            "-s".into(),
+            "s1".into(),
+            "-e".into(),
+            "A=1".into(),
+            "--".into(),
+            "cmd".into(),
+            "-e".into(),
+            "IGNORE=me".into(),
         ];
         let v = collect_server_session_env_args(&args).unwrap();
         assert_eq!(v, vec![("A".to_string(), "1".to_string())]);
@@ -556,9 +704,14 @@ mod tests {
     #[test]
     fn collect_server_session_env_duplicate_key_last_wins() {
         let args: Vec<String> = vec![
-            "psmux".into(), "server".into(), "-s".into(), "s1".into(),
-            "-e".into(), "FOO=first".into(),
-            "-e".into(), "FOO=last".into(),
+            "psmux".into(),
+            "server".into(),
+            "-s".into(),
+            "s1".into(),
+            "-e".into(),
+            "FOO=first".into(),
+            "-e".into(),
+            "FOO=last".into(),
         ];
         let v = collect_server_session_env_args(&args).unwrap();
         assert_eq!(v.len(), 2);
@@ -574,11 +727,10 @@ pub fn color_to_name(c: vt100::Color) -> std::borrow::Cow<'static, str> {
         vt100::Color::Default => Cow::Borrowed("default"),
         vt100::Color::Idx(i) => {
             // Static lookup table for all 256 indexed colors
-            static IDX_STRINGS: std::sync::LazyLock<[String; 256]> = std::sync::LazyLock::new(|| {
-                std::array::from_fn(|i| format!("idx:{}", i))
-            });
+            static IDX_STRINGS: std::sync::LazyLock<[String; 256]> =
+                std::sync::LazyLock::new(|| std::array::from_fn(|i| format!("idx:{}", i)));
             Cow::Borrowed(&IDX_STRINGS[i as usize])
         }
-        vt100::Color::Rgb(r,g,b) => Cow::Owned(format!("rgb:{},{},{}", r,g,b)),
+        vt100::Color::Rgb(r, g, b) => Cow::Owned(format!("rgb:{},{},{}", r, g, b)),
     }
 }

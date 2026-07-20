@@ -50,16 +50,25 @@ fn app_with_window(session: &str, win: &str) -> AppState {
 fn set_titles_default_off() {
     let app = mk_app("s");
     assert!(!app.set_titles, "set_titles should default to false");
-    assert!(app.set_titles_string.is_empty(), "set_titles_string should default empty");
+    assert!(
+        app.set_titles_string.is_empty(),
+        "set_titles_string should default empty"
+    );
 }
 
 #[test]
 fn set_titles_option_persists_via_apply_set_option() {
     let mut app = app_with_window("s", "w");
     apply_set_option(&mut app, "set-titles", "on", false);
-    assert!(app.set_titles, "set_titles should be true after apply_set_option on");
+    assert!(
+        app.set_titles,
+        "set_titles should be true after apply_set_option on"
+    );
     apply_set_option(&mut app, "set-titles", "off", false);
-    assert!(!app.set_titles, "set_titles should be false after apply_set_option off");
+    assert!(
+        !app.set_titles,
+        "set_titles should be false after apply_set_option off"
+    );
 }
 
 #[test]
@@ -105,7 +114,10 @@ fn custom_format_expands_window_name_change() {
 
     app.windows[0].name = "vim".to_string();
     let out_after = expand_format("psmux/#S #W", &app);
-    assert_eq!(out_after, "psmux/dev vim", "rename-window must update expansion");
+    assert_eq!(
+        out_after, "psmux/dev vim",
+        "rename-window must update expansion"
+    );
 }
 
 #[test]
@@ -113,7 +125,10 @@ fn pane_title_format_T_falls_back_to_hostname_when_empty() {
     // When pane.title is empty, #T falls back to hostname (matches tmux semantics).
     let app = app_with_window("s", "w");
     let out = expand_format("#T", &app);
-    assert!(!out.is_empty(), "#T should not produce empty string when pane.title is empty");
+    assert!(
+        !out.is_empty(),
+        "#T should not produce empty string when pane.title is empty"
+    );
 }
 
 #[test]
@@ -145,6 +160,12 @@ fn config_file_parses_set_titles_directives() {
         &mut app,
         "set -g set-titles on\nset -g set-titles-string \"My Title #W\"\n",
     );
-    assert!(app.set_titles, "set-titles in config file should set the flag");
-    assert_eq!(app.set_titles_string, "My Title #W", "set-titles-string from config");
+    assert!(
+        app.set_titles,
+        "set-titles in config file should set the flag"
+    );
+    assert_eq!(
+        app.set_titles_string, "My Title #W",
+        "set-titles-string from config"
+    );
 }

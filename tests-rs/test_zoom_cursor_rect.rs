@@ -1,5 +1,5 @@
-use ratatui::layout::Rect;
 use crate::layout::LayoutJson;
+use ratatui::layout::Rect;
 
 fn leaf(id: usize, active: bool) -> LayoutJson {
     LayoutJson::Leaf {
@@ -36,11 +36,18 @@ fn zoomed_horizontal_non_first_active_uses_full_area() {
         children: vec![leaf(0, false), leaf(1, true)],
     };
 
-    let unzoomed = crate::client::compute_active_rect_json_zoom_aware(&layout, area, false).unwrap();
+    let unzoomed =
+        crate::client::compute_active_rect_json_zoom_aware(&layout, area, false).unwrap();
     let zoomed = crate::client::compute_active_rect_json_zoom_aware(&layout, area, true).unwrap();
 
-    assert_ne!(unzoomed.x, area.x, "baseline split traversal should offset second pane");
-    assert_eq!(zoomed, area, "zoom-aware traversal should keep full-area origin");
+    assert_ne!(
+        unzoomed.x, area.x,
+        "baseline split traversal should offset second pane"
+    );
+    assert_eq!(
+        zoomed, area,
+        "zoom-aware traversal should keep full-area origin"
+    );
 }
 
 #[test]
@@ -52,11 +59,18 @@ fn zoomed_vertical_non_first_active_uses_full_area() {
         children: vec![leaf(0, false), leaf(1, true)],
     };
 
-    let unzoomed = crate::client::compute_active_rect_json_zoom_aware(&layout, area, false).unwrap();
+    let unzoomed =
+        crate::client::compute_active_rect_json_zoom_aware(&layout, area, false).unwrap();
     let zoomed = crate::client::compute_active_rect_json_zoom_aware(&layout, area, true).unwrap();
 
-    assert_ne!(unzoomed.y, area.y, "baseline split traversal should offset lower pane");
-    assert_eq!(zoomed, area, "zoom-aware traversal should keep full-area origin");
+    assert_ne!(
+        unzoomed.y, area.y,
+        "baseline split traversal should offset lower pane"
+    );
+    assert_eq!(
+        zoomed, area,
+        "zoom-aware traversal should keep full-area origin"
+    );
 }
 
 #[test]
@@ -75,14 +89,18 @@ fn zoomed_nested_non_first_active_does_not_compound_offsets() {
         ],
     };
 
-    let unzoomed = crate::client::compute_active_rect_json_zoom_aware(&layout, area, false).unwrap();
+    let unzoomed =
+        crate::client::compute_active_rect_json_zoom_aware(&layout, area, false).unwrap();
     let zoomed = crate::client::compute_active_rect_json_zoom_aware(&layout, area, true).unwrap();
 
     assert!(
         unzoomed.x > area.x || unzoomed.y > area.y,
         "baseline split traversal should offset nested non-first pane"
     );
-    assert_eq!(zoomed, area, "zoom-aware traversal should avoid cumulative nested offsets");
+    assert_eq!(
+        zoomed, area,
+        "zoom-aware traversal should avoid cumulative nested offsets"
+    );
 }
 
 #[test]

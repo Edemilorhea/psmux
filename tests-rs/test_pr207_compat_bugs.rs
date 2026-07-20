@@ -19,7 +19,11 @@ fn mock_app() -> AppState {
 
 fn make_window(name: &str, id: usize) -> crate::types::Window {
     crate::types::Window {
-        root: Node::Split { kind: LayoutKind::Horizontal, sizes: vec![], children: vec![] },
+        root: Node::Split {
+            kind: LayoutKind::Horizontal,
+            sizes: vec![],
+            children: vec![],
+        },
         active_path: vec![],
         name: name.to_string(),
         id,
@@ -59,7 +63,10 @@ fn set_buffer_without_name_stores_content() {
     app.control_port = None;
     let _ = execute_command_string(&mut app, "set-buffer HELLO_WORLD");
     assert_eq!(app.paste_buffers.len(), 1, "Should have 1 buffer");
-    assert_eq!(app.paste_buffers[0], "HELLO_WORLD", "Buffer content mismatch");
+    assert_eq!(
+        app.paste_buffers[0], "HELLO_WORLD",
+        "Buffer content mismatch"
+    );
 }
 
 #[test]
@@ -70,19 +77,25 @@ fn set_buffer_with_b_flag_should_not_store_flag_as_content() {
     app.control_port = None;
     let _ = execute_command_string(&mut app, "set-buffer -b mybuf ACTUAL_CONTENT");
     // Named buffer should have been stored
-    assert!(app.named_buffers.contains_key("mybuf"), "Named buffer 'mybuf' should exist");
+    assert!(
+        app.named_buffers.contains_key("mybuf"),
+        "Named buffer 'mybuf' should exist"
+    );
     let content = &app.named_buffers["mybuf"];
     assert!(
         !content.contains("-b"),
-        "Buffer should NOT contain the -b flag, got: '{}'", content
+        "Buffer should NOT contain the -b flag, got: '{}'",
+        content
     );
     assert!(
         !content.contains("mybuf"),
-        "Buffer content should NOT contain the buffer name 'mybuf', got: '{}'", content
+        "Buffer content should NOT contain the buffer name 'mybuf', got: '{}'",
+        content
     );
     assert!(
         content.contains("ACTUAL_CONTENT"),
-        "Buffer should contain 'ACTUAL_CONTENT', got: '{}'", content
+        "Buffer should contain 'ACTUAL_CONTENT', got: '{}'",
+        content
     );
 }
 
@@ -95,16 +108,32 @@ fn set_buffer_with_b_flag_multiple_names_independent() {
     let _ = execute_command_string(&mut app, "set-buffer -b alpha ALPHA_DATA");
     let _ = execute_command_string(&mut app, "set-buffer -b beta BETA_DATA");
     // Both named buffers should exist
-    assert_eq!(app.named_buffers.len(), 2, "Should have 2 named buffers, got {}", app.named_buffers.len());
-    assert_eq!(app.named_buffers["alpha"], "ALPHA_DATA", "alpha should contain ALPHA_DATA");
-    assert_eq!(app.named_buffers["beta"], "BETA_DATA", "beta should contain BETA_DATA");
+    assert_eq!(
+        app.named_buffers.len(),
+        2,
+        "Should have 2 named buffers, got {}",
+        app.named_buffers.len()
+    );
+    assert_eq!(
+        app.named_buffers["alpha"], "ALPHA_DATA",
+        "alpha should contain ALPHA_DATA"
+    );
+    assert_eq!(
+        app.named_buffers["beta"], "BETA_DATA",
+        "beta should contain BETA_DATA"
+    );
     // Positional stack should be untouched
-    assert!(app.paste_buffers.is_empty(), "Positional stack should remain empty when using -b");
+    assert!(
+        app.paste_buffers.is_empty(),
+        "Positional stack should remain empty when using -b"
+    );
     // Neither buffer should have leaked the -b flag or buffer name into content
     for (name, buf) in &app.named_buffers {
         assert!(
             !buf.contains("-b"),
-            "Buffer '{}' should not contain '-b': '{}'", name, buf
+            "Buffer '{}' should not contain '-b': '{}'",
+            name,
+            buf
         );
     }
 }
@@ -117,18 +146,21 @@ fn show_buffer_with_b_flag_retrieves_named_buffer() {
     // Add positional buffers
     app.paste_buffers.insert(0, "STACK_TOP".to_string());
     // Add named buffer
-    app.named_buffers.insert("myname".to_string(), "NAMED_CONTENT".to_string());
+    app.named_buffers
+        .insert("myname".to_string(), "NAMED_CONTENT".to_string());
     // show-buffer -b myname should show NAMED_CONTENT
     let _ = execute_command_string(&mut app, "show-buffer -b myname");
     match &app.mode {
         Mode::PopupMode { output, .. } => {
             assert!(
                 output.contains("NAMED_CONTENT"),
-                "show-buffer -b myname should show named buffer content, got: '{}'", output
+                "show-buffer -b myname should show named buffer content, got: '{}'",
+                output
             );
             assert!(
                 !output.contains("STACK_TOP"),
-                "show-buffer -b myname should NOT show stack top, got: '{}'", output
+                "show-buffer -b myname should NOT show stack top, got: '{}'",
+                output
             );
         }
         _ => panic!("Expected PopupMode for show-buffer"),
@@ -226,12 +258,14 @@ fn set_buffer_b_then_list_buffers_no_name_leak() {
             // The listing should NOT show the buffer name inside the content preview
             assert!(
                 !output.contains("myname ACTUAL_PAYLOAD"),
-                "list-buffers content preview should not leak buffer name. Got: '{}'", output
+                "list-buffers content preview should not leak buffer name. Got: '{}'",
+                output
             );
             // Should show the content
             assert!(
                 output.contains("ACTUAL_PAYLOAD"),
-                "list-buffers should show buffer content. Got: '{}'", output
+                "list-buffers should show buffer content. Got: '{}'",
+                output
             );
         }
         _ => {} // list-buffers may route to server
@@ -245,5 +279,9 @@ fn delete_buffer_works_normally() {
     let _ = execute_command_string(&mut app, "set-buffer BUFFER_TO_DELETE");
     assert_eq!(app.paste_buffers.len(), 1);
     let _ = execute_command_string(&mut app, "delete-buffer");
-    assert_eq!(app.paste_buffers.len(), 0, "delete-buffer should remove buffer");
+    assert_eq!(
+        app.paste_buffers.len(),
+        0,
+        "delete-buffer should remove buffer"
+    );
 }

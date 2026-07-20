@@ -7,12 +7,12 @@
 // #{C/flags:fmt}, chained modifiers with ';',
 // -F custom format for list commands.
 
-use std::env;
 use std::cell::{Cell, RefCell};
+use std::env;
 
-use crate::types::{AppState, Node, LayoutKind, Pane, Mode, VERSION};
-use crate::tree::{split_with_gaps, get_active_pane_id, active_pane, count_panes};
 use crate::config::format_key_binding;
+use crate::tree::{active_pane, count_panes, get_active_pane_id, split_with_gaps};
+use crate::types::{AppState, LayoutKind, Mode, Node, Pane, VERSION};
 
 // Thread-local override for per-pane format expansion in list-panes.
 // When set to Some(pos), pane_* variables resolve for the Nth pane (0-based)
@@ -51,9 +51,16 @@ fn layout_node(node: &Node, area: ratatui::prelude::Rect) -> String {
     match node {
         Node::Leaf(pane) => {
             // WxH,X,Y,pane_id
-            format!("{}x{},{},{},{}", area.width, area.height, area.x, area.y, pane.id)
+            format!(
+                "{}x{},{},{},{}",
+                area.width, area.height, area.x, area.y, pane.id
+            )
         }
-        Node::Split { kind, sizes, children } => {
+        Node::Split {
+            kind,
+            sizes,
+            children,
+        } => {
             let is_horizontal = matches!(*kind, LayoutKind::Horizontal);
             let effective_sizes: Vec<u16> = if sizes.len() == children.len() {
                 sizes.clone()
@@ -61,18 +68,27 @@ fn layout_node(node: &Node, area: ratatui::prelude::Rect) -> String {
                 vec![(100 / children.len().max(1)) as u16; children.len()]
             };
             let rects = split_with_gaps(is_horizontal, &effective_sizes, area);
-            
-            let (open, close) = if is_horizontal { ('{', '}') } else { ('[', ']') };
-            
+
+            let (open, close) = if is_horizontal {
+                ('{', '}')
+            } else {
+                ('[', ']')
+            };
+
             let mut inner = String::new();
             for (i, child) in children.iter().enumerate() {
-                if i > 0 { inner.push(','); }
+                if i > 0 {
+                    inner.push(',');
+                }
                 if i < rects.len() {
                     inner.push_str(&layout_node(child, rects[i]));
                 }
             }
-            
-            format!("{}x{},{},{}{}{}{}", area.width, area.height, area.x, area.y, open, inner, close)
+
+            format!(
+                "{}x{},{},{}{}{}{}",
+                area.width, area.height, area.x, area.y, open, inner, close
+            )
         }
     }
 }
@@ -151,12 +167,18 @@ pub fn expand_format_for_window(fmt: &str, app: &AppState, win_idx: usize) -> St
                     } else {
                         result.push_str(&app.session_name);
                     }
-                    i += 2; continue;
+                    i += 2;
+                    continue;
                 }
                 b'I' => {
-                    let n = if win_idx < app.windows.len() { app.win_display_index(win_idx) } else { 0 };
+                    let n = if win_idx < app.windows.len() {
+                        app.win_display_index(win_idx)
+                    } else {
+                        0
+                    };
                     result.push_str(&n.to_string());
-                    i += 2; continue;
+                    i += 2;
+                    continue;
                 }
                 b'W' => {
                     if let Some(w) = app.windows.get(win_idx) {
@@ -166,7 +188,8 @@ pub fn expand_format_for_window(fmt: &str, app: &AppState, win_idx: usize) -> St
                             result.push_str(&w.name);
                         }
                     }
-                    i += 2; continue;
+                    i += 2;
+                    continue;
                 }
                 b'T' => {
                     if let Some(w) = app.windows.get(win_idx) {
@@ -174,27 +197,38 @@ pub fn expand_format_for_window(fmt: &str, app: &AppState, win_idx: usize) -> St
                             .map(|p| &p.title[..])
                             .filter(|t| !t.is_empty())
                             .unwrap_or("");
-                        let title = if title.is_empty() { hostname_cached() } else { title.to_string() };
+                        let title = if title.is_empty() {
+                            hostname_cached()
+                        } else {
+                            title.to_string()
+                        };
                         if has_strftime {
                             result.push_str(&escape_strftime_percent(&title));
                         } else {
                             result.push_str(&title);
                         }
                     }
-                    i += 2; continue;
+                    i += 2;
+                    continue;
                 }
                 b'P' => {
                     if let Some(w) = app.windows.get(win_idx) {
                         let active_id = get_active_pane_id(&w.root, &w.active_path).unwrap_or(0);
-                        let pos = crate::tree::get_pane_position_in_window(&w.root, active_id).unwrap_or(0);
+                        let pos = crate::tree::get_pane_position_in_window(&w.root, active_id)
+                            .unwrap_or(0);
                         result.push_str(&(pos + app.pane_base_index).to_string());
                     }
-                    i += 2; continue;
+                    i += 2;
+                    continue;
                 }
                 b'F' => {
-                    if win_idx == app.active_idx { result.push('*'); }
-                    else if win_idx == app.last_window_idx { result.push('-'); }
-                    i += 2; continue;
+                    if win_idx == app.active_idx {
+                        result.push('*');
+                    } else if win_idx == app.last_window_idx {
+                        result.push('-');
+                    }
+                    i += 2;
+                    continue;
                 }
                 b'H' | b'h' => {
                     if has_strftime {
@@ -202,7 +236,8 @@ pub fn expand_format_for_window(fmt: &str, app: &AppState, win_idx: usize) -> St
                     } else {
                         result.push_str(&hostname_cached());
                     }
-                    i += 2; continue;
+                    i += 2;
+                    continue;
                 }
                 b'D' => {
                     // tmux: #D = unique pane id (like %0, %1)
@@ -215,9 +250,14 @@ pub fn expand_format_for_window(fmt: &str, app: &AppState, win_idx: usize) -> St
                             result.push_str(&format!("%{}", active_id));
                         }
                     }
-                    i += 2; continue;
+                    i += 2;
+                    continue;
                 }
-                b'#' => { result.push('#'); i += 2; continue; }
+                b'#' => {
+                    result.push('#');
+                    i += 2;
+                    continue;
+                }
                 _ => {}
             }
         }
@@ -272,17 +312,15 @@ fn run_shell_command(cmd: &str, app: &AppState) -> String {
     }
 
     // Cache miss or expired: spawn the subprocess.
-    use std::process::Command;
     use crate::platform::HideWindowCommandExt;
+    use std::process::Command;
     let output = if cfg!(windows) {
         Command::new("cmd").args(["/C", cmd]).hide_window().output()
     } else {
         Command::new("sh").args(["-c", cmd]).output()
     };
     let value = match output {
-        Ok(o) if o.status.success() => {
-            String::from_utf8_lossy(&o.stdout).trim().to_string()
-        }
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
         _ => String::new(),
     };
 
@@ -323,11 +361,7 @@ pub fn expand_format_for_pane(
 /// Like `expand_format_for_pane` but resolves the pane by its global ID
 /// (e.g. from a bare `%N` -t target). Falls back to the active pane if no
 /// pane with that id exists. (Issue #332.)
-pub fn expand_format_for_pane_by_id(
-    fmt: &str,
-    app: &AppState,
-    pane_id: usize,
-) -> String {
+pub fn expand_format_for_pane_by_id(fmt: &str, app: &AppState, pane_id: usize) -> String {
     if let Some((win_idx, pos)) = crate::tree::find_pane_by_id_global(app, pane_id) {
         expand_format_for_pane(fmt, app, win_idx, pos)
     } else {
@@ -379,7 +413,11 @@ fn expand_expression(expr: &str, app: &AppState, win_idx: usize) -> String {
                 let two_arg = args.len() >= 2;
                 let mut parts = Vec::new();
                 for wi in 0..app.windows.len() {
-                    let fmt = if wi == app.active_idx { current_fmt } else { normal_fmt };
+                    let fmt = if wi == app.active_idx {
+                        current_fmt
+                    } else {
+                        normal_fmt
+                    };
                     parts.push(expand_format_for_window(fmt, app, wi));
                 }
                 // Two-argument form joins without separator (user controls layout),
@@ -428,9 +466,22 @@ fn try_expand_modifier_chain(expr: &str, app: &AppState, win_idx: usize) -> Opti
     let first = bytes[0];
 
     // Quick check: does this look like a modifier?
-    let is_modifier_start = matches!(first,
-        b't' | b'b' | b'd' | b'l' | b'E' | b'T' | b'q' | b's' | b'm' | b'C' |
-        b'e' | b'p' | b'=' | b'N' | b'w'
+    let is_modifier_start = matches!(
+        first,
+        b't' | b'b'
+            | b'd'
+            | b'l'
+            | b'E'
+            | b'T'
+            | b'q'
+            | b's'
+            | b'm'
+            | b'C'
+            | b'e'
+            | b'p'
+            | b'='
+            | b'N'
+            | b'w'
     );
 
     if !is_modifier_start {
@@ -459,14 +510,15 @@ fn try_expand_modifier_chain(expr: &str, app: &AppState, win_idx: usize) -> Opti
         // First, check if the first modifier is one that takes the target as a
         // format to expand (e.g. comparisons, match, math — where the target is
         // "arg1,arg2" not a variable).
-        let needs_raw_target = modifiers.iter().any(|m| matches!(m,
-            Modifier::MathExpr { .. } | Modifier::Match { .. }
-        ));
+        let needs_raw_target = modifiers
+            .iter()
+            .any(|m| matches!(m, Modifier::MathExpr { .. } | Modifier::Match { .. }));
 
         let mut value = if needs_raw_target {
             // Expand each comma-separated part individually
             let parts = split_at_depth0(target, b',');
-            parts.iter()
+            parts
+                .iter()
                 .map(|p| expand_var_or_format(p, app, win_idx))
                 .collect::<Vec<_>>()
                 .join(",")
@@ -522,13 +574,27 @@ enum Modifier {
     Expand,
     ExpandTime,
     Quote,
-    Substitute { pattern: String, replacement: String, case_insensitive: bool },
+    Substitute {
+        pattern: String,
+        replacement: String,
+        case_insensitive: bool,
+    },
     Trim(i32),
     TrimWithMarker(i32, String),
     Pad(i32),
-    MathExpr { op: char, floating: bool, decimals: u32 },
-    Match { regex: bool, case_insensitive: bool },
-    SearchContent { _regex: bool, _case_insensitive: bool },
+    MathExpr {
+        op: char,
+        floating: bool,
+        decimals: u32,
+    },
+    Match {
+        regex: bool,
+        case_insensitive: bool,
+    },
+    SearchContent {
+        _regex: bool,
+        _case_insensitive: bool,
+    },
     Width,
 }
 
@@ -546,7 +612,9 @@ fn parse_modifier_chain(spec: &str) -> Vec<Modifier> {
 
 /// Parse one modifier segment.
 fn parse_single_modifier(spec: &str) -> Option<Modifier> {
-    if spec.is_empty() { return None; }
+    if spec.is_empty() {
+        return None;
+    }
     let first = spec.as_bytes()[0] as char;
     let rest = &spec[1..];
 
@@ -559,7 +627,9 @@ fn parse_single_modifier(spec: &str) -> Option<Modifier> {
         'q' => Some(Modifier::Quote),
         'w' => Some(Modifier::Width),
         '=' => {
-            if rest.is_empty() { return Some(Modifier::Trim(0)); }
+            if rest.is_empty() {
+                return Some(Modifier::Trim(0));
+            }
             let sep = rest.as_bytes()[0];
             if sep == b'/' || sep == b'|' {
                 let sep_ch = sep as char;
@@ -578,7 +648,9 @@ fn parse_single_modifier(spec: &str) -> Option<Modifier> {
             Some(Modifier::Pad(n))
         }
         's' => {
-            if rest.is_empty() { return None; }
+            if rest.is_empty() {
+                return None;
+            }
             let sep = rest.as_bytes()[0] as char;
             let inner = &rest[1..];
             let parts: Vec<&str> = inner.splitn(3, sep).collect();
@@ -592,26 +664,40 @@ fn parse_single_modifier(spec: &str) -> Option<Modifier> {
             })
         }
         'e' => {
-            if rest.is_empty() { return None; }
+            if rest.is_empty() {
+                return None;
+            }
             let sep = rest.as_bytes()[0] as char;
             let inner = &rest[1..];
             let parts: Vec<&str> = inner.splitn(3, sep).collect();
             let op = parts.first().and_then(|s| s.chars().next()).unwrap_or('+');
             let flags = parts.get(1).unwrap_or(&"");
             let floating = flags.contains('f');
-            let decimals: u32 = parts.get(2).and_then(|s| s.parse().ok())
+            let decimals: u32 = parts
+                .get(2)
+                .and_then(|s| s.parse().ok())
                 .unwrap_or(if floating { 2 } else { 0 });
-            Some(Modifier::MathExpr { op, floating, decimals })
+            Some(Modifier::MathExpr {
+                op,
+                floating,
+                decimals,
+            })
         }
         'm' => {
             let regex = rest.contains('r');
             let ci = rest.contains('i');
-            Some(Modifier::Match { regex, case_insensitive: ci })
+            Some(Modifier::Match {
+                regex,
+                case_insensitive: ci,
+            })
         }
         'C' => {
             let regex = rest.contains('r');
             let ci = rest.contains('i');
-            Some(Modifier::SearchContent { _regex: regex, _case_insensitive: ci })
+            Some(Modifier::SearchContent {
+                _regex: regex,
+                _case_insensitive: ci,
+            })
         }
         _ => None,
     }
@@ -629,30 +715,28 @@ fn apply_modifier(m: &Modifier, value: &str, app: &AppState, win_idx: usize) -> 
             }
             value.to_string()
         }
-        Modifier::Basename => {
-            std::path::Path::new(value)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or(value)
-                .to_string()
-        }
-        Modifier::Dirname => {
-            std::path::Path::new(value)
-                .parent()
-                .and_then(|p| p.to_str())
-                .unwrap_or("")
-                .to_string()
-        }
-        Modifier::Expand => {
-            expand_format_for_window(value, app, win_idx)
-        }
+        Modifier::Basename => std::path::Path::new(value)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(value)
+            .to_string(),
+        Modifier::Dirname => std::path::Path::new(value)
+            .parent()
+            .and_then(|p| p.to_str())
+            .unwrap_or("")
+            .to_string(),
+        Modifier::Expand => expand_format_for_window(value, app, win_idx),
         Modifier::ExpandTime => {
             let expanded = expand_format_for_window(value, app, win_idx);
             if expanded.contains('%') {
                 use std::fmt::Write;
                 let formatted = chrono::Local::now().format(&expanded);
                 let mut buf = String::with_capacity(expanded.len() + 32);
-                if write!(buf, "{}", formatted).is_ok() { buf } else { expanded }
+                if write!(buf, "{}", formatted).is_ok() {
+                    buf
+                } else {
+                    expanded
+                }
             } else {
                 expanded
             }
@@ -661,8 +745,8 @@ fn apply_modifier(m: &Modifier, value: &str, app: &AppState, win_idx: usize) -> 
             let mut out = String::with_capacity(value.len() * 2);
             for ch in value.chars() {
                 match ch {
-                    '(' | ')' | '[' | ']' | '{' | '}' | '$' | '\\' | '\'' | '"'
-                    | '`' | '!' | '#' | '&' | '|' | ';' | '<' | '>' | ' ' | '\t' | '\n' => {
+                    '(' | ')' | '[' | ']' | '{' | '}' | '$' | '\\' | '\'' | '"' | '`' | '!'
+                    | '#' | '&' | '|' | ';' | '<' | '>' | ' ' | '\t' | '\n' => {
                         out.push('\\');
                         out.push(ch);
                     }
@@ -673,21 +757,31 @@ fn apply_modifier(m: &Modifier, value: &str, app: &AppState, win_idx: usize) -> 
         }
         Modifier::Trim(n) => {
             let n = *n;
-            if n == 0 { return value.to_string(); }
+            if n == 0 {
+                return value.to_string();
+            }
             let chars: Vec<char> = value.chars().collect();
             if n > 0 {
                 let len = n as usize;
-                if chars.len() > len { chars[..len].iter().collect() }
-                else { value.to_string() }
+                if chars.len() > len {
+                    chars[..len].iter().collect()
+                } else {
+                    value.to_string()
+                }
             } else {
                 let len = (-n) as usize;
-                if chars.len() > len { chars[chars.len() - len..].iter().collect() }
-                else { value.to_string() }
+                if chars.len() > len {
+                    chars[chars.len() - len..].iter().collect()
+                } else {
+                    value.to_string()
+                }
             }
         }
         Modifier::TrimWithMarker(n, marker) => {
             let n = *n;
-            if n == 0 { return value.to_string(); }
+            if n == 0 {
+                return value.to_string();
+            }
             let chars: Vec<char> = value.chars().collect();
             if n > 0 {
                 let len = n as usize;
@@ -695,27 +789,40 @@ fn apply_modifier(m: &Modifier, value: &str, app: &AppState, win_idx: usize) -> 
                     let mut trimmed: String = chars[..len].iter().collect();
                     trimmed.push_str(marker);
                     trimmed
-                } else { value.to_string() }
+                } else {
+                    value.to_string()
+                }
             } else {
                 let len = (-n) as usize;
                 if chars.len() > len {
                     let mut trimmed = marker.clone();
                     trimmed.extend(chars[chars.len() - len..].iter());
                     trimmed
-                } else { value.to_string() }
+                } else {
+                    value.to_string()
+                }
             }
         }
         Modifier::Pad(n) => {
             let n = *n;
             let abs_n = n.unsigned_abs() as usize;
             let chars_len = value.chars().count();
-            if chars_len >= abs_n { return value.to_string(); }
+            if chars_len >= abs_n {
+                return value.to_string();
+            }
             let pad = abs_n - chars_len;
             let spaces: String = " ".repeat(pad);
-            if n > 0 { format!("{}{}", value, spaces) }
-            else { format!("{}{}", spaces, value) }
+            if n > 0 {
+                format!("{}{}", value, spaces)
+            } else {
+                format!("{}{}", spaces, value)
+            }
         }
-        Modifier::Substitute { pattern, replacement, case_insensitive } => {
+        Modifier::Substitute {
+            pattern,
+            replacement,
+            case_insensitive,
+        } => {
             let re_pattern = if *case_insensitive {
                 format!("(?i){}", pattern)
             } else {
@@ -726,16 +833,36 @@ fn apply_modifier(m: &Modifier, value: &str, app: &AppState, win_idx: usize) -> 
                 Err(_) => value.to_string(),
             }
         }
-        Modifier::MathExpr { op, floating, decimals } => {
+        Modifier::MathExpr {
+            op,
+            floating,
+            decimals,
+        } => {
             let parts = split_at_depth0(value, b',');
-            if parts.len() < 2 { return "0".into(); }
+            if parts.len() < 2 {
+                return "0".into();
+            }
             if *floating {
                 let a: f64 = parts[0].parse().unwrap_or(0.0);
                 let b: f64 = parts[1].parse().unwrap_or(0.0);
                 let r = match op {
-                    '+' => a + b, '-' => a - b, '*' => a * b,
-                    '/' => if b != 0.0 { a / b } else { 0.0 },
-                    'm' => if b != 0.0 { a % b } else { 0.0 },
+                    '+' => a + b,
+                    '-' => a - b,
+                    '*' => a * b,
+                    '/' => {
+                        if b != 0.0 {
+                            a / b
+                        } else {
+                            0.0
+                        }
+                    }
+                    'm' => {
+                        if b != 0.0 {
+                            a % b
+                        } else {
+                            0.0
+                        }
+                    }
                     _ => 0.0,
                 };
                 format!("{:.prec$}", r, prec = *decimals as usize)
@@ -743,47 +870,93 @@ fn apply_modifier(m: &Modifier, value: &str, app: &AppState, win_idx: usize) -> 
                 let a: i64 = parts[0].parse().unwrap_or(0);
                 let b: i64 = parts[1].parse().unwrap_or(0);
                 let r = match op {
-                    '+' => a + b, '-' => a - b, '*' => a * b,
-                    '/' => if b != 0 { a / b } else { 0 },
-                    'm' => if b != 0 { a % b } else { 0 },
+                    '+' => a + b,
+                    '-' => a - b,
+                    '*' => a * b,
+                    '/' => {
+                        if b != 0 {
+                            a / b
+                        } else {
+                            0
+                        }
+                    }
+                    'm' => {
+                        if b != 0 {
+                            a % b
+                        } else {
+                            0
+                        }
+                    }
                     _ => 0,
                 };
                 if *decimals > 0 {
                     format!("{:.prec$}", r as f64, prec = *decimals as usize)
-                } else { r.to_string() }
+                } else {
+                    r.to_string()
+                }
             }
         }
-        Modifier::Match { regex, case_insensitive } => {
+        Modifier::Match {
+            regex,
+            case_insensitive,
+        } => {
             let parts = split_at_depth0(value, b',');
-            if parts.len() < 2 { return "0".into(); }
+            if parts.len() < 2 {
+                return "0".into();
+            }
             let pattern = &parts[0];
             let subject = &parts[1];
             if *regex {
-                let re_pat = if *case_insensitive { format!("(?i){}", pattern) }
-                    else { pattern.to_string() };
+                let re_pat = if *case_insensitive {
+                    format!("(?i){}", pattern)
+                } else {
+                    pattern.to_string()
+                };
                 match regex::Regex::new(&re_pat) {
-                    Ok(re) => if re.is_match(subject) { "1".into() } else { "0".into() },
+                    Ok(re) => {
+                        if re.is_match(subject) {
+                            "1".into()
+                        } else {
+                            "0".into()
+                        }
+                    }
                     Err(_) => "0".into(),
                 }
             } else {
-                if glob_match(pattern, subject, *case_insensitive) { "1".into() }
-                else { "0".into() }
+                if glob_match(pattern, subject, *case_insensitive) {
+                    "1".into()
+                } else {
+                    "0".into()
+                }
             }
         }
-        Modifier::SearchContent { _regex, _case_insensitive } => {
+        Modifier::SearchContent {
+            _regex,
+            _case_insensitive,
+        } => {
             // #{C:pattern} — Search for pattern in pane content, return line number or empty
             let pattern = value;
-            if pattern.is_empty() { return String::new(); }
+            if pattern.is_empty() {
+                return String::new();
+            }
             if let Some(w) = app.windows.get(win_idx) {
                 if let Some(p) = active_pane(&w.root, &w.active_path) {
                     if let Ok(parser) = p.term.lock() {
                         let screen = parser.screen();
                         let re_result = if *_regex {
-                            let pat = if *_case_insensitive { format!("(?i){}", pattern) } else { pattern.to_string() };
+                            let pat = if *_case_insensitive {
+                                format!("(?i){}", pattern)
+                            } else {
+                                pattern.to_string()
+                            };
                             regex::Regex::new(&pat).ok()
                         } else {
                             let escaped = regex::escape(pattern);
-                            let pat = if *_case_insensitive { format!("(?i){}", escaped) } else { escaped };
+                            let pat = if *_case_insensitive {
+                                format!("(?i){}", escaped)
+                            } else {
+                                escaped
+                            };
                             regex::Regex::new(&pat).ok()
                         };
                         if let Some(re) = re_result {
@@ -792,8 +965,14 @@ fn apply_modifier(m: &Modifier, value: &str, app: &AppState, win_idx: usize) -> 
                                 for c in 0..p.last_cols {
                                     if let Some(cell) = screen.cell(r, c) {
                                         let t = cell.contents();
-                                        if t.is_empty() { row_text.push(' '); } else { row_text.push_str(t); }
-                                    } else { row_text.push(' '); }
+                                        if t.is_empty() {
+                                            row_text.push(' ');
+                                        } else {
+                                            row_text.push_str(t);
+                                        }
+                                    } else {
+                                        row_text.push(' ');
+                                    }
                                 }
                                 if re.is_match(&row_text) {
                                     return r.to_string();
@@ -805,9 +984,7 @@ fn apply_modifier(m: &Modifier, value: &str, app: &AppState, win_idx: usize) -> 
             }
             String::new()
         }
-        Modifier::Width => {
-            value.chars().count().to_string()
-        }
+        Modifier::Width => value.chars().count().to_string(),
     }
 }
 
@@ -846,33 +1023,88 @@ fn lookup_option(name: &str, app: &AppState) -> Option<String> {
     match name {
         "status-left" => Some(app.status_left.clone()),
         "status-right" => Some(app.status_right.clone()),
-        "status" => Some(if app.status_visible { "on".into() } else { "off".into() }),
+        "status" => Some(if app.status_visible {
+            "on".into()
+        } else {
+            "off".into()
+        }),
         "status-position" => Some(app.status_position.clone()),
         "status-style" => Some(app.status_style.clone()),
         "prefix" => Some(format_key_binding(&app.prefix_key)),
-        "prefix2" => Some(app.prefix2_key.as_ref().map(|k| format_key_binding(k)).unwrap_or_else(|| "none".to_string())),
+        "prefix2" => Some(
+            app.prefix2_key
+                .as_ref()
+                .map(|k| format_key_binding(k))
+                .unwrap_or_else(|| "none".to_string()),
+        ),
         "base-index" => Some(app.window_base_index.to_string()),
         "pane-base-index" => Some(app.pane_base_index.to_string()),
         "escape-time" => Some(app.escape_time_ms.to_string()),
         "history-limit" => Some(app.history_limit.to_string()),
-        "mouse" => Some(if app.mouse_enabled { "on".into() } else { "off".into() }),
-        "bold-is-bright" => Some(if app.bold_is_bright { "on".into() } else { "off".into() }),
-        "scroll-enter-copy-mode" => Some(if app.scroll_enter_copy_mode { "on".into() } else { "off".into() }),
-        "choose-tree-preview" => Some(if app.choose_tree_preview { "on".into() } else { "off".into() }),
+        "mouse" => Some(if app.mouse_enabled {
+            "on".into()
+        } else {
+            "off".into()
+        }),
+        "bold-is-bright" => Some(if app.bold_is_bright {
+            "on".into()
+        } else {
+            "off".into()
+        }),
+        "scroll-enter-copy-mode" => Some(if app.scroll_enter_copy_mode {
+            "on".into()
+        } else {
+            "off".into()
+        }),
+        "choose-tree-preview" => Some(if app.choose_tree_preview {
+            "on".into()
+        } else {
+            "off".into()
+        }),
         "mode-keys" => Some(app.mode_keys.clone()),
         "default-command" | "default-shell" => Some(if app.default_shell.is_empty() {
-            crate::pane::cached_shell().unwrap_or("pwsh.exe").to_string()
+            crate::pane::cached_shell()
+                .unwrap_or("pwsh.exe")
+                .to_string()
         } else {
             app.default_shell.clone()
         }),
         "word-separators" => Some(app.word_separators.clone()),
-        "renumber-windows" => Some(if app.renumber_windows { "on".into() } else { "off".into() }),
-        "automatic-rename" => Some(if app.automatic_rename { "on".into() } else { "off".into() }),
-        "monitor-activity" => Some(if app.monitor_activity { "on".into() } else { "off".into() }),
-        "remain-on-exit" => Some(if app.remain_on_exit { "on".into() } else { "off".into() }),
-        "destroy-unattached" => Some(if app.destroy_unattached { "on".into() } else { "off".into() }),
-        "exit-empty" => Some(if app.exit_empty { "on".into() } else { "off".into() }),
-        "set-titles" => Some(if app.set_titles { "on".into() } else { "off".into() }),
+        "renumber-windows" => Some(if app.renumber_windows {
+            "on".into()
+        } else {
+            "off".into()
+        }),
+        "automatic-rename" => Some(if app.automatic_rename {
+            "on".into()
+        } else {
+            "off".into()
+        }),
+        "monitor-activity" => Some(if app.monitor_activity {
+            "on".into()
+        } else {
+            "off".into()
+        }),
+        "remain-on-exit" => Some(if app.remain_on_exit {
+            "on".into()
+        } else {
+            "off".into()
+        }),
+        "destroy-unattached" => Some(if app.destroy_unattached {
+            "on".into()
+        } else {
+            "off".into()
+        }),
+        "exit-empty" => Some(if app.exit_empty {
+            "on".into()
+        } else {
+            "off".into()
+        }),
+        "set-titles" => Some(if app.set_titles {
+            "on".into()
+        } else {
+            "off".into()
+        }),
         "set-titles-string" => Some(app.set_titles_string.clone()),
         "pane-border-style" => Some(app.pane_border_style.clone()),
         "pane-active-border-style" => Some(app.pane_active_border_style.clone()),
@@ -894,19 +1126,45 @@ fn lookup_option(name: &str, app: &AppState) -> Option<String> {
         "status-justify" => Some(app.status_justify.clone()),
         "display-time" => Some(app.display_time_ms.to_string()),
         "display-panes-time" => Some(app.display_panes_time_ms.to_string()),
-        "focus-events" => Some(if app.focus_events { "on".into() } else { "off".into() }),
-        "aggressive-resize" => Some(if app.aggressive_resize { "on".into() } else { "off".into() }),
-        "synchronize-panes" => Some(if app.sync_input { "on".into() } else { "off".into() }),
+        "focus-events" => Some(if app.focus_events {
+            "on".into()
+        } else {
+            "off".into()
+        }),
+        "aggressive-resize" => Some(if app.aggressive_resize {
+            "on".into()
+        } else {
+            "off".into()
+        }),
+        "synchronize-panes" => Some(if app.sync_input {
+            "on".into()
+        } else {
+            "off".into()
+        }),
         "monitor-silence" => Some(app.monitor_silence.to_string()),
         "bell-action" => Some(app.bell_action.clone()),
-        "visual-bell" => Some(if app.visual_bell { "on".into() } else { "off".into() }),
-        "claude-code-fix-tty" => Some(if app.claude_code_fix_tty { "on".into() } else { "off".into() }),
-        "claude-code-force-interactive" => Some(if app.claude_code_force_interactive { "on".into() } else { "off".into() }),
+        "visual-bell" => Some(if app.visual_bell {
+            "on".into()
+        } else {
+            "off".into()
+        }),
+        "claude-code-fix-tty" => Some(if app.claude_code_fix_tty {
+            "on".into()
+        } else {
+            "off".into()
+        }),
+        "claude-code-force-interactive" => Some(if app.claude_code_force_interactive {
+            "on".into()
+        } else {
+            "off".into()
+        }),
         _ => {
             // Try user_options first (plugins store @cpu_percentage etc.),
             // then environment, then @name fallback for plugin compat
             // (format strings use #{cpu_percentage} without the @ prefix).
-            app.user_options.get(name).cloned()
+            app.user_options
+                .get(name)
+                .cloned()
                 .or_else(|| app.environment.get(name).cloned())
                 .or_else(|| {
                     if !name.starts_with('@') {
@@ -935,10 +1193,16 @@ fn try_comparison_op(expr: &str, app: &AppState, win_idx: usize) -> Option<Strin
     for &(prefix, cmp_fn) in ops {
         if let Some(rest) = expr.strip_prefix(prefix) {
             let parts = split_at_depth0(rest, b',');
-            if parts.len() < 2 { return Some("0".into()); }
+            if parts.len() < 2 {
+                return Some("0".into());
+            }
             let lhs = expand_var_or_format(&parts[0], app, win_idx);
             let rhs = expand_var_or_format(&parts[1], app, win_idx);
-            return Some(if cmp_fn(&lhs, &rhs) { "1".into() } else { "0".into() });
+            return Some(if cmp_fn(&lhs, &rhs) {
+                "1".into()
+            } else {
+                "0".into()
+            });
         }
     }
     None
@@ -948,7 +1212,9 @@ fn expand_boolean_or(body: &str, app: &AppState, win_idx: usize) -> String {
     let parts = split_at_depth0(body, b',');
     for part in &parts {
         let val = expand_var_or_format(part, app, win_idx);
-        if is_truthy(&val) { return "1".into(); }
+        if is_truthy(&val) {
+            return "1".into();
+        }
     }
     "0".into()
 }
@@ -957,7 +1223,9 @@ fn expand_boolean_and(body: &str, app: &AppState, win_idx: usize) -> String {
     let parts = split_at_depth0(body, b',');
     for part in &parts {
         let val = expand_var_or_format(part, app, win_idx);
-        if !is_truthy(&val) { return "0".into(); }
+        if !is_truthy(&val) {
+            return "0".into();
+        }
     }
     "1".into()
 }
@@ -1053,9 +1321,16 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
                 "pid" | "server_pid" => std::process::id().to_string(),
                 "version" => VERSION.to_string(),
                 "host" | "hostname" => hostname_cached(),
-                "host_short" => { let h = hostname_cached(); h.split('.').next().unwrap_or(&h).to_string() }
+                "host_short" => {
+                    let h = hostname_cached();
+                    h.split('.').next().unwrap_or(&h).to_string()
+                }
                 _ => {
-                    if let Some(v) = lookup_option(var, app) { v } else { String::new() }
+                    if let Some(v) = lookup_option(var, app) {
+                        v
+                    } else {
+                        String::new()
+                    }
                 }
             };
         }
@@ -1067,7 +1342,8 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
         if let Some(pos) = override_pos {
             let active_id = get_active_pane_id(&win.root, &win.active_path);
             let is_active = crate::tree::get_nth_pane(&win.root, pos)
-                .map(|p| Some(p.id) == active_id).unwrap_or(false);
+                .map(|p| Some(p.id) == active_id)
+                .unwrap_or(false);
             (pos, is_active)
         } else {
             let active_id = get_active_pane_id(&win.root, &win.active_path).unwrap_or(0);
@@ -1076,13 +1352,17 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
         }
     };
     // Helper closure to get the target pane reference
-    let target_pane = || -> Option<&Pane> {
-        crate::tree::get_nth_pane(&win.root, fmt_pane_pos)
-    };
+    let target_pane = || -> Option<&Pane> { crate::tree::get_nth_pane(&win.root, fmt_pane_pos) };
     match var {
         // ── Session ──
         "session_name" => app.session_name.clone(),
-        "session_attached" => if app.attached_clients > 0 { "1".into() } else { "0".into() },
+        "session_attached" => {
+            if app.attached_clients > 0 {
+                "1".into()
+            } else {
+                "0".into()
+            }
+        }
         "session_windows" => app.windows.len().to_string(),
         "session_id" => format!("${}", app.session_id),
         "session_created" => app.created_at.timestamp().to_string(),
@@ -1092,13 +1372,33 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
         "session_group" | "session_group_list" => app.session_group.clone().unwrap_or_default(),
         "session_alerts" | "session_stack" => String::new(),
         "session_group_attached" => {
-            if app.session_group.is_some() && app.attached_clients > 0 { "1".into() } else { "0".into() }
+            if app.session_group.is_some() && app.attached_clients > 0 {
+                "1".into()
+            } else {
+                "0".into()
+            }
         }
         "session_group_size" => {
-            if app.session_group.is_some() { "1".into() } else { "0".into() }
+            if app.session_group.is_some() {
+                "1".into()
+            } else {
+                "0".into()
+            }
         }
-        "session_grouped" => if app.session_group.is_some() { "1".into() } else { "0".into() },
-        "session_format" | "session_many_attached" => if app.attached_clients > 1 { "1".into() } else { "0".into() },
+        "session_grouped" => {
+            if app.session_group.is_some() {
+                "1".into()
+            } else {
+                "0".into()
+            }
+        }
+        "session_format" | "session_many_attached" => {
+            if app.attached_clients > 1 {
+                "1".into()
+            } else {
+                "0".into()
+            }
+        }
         "session_path" => std::env::current_dir()
             .map(|d| d.to_string_lossy().into_owned())
             .unwrap_or_default(),
@@ -1106,86 +1406,177 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
         // ── Window ──
         "window_index" => app.win_display_index(win_idx).to_string(),
         "window_name" => win.name.clone(),
-        "window_active" => if win_idx == app.active_idx { "1".into() } else { "0".into() },
+        "window_active" => {
+            if win_idx == app.active_idx {
+                "1".into()
+            } else {
+                "0".into()
+            }
+        }
         "window_panes" => count_panes(&win.root).to_string(),
         "window_flags" | "window_raw_flags" => {
             let mut f = String::new();
-            if win_idx == app.active_idx { f.push('*'); }
-            else if win_idx == app.last_window_idx { f.push('-'); }
-            if win.zoom_saved.is_some() { f.push('Z'); }
-            if win.activity_flag { f.push('#'); }
-            if win.bell_flag { f.push('!'); }
-            if win.silence_flag { f.push('~'); }
+            if win_idx == app.active_idx {
+                f.push('*');
+            } else if win_idx == app.last_window_idx {
+                f.push('-');
+            }
+            if win.zoom_saved.is_some() {
+                f.push('Z');
+            }
+            if win.activity_flag {
+                f.push('#');
+            }
+            if win.bell_flag {
+                f.push('!');
+            }
+            if win.silence_flag {
+                f.push('~');
+            }
             f
         }
         "window_id" => format!("@{}", win.id),
-        "window_activity_flag" => if win.activity_flag { "1".into() } else { "0".into() },
-        "window_zoomed_flag" => if win.zoom_saved.is_some() { "1".into() } else { "0".into() },
-        "window_layout" | "window_visible_layout" => generate_window_layout(&win.root, app.last_window_area),
+        "window_activity_flag" => {
+            if win.activity_flag {
+                "1".into()
+            } else {
+                "0".into()
+            }
+        }
+        "window_zoomed_flag" => {
+            if win.zoom_saved.is_some() {
+                "1".into()
+            } else {
+                "0".into()
+            }
+        }
+        "window_layout" | "window_visible_layout" => {
+            generate_window_layout(&win.root, app.last_window_area)
+        }
         "window_width" => app.last_window_area.width.to_string(),
         "window_height" => app.last_window_area.height.to_string(),
         "window_format" => "1".into(),
         "window_activity" => app.created_at.timestamp().to_string(),
-        "window_silence_flag" => if win.silence_flag { "1".into() } else { "0".into() },
-        "window_bell_flag" => if win.bell_flag { "1".into() } else { "0".into() },
-        "window_linked" => if win.linked_from.is_some() { "1".into() } else { "0".into() },
-        "window_linked_sessions" => if win.linked_from.is_some() { "1".into() } else { "0".into() },
+        "window_silence_flag" => {
+            if win.silence_flag {
+                "1".into()
+            } else {
+                "0".into()
+            }
+        }
+        "window_bell_flag" => {
+            if win.bell_flag {
+                "1".into()
+            } else {
+                "0".into()
+            }
+        }
+        "window_linked" => {
+            if win.linked_from.is_some() {
+                "1".into()
+            } else {
+                "0".into()
+            }
+        }
+        "window_linked_sessions" => {
+            if win.linked_from.is_some() {
+                "1".into()
+            } else {
+                "0".into()
+            }
+        }
         "window_linked_sessions_list" => String::new(),
-        "window_last_flag" => if win_idx == app.last_window_idx { "1".into() } else { "0".into() },
-        "window_start_flag" => if win_idx == 0 { "1".into() } else { "0".into() },
-        "window_end_flag" => if win_idx == app.windows.len().saturating_sub(1) { "1".into() } else { "0".into() },
+        "window_last_flag" => {
+            if win_idx == app.last_window_idx {
+                "1".into()
+            } else {
+                "0".into()
+            }
+        }
+        "window_start_flag" => {
+            if win_idx == 0 {
+                "1".into()
+            } else {
+                "0".into()
+            }
+        }
+        "window_end_flag" => {
+            if win_idx == app.windows.len().saturating_sub(1) {
+                "1".into()
+            } else {
+                "0".into()
+            }
+        }
         "window_bigger" => "0".into(),
         "window_cell_width" => "8".into(),
         "window_cell_height" => "16".into(),
         "window_offset_x" | "window_offset_y" | "window_stack_index" => "0".into(),
 
         // ── Pane ──
-        "pane_index" => {
-            (fmt_pane_pos + app.pane_base_index).to_string()
-        }
+        "pane_index" => (fmt_pane_pos + app.pane_base_index).to_string(),
         "pane_id" => {
-            if let Some(p) = target_pane() { format!("%{}", p.id) } else { "%0".into() }
+            if let Some(p) = target_pane() {
+                format!("%{}", p.id)
+            } else {
+                "%0".into()
+            }
         }
         "pane_title" => {
             if let Some(p) = target_pane() {
-                if !p.title.is_empty() { p.title.clone() } else { hostname_cached() }
-            } else { hostname_cached() }
+                if !p.title.is_empty() {
+                    p.title.clone()
+                } else {
+                    hostname_cached()
+                }
+            } else {
+                hostname_cached()
+            }
         }
         "pane_width" => {
-            if let Some(p) = target_pane() { p.last_cols.to_string() } else { "80".into() }
+            if let Some(p) = target_pane() {
+                p.last_cols.to_string()
+            } else {
+                "80".into()
+            }
         }
         "pane_height" => {
-            if let Some(p) = target_pane() { p.last_rows.to_string() } else { "24".into() }
+            if let Some(p) = target_pane() {
+                p.last_rows.to_string()
+            } else {
+                "24".into()
+            }
         }
         // Milliseconds since this pane last received printable text on the
         // INTERACTIVE input route (handle_key); empty if none yet. The injected
         // route (send-keys / send-paste / send-text) does NOT update it. A
         // read-only route signal — consumers own any policy on top.
-        "pane_last_text_input" => {
-            match target_pane().and_then(|p| p.last_text_input) {
-                Some(t) => t.elapsed().as_millis().to_string(),
-                None => String::new(),
-            }
-        }
+        "pane_last_text_input" => match target_pane().and_then(|p| p.last_text_input) {
+            Some(t) => t.elapsed().as_millis().to_string(),
+            None => String::new(),
+        },
         // The last NON-text key received on the INTERACTIVE input route
         // (handle_key), by canonical bind-key name (Escape, Enter, Up, F9,
         // C-c, M-a, ...); companion _ms gives its age in ms. Empty if none yet.
         // Like pane_last_text_input, the injected route (send-keys /
         // send-paste / send-text) does NOT update it. A read-only route signal
         // -- consumers own any policy on top.
-        "pane_last_special_key" => {
-            match target_pane().and_then(|p| p.last_special_key.as_ref()) {
-                Some((_, name)) => name.clone(),
-                None => String::new(),
-            }
-        }
+        "pane_last_special_key" => match target_pane().and_then(|p| p.last_special_key.as_ref()) {
+            Some((_, name)) => name.clone(),
+            None => String::new(),
+        },
         "pane_last_special_key_ms" => {
             match target_pane().and_then(|p| p.last_special_key.as_ref()) {
                 Some((t, _)) => t.elapsed().as_millis().to_string(),
                 None => String::new(),
             }
         }
-        "pane_active" => if fmt_pane_is_active { "1".into() } else { "0".into() },
+        "pane_active" => {
+            if fmt_pane_is_active {
+                "1".into()
+            } else {
+                "0".into()
+            }
+        }
         "pane_current_command" => {
             if let Some(p) = target_pane() {
                 // Shell-integration OSC is authoritative (issue #299):
@@ -1206,7 +1597,9 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
                 } else {
                     "shell".into()
                 }
-            } else { String::new() }
+            } else {
+                String::new()
+            }
         }
         "pane_current_path" => {
             if let Some(p) = target_pane() {
@@ -1226,24 +1619,35 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
                 std::env::current_dir()
                     .map(|d| d.to_string_lossy().into_owned())
                     .unwrap_or_default()
-            } else { String::new() }
+            } else {
+                String::new()
+            }
         }
         "pane_path" => {
             // Pure OSC 7 value (tmux-compatible: only what the shell announced)
             if let Some(p) = target_pane() {
                 if let Ok(parser) = p.term.lock() {
                     parser.screen().path().unwrap_or_default().to_string()
-                } else { String::new() }
-            } else { String::new() }
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            }
         }
         "pane_pid" => {
             if let Some(p) = target_pane() {
                 p.child_pid.map(|pid| pid.to_string()).unwrap_or_default()
-            } else { String::new() }
+            } else {
+                String::new()
+            }
         }
         "pane_tty" => {
-            if let Some(p) = target_pane() { format!("/dev/pty{}", p.id) }
-            else { String::new() }
+            if let Some(p) = target_pane() {
+                format!("/dev/pty{}", p.id)
+            } else {
+                String::new()
+            }
         }
         "pane_in_mode" => match app.mode {
             Mode::CopyMode | Mode::CopySearch { .. } | Mode::ClockMode => "1".into(),
@@ -1254,21 +1658,34 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
             Mode::ClockMode => "clock-mode".into(),
             _ => String::new(),
         },
-        "pane_synchronized" => if app.sync_input { "1".into() } else { "0".into() },
+        "pane_synchronized" => {
+            if app.sync_input {
+                "1".into()
+            } else {
+                "0".into()
+            }
+        }
         "pane_dead" => {
             if let Some(p) = target_pane() {
-                if p.dead { "1".into() } else { "0".into() }
-            } else { "0".into() }
+                if p.dead {
+                    "1".into()
+                } else {
+                    "0".into()
+                }
+            } else {
+                "0".into()
+            }
         }
         "pane_dead_signal" | "pane_dead_status" | "pane_dead_time" => "0".into(),
         "pane_format" => "1".into(),
-        "pane_input_off"
-        | "pane_pipe" | "pane_unseen_changes" => "0".into(),
+        "pane_input_off" | "pane_pipe" | "pane_unseen_changes" => "0".into(),
         "pane_last" => {
             if let Some(p) = target_pane() {
                 if !app.last_pane_path.is_empty() {
                     if let Some(last_p) = active_pane(&win.root, &app.last_pane_path) {
-                        if last_p.id == p.id { return "1".into(); }
+                        if last_p.id == p.id {
+                            return "1".into();
+                        }
                     }
                 }
             }
@@ -1277,12 +1694,24 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
         "pane_marked" => {
             if let Some(p) = target_pane() {
                 if let Some((mw, mp)) = app.marked_pane {
-                    if mw == win_idx && mp == p.id { "1".into() } else { "0".into() }
-                } else { "0".into() }
-            } else { "0".into() }
+                    if mw == win_idx && mp == p.id {
+                        "1".into()
+                    } else {
+                        "0".into()
+                    }
+                } else {
+                    "0".into()
+                }
+            } else {
+                "0".into()
+            }
         }
         "pane_marked_set" => {
-            if app.marked_pane.is_some() { "1".into() } else { "0".into() }
+            if app.marked_pane.is_some() {
+                "1".into()
+            } else {
+                "0".into()
+            }
         }
         "pane_left" => {
             if let Some(p) = target_pane() {
@@ -1290,8 +1719,14 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
                 crate::tree::compute_rects(&win.root, app.last_window_area, &mut rects);
                 if let Some((_, rect)) = rects.iter().find(|(path, _)| {
                     crate::tree::get_active_pane_id_at_path(&win.root, path) == Some(p.id)
-                }) { rect.x.to_string() } else { "0".into() }
-            } else { "0".into() }
+                }) {
+                    rect.x.to_string()
+                } else {
+                    "0".into()
+                }
+            } else {
+                "0".into()
+            }
         }
         "pane_top" => {
             if let Some(p) = target_pane() {
@@ -1299,8 +1734,14 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
                 crate::tree::compute_rects(&win.root, app.last_window_area, &mut rects);
                 if let Some((_, rect)) = rects.iter().find(|(path, _)| {
                     crate::tree::get_active_pane_id_at_path(&win.root, path) == Some(p.id)
-                }) { rect.y.to_string() } else { "0".into() }
-            } else { "0".into() }
+                }) {
+                    rect.y.to_string()
+                } else {
+                    "0".into()
+                }
+            } else {
+                "0".into()
+            }
         }
         "pane_right" => {
             if let Some(p) = target_pane() {
@@ -1308,8 +1749,14 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
                 crate::tree::compute_rects(&win.root, app.last_window_area, &mut rects);
                 if let Some((_, rect)) = rects.iter().find(|(path, _)| {
                     crate::tree::get_active_pane_id_at_path(&win.root, path) == Some(p.id)
-                }) { (rect.x + rect.width).saturating_sub(1).to_string() } else { "79".into() }
-            } else { "79".into() }
+                }) {
+                    (rect.x + rect.width).saturating_sub(1).to_string()
+                } else {
+                    "79".into()
+                }
+            } else {
+                "79".into()
+            }
         }
         "pane_bottom" => {
             if let Some(p) = target_pane() {
@@ -1317,8 +1764,14 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
                 crate::tree::compute_rects(&win.root, app.last_window_area, &mut rects);
                 if let Some((_, rect)) = rects.iter().find(|(path, _)| {
                     crate::tree::get_active_pane_id_at_path(&win.root, path) == Some(p.id)
-                }) { (rect.y + rect.height).saturating_sub(1).to_string() } else { "23".into() }
-            } else { "23".into() }
+                }) {
+                    (rect.y + rect.height).saturating_sub(1).to_string()
+                } else {
+                    "23".into()
+                }
+            } else {
+                "23".into()
+            }
         }
         "pane_at_top" => {
             if let Some(p) = target_pane() {
@@ -1327,9 +1780,17 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
                 if let Some((_, rect)) = rects.iter().find(|(path, _)| {
                     crate::tree::get_active_pane_id_at_path(&win.root, path) == Some(p.id)
                 }) {
-                    if rect.y == app.last_window_area.y { "1".into() } else { "0".into() }
-                } else { "1".into() }
-            } else { "1".into() }
+                    if rect.y == app.last_window_area.y {
+                        "1".into()
+                    } else {
+                        "0".into()
+                    }
+                } else {
+                    "1".into()
+                }
+            } else {
+                "1".into()
+            }
         }
         "pane_at_bottom" => {
             if let Some(p) = target_pane() {
@@ -1340,9 +1801,17 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
                 }) {
                     let bottom = rect.y + rect.height;
                     let win_bottom = app.last_window_area.y + app.last_window_area.height;
-                    if bottom >= win_bottom { "1".into() } else { "0".into() }
-                } else { "1".into() }
-            } else { "1".into() }
+                    if bottom >= win_bottom {
+                        "1".into()
+                    } else {
+                        "0".into()
+                    }
+                } else {
+                    "1".into()
+                }
+            } else {
+                "1".into()
+            }
         }
         "pane_at_left" => {
             if let Some(p) = target_pane() {
@@ -1351,9 +1820,17 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
                 if let Some((_, rect)) = rects.iter().find(|(path, _)| {
                     crate::tree::get_active_pane_id_at_path(&win.root, path) == Some(p.id)
                 }) {
-                    if rect.x == app.last_window_area.x { "1".into() } else { "0".into() }
-                } else { "1".into() }
-            } else { "1".into() }
+                    if rect.x == app.last_window_area.x {
+                        "1".into()
+                    } else {
+                        "0".into()
+                    }
+                } else {
+                    "1".into()
+                }
+            } else {
+                "1".into()
+            }
         }
         "pane_at_right" => {
             if let Some(p) = target_pane() {
@@ -1364,9 +1841,17 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
                 }) {
                     let right = rect.x + rect.width;
                     let win_right = app.last_window_area.x + app.last_window_area.width;
-                    if right >= win_right { "1".into() } else { "0".into() }
-                } else { "1".into() }
-            } else { "1".into() }
+                    if right >= win_right {
+                        "1".into()
+                    } else {
+                        "0".into()
+                    }
+                } else {
+                    "1".into()
+                }
+            } else {
+                "1".into()
+            }
         }
         "pane_search_string" => app.copy_search_query.clone(),
         "pane_start_command" => app.default_shell.clone(),
@@ -1438,8 +1923,11 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
                         // Convert screen-absolute mouse_y to pane-relative row
                         let mut rects = Vec::new();
                         crate::tree::compute_rects(&w.root, app.last_window_area, &mut rects);
-                        let pane_y_offset = rects.iter()
-                            .find(|(path, _)| crate::tree::get_active_pane_id_at_path(&w.root, path) == Some(p.id))
+                        let pane_y_offset = rects
+                            .iter()
+                            .find(|(path, _)| {
+                                crate::tree::get_active_pane_id_at_path(&w.root, path) == Some(p.id)
+                            })
                             .map(|(_, rect)| rect.y)
                             .unwrap_or(0);
                         let row = app.last_mouse_y.saturating_sub(pane_y_offset);
@@ -1447,8 +1935,14 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
                         for col in 0..cols {
                             if let Some(cell) = screen.cell(row, col) {
                                 let t = cell.contents();
-                                if t.is_empty() { row_text.push(' '); } else { row_text.push_str(t); }
-                            } else { row_text.push(' '); }
+                                if t.is_empty() {
+                                    row_text.push(' ');
+                                } else {
+                                    row_text.push_str(t);
+                                }
+                            } else {
+                                row_text.push(' ');
+                            }
                         }
                         return row_text.trim_end().to_string();
                     }
@@ -1464,8 +1958,11 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
                         let cols = p.last_cols;
                         let mut rects = Vec::new();
                         crate::tree::compute_rects(&w.root, app.last_window_area, &mut rects);
-                        let (pane_x_offset, pane_y_offset) = rects.iter()
-                            .find(|(path, _)| crate::tree::get_active_pane_id_at_path(&w.root, path) == Some(p.id))
+                        let (pane_x_offset, pane_y_offset) = rects
+                            .iter()
+                            .find(|(path, _)| {
+                                crate::tree::get_active_pane_id_at_path(&w.root, path) == Some(p.id)
+                            })
                             .map(|(_, rect)| (rect.x, rect.y))
                             .unwrap_or((0, 0));
                         let row = app.last_mouse_y.saturating_sub(pane_y_offset);
@@ -1474,23 +1971,37 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
                         for c in 0..cols {
                             if let Some(cell) = screen.cell(row, c) {
                                 let t = cell.contents();
-                                if t.is_empty() { row_text.push(' '); } else { row_text.push_str(t); }
-                            } else { row_text.push(' '); }
+                                if t.is_empty() {
+                                    row_text.push(' ');
+                                } else {
+                                    row_text.push_str(t);
+                                }
+                            } else {
+                                row_text.push(' ');
+                            }
                         }
                         let chars: Vec<char> = row_text.chars().collect();
                         let ci = col as usize;
                         if ci < chars.len() && !chars[ci].is_whitespace() {
                             let seps = &app.word_separators;
                             let cls = |ch: &char| -> u8 {
-                                if ch.is_whitespace() { 0 }
-                                else if seps.contains(*ch) { 1 }
-                                else { 2 }
+                                if ch.is_whitespace() {
+                                    0
+                                } else if seps.contains(*ch) {
+                                    1
+                                } else {
+                                    2
+                                }
                             };
                             let target = cls(&chars[ci]);
                             let mut start = ci;
-                            while start > 0 && cls(&chars[start - 1]) == target { start -= 1; }
+                            while start > 0 && cls(&chars[start - 1]) == target {
+                                start -= 1;
+                            }
                             let mut end = ci;
-                            while end + 1 < chars.len() && cls(&chars[end + 1]) == target { end += 1; }
+                            while end + 1 < chars.len() && cls(&chars[end + 1]) == target {
+                                end += 1;
+                            }
                             return chars[start..=end].iter().collect();
                         }
                     }
@@ -1500,8 +2011,14 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
         }
 
         // ── Copy mode ──
-        "copy_cursor_x" => app.copy_pos.map(|(_, c)| c.to_string()).unwrap_or("0".into()),
-        "copy_cursor_y" => app.copy_pos.map(|(r, _)| r.to_string()).unwrap_or("0".into()),
+        "copy_cursor_x" => app
+            .copy_pos
+            .map(|(_, c)| c.to_string())
+            .unwrap_or("0".into()),
+        "copy_cursor_y" => app
+            .copy_pos
+            .map(|(r, _)| r.to_string())
+            .unwrap_or("0".into()),
         "copy_cursor_word" => {
             // Return the word under the copy cursor
             if let (Some((r, c)), Some(w)) = (app.copy_pos, app.windows.get(win_idx)) {
@@ -1513,23 +2030,37 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
                         for col in 0..cols {
                             if let Some(cell) = screen.cell(r, col) {
                                 let t = cell.contents();
-                                if t.is_empty() { row_text.push(' '); } else { row_text.push_str(t); }
-                            } else { row_text.push(' '); }
+                                if t.is_empty() {
+                                    row_text.push(' ');
+                                } else {
+                                    row_text.push_str(t);
+                                }
+                            } else {
+                                row_text.push(' ');
+                            }
                         }
                         let chars: Vec<char> = row_text.chars().collect();
                         let ci = c as usize;
                         if ci < chars.len() && !chars[ci].is_whitespace() {
                             let seps = &app.word_separators;
                             let cls = |ch: &char| -> u8 {
-                                if ch.is_whitespace() { 0 }
-                                else if seps.contains(*ch) { 1 }
-                                else { 2 }
+                                if ch.is_whitespace() {
+                                    0
+                                } else if seps.contains(*ch) {
+                                    1
+                                } else {
+                                    2
+                                }
                             };
                             let target = cls(&chars[ci]);
                             let mut start = ci;
-                            while start > 0 && cls(&chars[start - 1]) == target { start -= 1; }
+                            while start > 0 && cls(&chars[start - 1]) == target {
+                                start -= 1;
+                            }
                             let mut end = ci;
-                            while end + 1 < chars.len() && cls(&chars[end + 1]) == target { end += 1; }
+                            while end + 1 < chars.len() && cls(&chars[end + 1]) == target {
+                                end += 1;
+                            }
                             return chars[start..=end].iter().collect();
                         }
                     }
@@ -1548,8 +2079,14 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
                         for col in 0..cols {
                             if let Some(cell) = screen.cell(r, col) {
                                 let t = cell.contents();
-                                if t.is_empty() { row_text.push(' '); } else { row_text.push_str(t); }
-                            } else { row_text.push(' '); }
+                                if t.is_empty() {
+                                    row_text.push(' ');
+                                } else {
+                                    row_text.push_str(t);
+                                }
+                            } else {
+                                row_text.push(' ');
+                            }
                         }
                         return row_text.trim_end().to_string();
                     }
@@ -1557,18 +2094,45 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
             }
             String::new()
         }
-        "selection_present" | "selection_active" => if app.copy_anchor.is_some() { "1".into() } else { "0".into() },
-        "selection_start_x" => app.copy_anchor.map(|(_, c)| c.to_string()).unwrap_or("0".into()),
-        "selection_start_y" => app.copy_anchor.map(|(r, _)| r.to_string()).unwrap_or("0".into()),
-        "selection_end_x" => app.copy_pos.map(|(_, c)| c.to_string()).unwrap_or("0".into()),
-        "selection_end_y" => app.copy_pos.map(|(r, _)| r.to_string()).unwrap_or("0".into()),
-        "search_present" => if !app.copy_search_query.is_empty() { "1".into() } else { "0".into() },
+        "selection_present" | "selection_active" => {
+            if app.copy_anchor.is_some() {
+                "1".into()
+            } else {
+                "0".into()
+            }
+        }
+        "selection_start_x" => app
+            .copy_anchor
+            .map(|(_, c)| c.to_string())
+            .unwrap_or("0".into()),
+        "selection_start_y" => app
+            .copy_anchor
+            .map(|(r, _)| r.to_string())
+            .unwrap_or("0".into()),
+        "selection_end_x" => app
+            .copy_pos
+            .map(|(_, c)| c.to_string())
+            .unwrap_or("0".into()),
+        "selection_end_y" => app
+            .copy_pos
+            .map(|(r, _)| r.to_string())
+            .unwrap_or("0".into()),
+        "search_present" => {
+            if !app.copy_search_query.is_empty() {
+                "1".into()
+            } else {
+                "0".into()
+            }
+        }
         "search_match" => {
             if !app.copy_search_matches.is_empty() {
-                app.copy_search_matches.get(app.copy_search_idx)
+                app.copy_search_matches
+                    .get(app.copy_search_idx)
                     .map(|_| app.copy_search_query.clone())
                     .unwrap_or_default()
-            } else { String::new() }
+            } else {
+                String::new()
+            }
         }
         "scroll_position" => app.copy_scroll_offset.to_string(),
         "scroll_region_upper" => "0".into(),
@@ -1584,18 +2148,32 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
             // Check named buffer override first
             let named = NAMED_BUFFER_OVERRIDE.with(|c| c.borrow().clone());
             if let Some(ref name) = named {
-                return app.named_buffers.get(name).map(|b| b.len().to_string()).unwrap_or("0".into());
+                return app
+                    .named_buffers
+                    .get(name)
+                    .map(|b| b.len().to_string())
+                    .unwrap_or("0".into());
             }
             let idx = BUFFER_IDX_OVERRIDE.get().unwrap_or(0);
-            app.paste_buffers.get(idx).map(|b| b.len().to_string()).unwrap_or("0".into())
+            app.paste_buffers
+                .get(idx)
+                .map(|b| b.len().to_string())
+                .unwrap_or("0".into())
         }
         "buffer_sample" => {
             let named = NAMED_BUFFER_OVERRIDE.with(|c| c.borrow().clone());
             if let Some(ref name) = named {
-                return app.named_buffers.get(name).map(|b| b.chars().take(50).collect::<String>()).unwrap_or_default();
+                return app
+                    .named_buffers
+                    .get(name)
+                    .map(|b| b.chars().take(50).collect::<String>())
+                    .unwrap_or_default();
             }
             let idx = BUFFER_IDX_OVERRIDE.get().unwrap_or(0);
-            app.paste_buffers.get(idx).map(|b| b.chars().take(50).collect::<String>()).unwrap_or_default()
+            app.paste_buffers
+                .get(idx)
+                .map(|b| b.chars().take(50).collect::<String>())
+                .unwrap_or_default()
         }
         "buffer_name" => {
             let named = NAMED_BUFFER_OVERRIDE.with(|c| c.borrow().clone());
@@ -1603,30 +2181,48 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
                 return name;
             }
             let idx = BUFFER_IDX_OVERRIDE.get().unwrap_or(0);
-            if idx < app.paste_buffers.len() { format!("buffer{:04}", idx) } else { String::new() }
+            if idx < app.paste_buffers.len() {
+                format!("buffer{:04}", idx)
+            } else {
+                String::new()
+            }
         }
         "buffer_created" => app.created_at.timestamp().to_string(),
 
         // ── Client ──
         "client_width" => app.last_window_area.width.to_string(),
-        "client_height" => (app.last_window_area.height + if app.status_visible { 1 } else { 0 }).to_string(),
+        "client_height" => {
+            (app.last_window_area.height + if app.status_visible { 1 } else { 0 }).to_string()
+        }
         "client_session" | "client_last_session" => app.session_name.clone(),
         "client_name" | "client_tty" => "client0".into(),
         "client_pid" => std::process::id().to_string(),
-        "client_prefix" => if app.client_prefix_active || matches!(app.mode, Mode::Prefix { .. }) { "1".into() } else { "0".into() },
+        "client_prefix" => {
+            if app.client_prefix_active || matches!(app.mode, Mode::Prefix { .. }) {
+                "1".into()
+            } else {
+                "0".into()
+            }
+        }
         "client_activity" | "client_created" => app.created_at.timestamp().to_string(),
-        "client_activity_string" | "client_created_string" => app.created_at.format("%a %b %e %H:%M:%S %Y").to_string(),
+        "client_activity_string" | "client_created_string" => {
+            app.created_at.format("%a %b %e %H:%M:%S %Y").to_string()
+        }
         "client_control_mode" => "0".into(),
         "client_flags" => "focused".into(),
-        "client_key_table" => if app.client_prefix_active || matches!(app.mode, Mode::Prefix { .. }) {
-            "prefix".into()
-        } else {
-            match app.mode {
-                Mode::CopyMode => "copy-mode-vi".into(),
-                _ => "root".into(),
+        "client_key_table" => {
+            if app.client_prefix_active || matches!(app.mode, Mode::Prefix { .. }) {
+                "prefix".into()
+            } else {
+                match app.mode {
+                    Mode::CopyMode => "copy-mode-vi".into(),
+                    _ => "root".into(),
+                }
             }
-        },
-        "client_termname" | "client_termtype" => env::var("TERM").unwrap_or_else(|_| "xterm-256color".into()),
+        }
+        "client_termname" | "client_termtype" => {
+            env::var("TERM").unwrap_or_else(|_| "xterm-256color".into())
+        }
         "client_termfeatures" => "256,RGB,title".into(),
         "client_utf8" => "1".into(),
         "client_cell_width" => "8".into(),
@@ -1635,27 +2231,74 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
 
         // ── Server ──
         "host" | "hostname" => hostname_cached(),
-        "host_short" => { let h = hostname_cached(); h.split('.').next().unwrap_or(&h).to_string() }
-        "user" | "username" => env::var("USERNAME").or_else(|_| env::var("USER")).unwrap_or_else(|_| "unknown".into()),
+        "host_short" => {
+            let h = hostname_cached();
+            h.split('.').next().unwrap_or(&h).to_string()
+        }
+        "user" | "username" => env::var("USERNAME")
+            .or_else(|_| env::var("USER"))
+            .unwrap_or_else(|_| "unknown".into()),
         "pid" | "server_pid" => std::process::id().to_string(),
         "version" => VERSION.to_string(),
         "start_time" => app.created_at.timestamp().to_string(),
         "socket_path" => {
-            let home = env::var("USERPROFILE").or_else(|_| env::var("HOME")).unwrap_or_default();
+            let home = env::var("USERPROFILE")
+                .or_else(|_| env::var("HOME"))
+                .unwrap_or_default();
             format!("{}/.psmux/default", home)
         }
 
         // ── Options as format variables ──
-        "mouse" => if app.mouse_enabled { "on".into() } else { "off".into() },
-        "bold-is-bright" => if app.bold_is_bright { "on".into() } else { "off".into() },
-        "scroll-enter-copy-mode" => if app.scroll_enter_copy_mode { "on".into() } else { "off".into() },
-        "choose-tree-preview" => if app.choose_tree_preview { "on".into() } else { "off".into() },
+        "mouse" => {
+            if app.mouse_enabled {
+                "on".into()
+            } else {
+                "off".into()
+            }
+        }
+        "bold-is-bright" => {
+            if app.bold_is_bright {
+                "on".into()
+            } else {
+                "off".into()
+            }
+        }
+        "scroll-enter-copy-mode" => {
+            if app.scroll_enter_copy_mode {
+                "on".into()
+            } else {
+                "off".into()
+            }
+        }
+        "choose-tree-preview" => {
+            if app.choose_tree_preview {
+                "on".into()
+            } else {
+                "off".into()
+            }
+        }
         "prefix" => format_key_binding(&app.prefix_key),
-        "prefix2" => app.prefix2_key.as_ref().map(|k| format_key_binding(k)).unwrap_or_else(|| "none".to_string()),
-        "status" => if app.status_visible { "on".into() } else { "off".into() },
+        "prefix2" => app
+            .prefix2_key
+            .as_ref()
+            .map(|k| format_key_binding(k))
+            .unwrap_or_else(|| "none".to_string()),
+        "status" => {
+            if app.status_visible {
+                "on".into()
+            } else {
+                "off".into()
+            }
+        }
         "mode_keys" => app.mode_keys.clone(),
         "history_limit" => app.history_limit.to_string(),
-        "alternate_screen" => if app.allow_alternate_screen { "on".into() } else { "off".into() },
+        "alternate_screen" => {
+            if app.allow_alternate_screen {
+                "on".into()
+            } else {
+                "off".into()
+            }
+        }
         // history_size reports the number of rows currently held in the
         // active pane's scrollback (the *retained* count), not the
         // configured maximum (#271).  Falls back to 0 when no active pane
@@ -1671,7 +2314,9 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
         "alternate_on" => {
             if let Some(p) = active_pane(&win.root, &win.active_path) {
                 if let Ok(parser) = p.term.lock() {
-                    if parser.screen().alternate_screen() { return "1".into(); }
+                    if parser.screen().alternate_screen() {
+                        return "1".into();
+                    }
                 }
             }
             "0".into()
@@ -1681,13 +2326,17 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
         // ── Misc ──
         "origin_flag" | "insert_flag" | "keypad_cursor_flag" | "keypad_flag" => "0".into(),
         "wrap_flag" => "1".into(),
-        "line" | "command" | "command_list_name" | "command_list_alias" | "command_list_usage" | "config_files" => String::new(),
+        "line" | "command" | "command_list_name" | "command_list_alias" | "command_list_usage"
+        | "config_files" => String::new(),
         "current_file" => crate::config::current_config_file(),
 
         // Anything else: try as option, then env
         _ => {
-            if let Some(val) = lookup_option(var, app) { val }
-            else { String::new() }
+            if let Some(val) = lookup_option(var, app) {
+                val
+            } else {
+                String::new()
+            }
         }
     }
 }
@@ -1723,11 +2372,13 @@ fn format_vt100_color(color: vt100::Color) -> String {
 pub(crate) fn hostname_cached() -> String {
     use std::sync::OnceLock;
     static HOSTNAME: OnceLock<String> = OnceLock::new();
-    HOSTNAME.get_or_init(|| {
-        env::var("COMPUTERNAME")
-            .or_else(|_| env::var("HOSTNAME"))
-            .unwrap_or_default()
-    }).clone()
+    HOSTNAME
+        .get_or_init(|| {
+            env::var("COMPUTERNAME")
+                .or_else(|_| env::var("HOSTNAME"))
+                .unwrap_or_default()
+        })
+        .clone()
 }
 
 fn find_matching_brace(s: &str, start: usize) -> Option<usize> {
@@ -1737,7 +2388,9 @@ fn find_matching_brace(s: &str, start: usize) -> Option<usize> {
     while i < bytes.len() {
         if bytes[i] == b'}' {
             depth -= 1;
-            if depth == 0 { return Some(i); }
+            if depth == 0 {
+                return Some(i);
+            }
         } else if i + 1 < bytes.len() && bytes[i] == b'#' && bytes[i + 1] == b'{' {
             depth += 1;
             i += 1;
@@ -1751,8 +2404,8 @@ fn split_at_depth0(s: &str, delim: u8) -> Vec<String> {
     let bytes = s.as_bytes();
     let mut parts = Vec::new();
     let mut start = 0;
-    let mut depth = 0usize;       // #{...} nesting depth
-    let mut in_style = false;      // inside #[...] style directive
+    let mut depth = 0usize; // #{...} nesting depth
+    let mut in_style = false; // inside #[...] style directive
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'#' && i + 1 < bytes.len() && bytes[i + 1] == b'{' {
@@ -1802,8 +2455,16 @@ fn split_conditional(s: &str) -> (String, String, String) {
 }
 
 fn glob_match(pattern: &str, text: &str, case_insensitive: bool) -> bool {
-    let p = if case_insensitive { pattern.to_lowercase() } else { pattern.to_string() };
-    let t = if case_insensitive { text.to_lowercase() } else { text.to_string() };
+    let p = if case_insensitive {
+        pattern.to_lowercase()
+    } else {
+        pattern.to_string()
+    };
+    let t = if case_insensitive {
+        text.to_lowercase()
+    } else {
+        text.to_string()
+    };
     glob_match_impl(p.as_bytes(), t.as_bytes())
 }
 
@@ -1814,16 +2475,23 @@ fn glob_match_impl(pattern: &[u8], text: &[u8]) -> bool {
     let mut star_ti = 0;
     while ti < text.len() {
         if pi < pattern.len() && (pattern[pi] == b'?' || pattern[pi] == text[ti]) {
-            pi += 1; ti += 1;
+            pi += 1;
+            ti += 1;
         } else if pi < pattern.len() && pattern[pi] == b'*' {
-            star_pi = pi; star_ti = ti; pi += 1;
+            star_pi = pi;
+            star_ti = ti;
+            pi += 1;
         } else if star_pi != usize::MAX {
-            pi = star_pi + 1; star_ti += 1; ti = star_ti;
+            pi = star_pi + 1;
+            star_ti += 1;
+            ti = star_ti;
         } else {
             return false;
         }
     }
-    while pi < pattern.len() && pattern[pi] == b'*' { pi += 1; }
+    while pi < pattern.len() && pattern[pi] == b'*' {
+        pi += 1;
+    }
     pi == pattern.len()
 }
 
@@ -1873,19 +2541,25 @@ pub fn format_list_panes(app: &AppState, fmt: &str, win_idx: usize) -> String {
     };
     let mut ids = Vec::new();
     collect_pane_ids(&win.root, &mut ids);
-    ids.iter().enumerate().map(|(pos, _pid)| {
-        PANE_POS_OVERRIDE.set(Some(pos));
-        let line = expand_format_for_window(fmt, app, win_idx);
-        PANE_POS_OVERRIDE.set(None);
-        line
-    }).collect::<Vec<_>>().join("\n")
+    ids.iter()
+        .enumerate()
+        .map(|(pos, _pid)| {
+            PANE_POS_OVERRIDE.set(Some(pos));
+            let line = expand_format_for_window(fmt, app, win_idx);
+            PANE_POS_OVERRIDE.set(None);
+            line
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn collect_pane_ids(node: &Node, ids: &mut Vec<usize>) {
     match node {
         Node::Leaf(p) => ids.push(p.id),
         Node::Split { children, .. } => {
-            for child in children { collect_pane_ids(child, ids); }
+            for child in children {
+                collect_pane_ids(child, ids);
+            }
         }
     }
 }

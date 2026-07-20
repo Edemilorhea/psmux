@@ -311,7 +311,9 @@
 - Boolean: `-F` (expand formats), `-H` (hex), `-K` (key name), `-l` (literal), `-M` (mouse), `-R` (reset terminal), `-X` (copy-mode command)
 - Value: `-c` (target-client), `-N` (repeat count), `-t` (target-pane)
 - psmux extension: `-f` / `--force-signal` with `C-c` forces a Windows
-  CTRL_C_EVENT to the foreground process, bypassing the raw-mode TUI heuristic.
+  CTRL_BREAK_EVENT to the pane console, bypassing raw-mode Ctrl+C handling. A
+  delivery failure never falls back to a raw `0x03` byte; asynchronous failures
+  are exposed through session status/debug output.
 
 **send-prefix** — `"2t:"`
 - Boolean: `-2` (send prefix2)

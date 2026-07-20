@@ -27,7 +27,11 @@ fn mock_app() -> AppState {
 
 fn make_window(name: &str, id: usize) -> crate::types::Window {
     crate::types::Window {
-        root: Node::Split { kind: LayoutKind::Horizontal, sizes: vec![], children: vec![] },
+        root: Node::Split {
+            kind: LayoutKind::Horizontal,
+            sizes: vec![],
+            children: vec![],
+        },
         active_path: vec![],
         name: name.to_string(),
         id,
@@ -68,9 +72,21 @@ fn display_message_d_flag_not_in_message() {
     assert!(app.status_message.is_some(), "status_message should be set");
     let (msg, _, duration) = app.status_message.as_ref().unwrap();
     // -d 5000 must be consumed as duration, not leaked into the message text
-    assert!(!msg.contains("-d"), "message must not contain the -d flag, got: {}", msg);
-    assert!(!msg.contains("5000"), "message must not contain the -d value, got: {}", msg);
-    assert!(msg.contains("hello"), "message should contain 'hello', got: {}", msg);
+    assert!(
+        !msg.contains("-d"),
+        "message must not contain the -d flag, got: {}",
+        msg
+    );
+    assert!(
+        !msg.contains("5000"),
+        "message must not contain the -d value, got: {}",
+        msg
+    );
+    assert!(
+        msg.contains("hello"),
+        "message should contain 'hello', got: {}",
+        msg
+    );
     assert_eq!(*duration, Some(5000), "duration override should be 5000ms");
 }
 
@@ -82,9 +98,21 @@ fn display_message_I_flag_not_in_message() {
     let _ = execute_command_string(&mut app, "display-message -I input_data the_message");
     assert!(app.status_message.is_some(), "status_message should be set");
     let (msg, _, _) = app.status_message.as_ref().unwrap();
-    assert!(!msg.contains("-I"), "message must not contain -I flag, got: {}", msg);
-    assert!(!msg.contains("input_data"), "message must not contain -I value, got: {}", msg);
-    assert!(msg.contains("the_message"), "message should contain 'the_message', got: {}", msg);
+    assert!(
+        !msg.contains("-I"),
+        "message must not contain -I flag, got: {}",
+        msg
+    );
+    assert!(
+        !msg.contains("input_data"),
+        "message must not contain -I value, got: {}",
+        msg
+    );
+    assert!(
+        msg.contains("the_message"),
+        "message should contain 'the_message', got: {}",
+        msg
+    );
 }
 
 // ========================================================================
@@ -112,12 +140,24 @@ fn send_keys_x_flag_parsed_correctly() {
     let mut i = 1;
     while i < cmd_args.len() {
         match cmd_args[i].as_str() {
-            "-l" => { literal = true; }
-            "-R" => { keys.push("__RESET__".to_string()); }
-            "-X" => { has_x = true; }
-            "-t" => { i += 1; }
-            "-N" => { i += 1; }
-            _ => { keys.push(cmd_args[i].to_string()); }
+            "-l" => {
+                literal = true;
+            }
+            "-R" => {
+                keys.push("__RESET__".to_string());
+            }
+            "-X" => {
+                has_x = true;
+            }
+            "-t" => {
+                i += 1;
+            }
+            "-N" => {
+                i += 1;
+            }
+            _ => {
+                keys.push(cmd_args[i].to_string());
+            }
         }
         i += 1;
     }
@@ -129,8 +169,12 @@ fn send_keys_x_flag_parsed_correctly() {
 
     // Verify reconstructed command includes -X
     let mut cmd = "send-keys".to_string();
-    if literal { cmd.push_str(" -l"); }
-    if has_x { cmd.push_str(" -X"); }
+    if literal {
+        cmd.push_str(" -l");
+    }
+    if has_x {
+        cmd.push_str(" -X");
+    }
     for k in &keys {
         cmd.push_str(&format!(" {}", k));
     }
@@ -153,17 +197,26 @@ fn send_keys_x_not_treated_as_literal_key() {
     let mut i = 1;
     while i < cmd_args.len() {
         match cmd_args[i].as_str() {
-            "-X" => { has_x = true; }
+            "-X" => {
+                has_x = true;
+            }
             "-l" | "-R" => {}
-            "-t" | "-N" => { i += 1; }
-            _ => { keys.push(cmd_args[i].to_string()); }
+            "-t" | "-N" => {
+                i += 1;
+            }
+            _ => {
+                keys.push(cmd_args[i].to_string());
+            }
         }
         i += 1;
     }
 
     // -X should NOT be in the keys list
     assert!(has_x, "-X should be recognized as a flag");
-    assert!(!keys.contains(&"-X".to_string()), "-X must not be in the keys list (it's a flag, not a key to send)");
+    assert!(
+        !keys.contains(&"-X".to_string()),
+        "-X must not be in the keys list (it's a flag, not a key to send)"
+    );
 }
 
 // ========================================================================
@@ -189,7 +242,9 @@ fn respawn_pane_c_flag_forwarded() {
     let mut i = 1;
     while i < cmd_args.len() {
         match cmd_args[i].as_str() {
-            "-k" => { cmd.push_str(" -k"); }
+            "-k" => {
+                cmd.push_str(" -k");
+            }
             "-c" => {
                 if let Some(d) = cmd_args.get(i + 1) {
                     cmd.push_str(&format!(" -c {}", d));
@@ -202,41 +257,53 @@ fn respawn_pane_c_flag_forwarded() {
                     i += 1;
                 }
             }
-            _ => { cmd.push_str(&format!(" {}", cmd_args[i])); }
+            _ => {
+                cmd.push_str(&format!(" {}", cmd_args[i]));
+            }
         }
         i += 1;
     }
 
-    assert!(cmd.contains("-c C:\\Temp"), "reconstructed command must contain -c workdir, got: {}", cmd);
+    assert!(
+        cmd.contains("-c C:\\Temp"),
+        "reconstructed command must contain -c workdir, got: {}",
+        cmd
+    );
     assert!(cmd.contains("-k"), "reconstructed command must contain -k");
 }
 
 #[test]
 fn respawn_pane_without_c_flag_still_works() {
-    let cmd_args = vec![
-        "respawn-pane".to_string(),
-        "-k".to_string(),
-    ];
+    let cmd_args = vec!["respawn-pane".to_string(), "-k".to_string()];
 
     let mut cmd = "respawn-pane".to_string();
     let mut i = 1;
     while i < cmd_args.len() {
         match cmd_args[i].as_str() {
-            "-k" => { cmd.push_str(" -k"); }
+            "-k" => {
+                cmd.push_str(" -k");
+            }
             "-c" => {
                 if let Some(d) = cmd_args.get(i + 1) {
                     cmd.push_str(&format!(" -c {}", d));
                     i += 1;
                 }
             }
-            "-t" => { i += 1; }
-            _ => { cmd.push_str(&format!(" {}", cmd_args[i])); }
+            "-t" => {
+                i += 1;
+            }
+            _ => {
+                cmd.push_str(&format!(" {}", cmd_args[i]));
+            }
         }
         i += 1;
     }
 
     assert_eq!(cmd, "respawn-pane -k");
-    assert!(!cmd.contains("-c"), "should not contain -c when not provided");
+    assert!(
+        !cmd.contains("-c"),
+        "should not contain -c when not provided"
+    );
 }
 
 // ========================================================================
@@ -254,8 +321,13 @@ fn show_options_combined_gv_flag_recognized() {
     let args = vec!["-gv", "status-style"];
     let combined_has = |ch: char| -> bool {
         args.iter().any(|a| {
-            if *a == format!("-{}", ch) { return true; }
-            a.starts_with('-') && a.len() > 2 && a.chars().skip(1).all(|c| c.is_ascii_alphabetic()) && a.contains(ch)
+            if *a == format!("-{}", ch) {
+                return true;
+            }
+            a.starts_with('-')
+                && a.len() > 2
+                && a.chars().skip(1).all(|c| c.is_ascii_alphabetic())
+                && a.contains(ch)
         })
     };
     assert!(combined_has('g'), "-gv should contain 'g'");
@@ -269,8 +341,13 @@ fn show_options_separate_flags_still_work() {
     let args = vec!["-g", "-v", "status-style"];
     let combined_has = |ch: char| -> bool {
         args.iter().any(|a| {
-            if *a == format!("-{}", ch) { return true; }
-            a.starts_with('-') && a.len() > 2 && a.chars().skip(1).all(|c| c.is_ascii_alphabetic()) && a.contains(ch)
+            if *a == format!("-{}", ch) {
+                return true;
+            }
+            a.starts_with('-')
+                && a.len() > 2
+                && a.chars().skip(1).all(|c| c.is_ascii_alphabetic())
+                && a.contains(ch)
         })
     };
     assert!(combined_has('g'), "separate -g should be recognized");
@@ -282,8 +359,13 @@ fn show_options_wv_combined_flag() {
     let args = vec!["-wv", "pane-border-style"];
     let combined_has = |ch: char| -> bool {
         args.iter().any(|a| {
-            if *a == format!("-{}", ch) { return true; }
-            a.starts_with('-') && a.len() > 2 && a.chars().skip(1).all(|c| c.is_ascii_alphabetic()) && a.contains(ch)
+            if *a == format!("-{}", ch) {
+                return true;
+            }
+            a.starts_with('-')
+                && a.len() > 2
+                && a.chars().skip(1).all(|c| c.is_ascii_alphabetic())
+                && a.contains(ch)
         })
     };
     assert!(combined_has('w'), "-wv should contain 'w'");
@@ -318,15 +400,26 @@ fn resize_window_cli_builds_correct_command() {
                     i += 1;
                 }
             }
-            "-t" => { i += 1; }
-            "-A" | "-D" | "-U" => { cmd.push_str(&format!(" {}", cmd_args[i])); }
+            "-t" => {
+                i += 1;
+            }
+            "-A" | "-D" | "-U" => {
+                cmd.push_str(&format!(" {}", cmd_args[i]));
+            }
             _ => {}
         }
         i += 1;
     }
 
-    assert!(cmd.contains("-x 80"), "command must contain -x 80, got: {}", cmd);
-    assert!(!cmd.contains("-t"), "command must not contain -t (handled globally)");
+    assert!(
+        cmd.contains("-x 80"),
+        "command must contain -x 80, got: {}",
+        cmd
+    );
+    assert!(
+        !cmd.contains("-t"),
+        "command must not contain -t (handled globally)"
+    );
 }
 
 #[test]
@@ -347,13 +440,19 @@ fn resize_window_y_flag() {
                     i += 1;
                 }
             }
-            "-t" => { i += 1; }
+            "-t" => {
+                i += 1;
+            }
             _ => {}
         }
         i += 1;
     }
 
-    assert!(cmd.contains("-y 24"), "command must contain -y 24, got: {}", cmd);
+    assert!(
+        cmd.contains("-y 24"),
+        "command must contain -y 24, got: {}",
+        cmd
+    );
 }
 
 // ========================================================================
@@ -408,13 +507,21 @@ fn list_keys_cli_forwards_t_flag() {
                     i += 1;
                 }
             }
-            "-t" => { i += 1; }
-            _ => { cmd.push_str(&format!(" {}", cmd_args[i])); }
+            "-t" => {
+                i += 1;
+            }
+            _ => {
+                cmd.push_str(&format!(" {}", cmd_args[i]));
+            }
         }
         i += 1;
     }
 
-    assert!(cmd.contains("-T prefix"), "command must forward -T prefix, got: {}", cmd);
+    assert!(
+        cmd.contains("-T prefix"),
+        "command must forward -T prefix, got: {}",
+        cmd
+    );
 }
 
 #[test]
@@ -429,21 +536,24 @@ fn list_keys_server_filters_by_table() {
     let table_filter = Some("prefix".to_string());
     let text = output.join("\n");
 
-    let filtered: Vec<&str> = text.lines().filter(|line| {
-        if let Some(ref tbl) = table_filter {
-            let parts: Vec<&str> = line.splitn(5, ' ').collect();
-            if parts.len() >= 3 {
-                return parts[2] == tbl.as_str();
+    let filtered: Vec<&str> = text
+        .lines()
+        .filter(|line| {
+            if let Some(ref tbl) = table_filter {
+                let parts: Vec<&str> = line.splitn(5, ' ').collect();
+                if parts.len() >= 3 {
+                    return parts[2] == tbl.as_str();
+                }
+                return false;
             }
-            return false;
-        }
-        true
-    }).collect();
+            true
+        })
+        .collect();
 
     assert_eq!(filtered.len(), 2, "should only have prefix table entries");
     assert!(filtered[0].contains("new-window"));
     assert!(filtered[1].contains("detach-client"));
-    // root and copy-mode-vi entries should be filtered out  
+    // root and copy-mode-vi entries should be filtered out
     assert!(!filtered.iter().any(|l| l.contains("root")));
     assert!(!filtered.iter().any(|l| l.contains("copy-mode-vi")));
 }
@@ -485,7 +595,11 @@ fn list_sessions_parses_f_and_f_flags() {
         i += 1;
     }
 
-    assert_eq!(format_str, Some("#{session_name}".to_string()), "-F should be parsed");
+    assert_eq!(
+        format_str,
+        Some("#{session_name}".to_string()),
+        "-F should be parsed"
+    );
     assert_eq!(filter_str, None, "-f should not be set");
 }
 
@@ -538,7 +652,11 @@ fn display_message_d_sets_duration_on_status_message() {
     // The status_message should be set with the duration override
     assert!(app.status_message.is_some(), "status_message should be set");
     let (msg, _, duration) = app.status_message.as_ref().unwrap();
-    assert!(msg.contains("hello"), "message should contain 'hello', got: {}", msg);
+    assert!(
+        msg.contains("hello"),
+        "message should contain 'hello', got: {}",
+        msg
+    );
     assert_eq!(*duration, Some(5000), "duration override should be 5000ms");
 }
 
@@ -570,7 +688,10 @@ fn display_message_d_invalid_value_uses_none() {
     let _ = execute_command_string(&mut app, "display-message -d notanumber test_invalid");
     assert!(app.status_message.is_some());
     let (_, _, duration) = app.status_message.as_ref().unwrap();
-    assert_eq!(*duration, None, "invalid -d value should result in None duration");
+    assert_eq!(
+        *duration, None,
+        "invalid -d value should result in None duration"
+    );
 }
 
 #[test]
@@ -578,7 +699,11 @@ fn status_message_expiry_uses_per_message_duration() {
     // Verify the status_message stores per-message duration correctly
     let mut app = mock_app_with_window();
     // Set a long duration: the tuple should contain the override
-    app.status_message = Some(("long_msg".to_string(), std::time::Instant::now(), Some(60000)));
+    app.status_message = Some((
+        "long_msg".to_string(),
+        std::time::Instant::now(),
+        Some(60000),
+    ));
     let (_, _, dur) = app.status_message.as_ref().unwrap();
     assert_eq!(*dur, Some(60000), "long duration should be stored");
 
@@ -592,10 +717,17 @@ fn status_message_expiry_uses_per_message_duration() {
     app.status_message = Some(("no_override".to_string(), std::time::Instant::now(), None));
     let (_, _, dur) = app.status_message.as_ref().unwrap();
     let effective = dur.unwrap_or(app.display_time_ms);
-    assert_eq!(effective, 750, "None duration should use global display_time_ms");
+    assert_eq!(
+        effective, 750,
+        "None duration should use global display_time_ms"
+    );
 
     // Verify with explicit override
-    app.status_message = Some(("with_override".to_string(), std::time::Instant::now(), Some(3000)));
+    app.status_message = Some((
+        "with_override".to_string(),
+        std::time::Instant::now(),
+        Some(3000),
+    ));
     let (_, _, dur) = app.status_message.as_ref().unwrap();
     let effective = dur.unwrap_or(app.display_time_ms);
     assert_eq!(effective, 3000, "explicit duration should override global");
@@ -611,7 +743,10 @@ fn status_message_expiry_uses_per_message_duration() {
 fn respawn_pane_k_flag_parsed_by_server_handler() {
     // Mirrors server/connection.rs respawn-pane handler parsing
     let args = vec!["-k"];
-    let workdir: Option<String> = args.windows(2).find(|w| w[0] == "-c").map(|w| w[1].to_string());
+    let workdir: Option<String> = args
+        .windows(2)
+        .find(|w| w[0] == "-c")
+        .map(|w| w[1].to_string());
     let kill = args.iter().any(|a| *a == "-k");
 
     assert!(kill, "-k must be recognized");
@@ -621,11 +756,18 @@ fn respawn_pane_k_flag_parsed_by_server_handler() {
 #[test]
 fn respawn_pane_k_and_c_flags_parsed_together() {
     let args = vec!["-k", "-c", "/tmp/test"];
-    let workdir: Option<String> = args.windows(2).find(|w| w[0] == "-c").map(|w| w[1].to_string());
+    let workdir: Option<String> = args
+        .windows(2)
+        .find(|w| w[0] == "-c")
+        .map(|w| w[1].to_string());
     let kill = args.iter().any(|a| *a == "-k");
 
     assert!(kill, "-k must be recognized alongside -c");
-    assert_eq!(workdir.as_deref(), Some("/tmp/test"), "workdir must be extracted from -c");
+    assert_eq!(
+        workdir.as_deref(),
+        Some("/tmp/test"),
+        "workdir must be extracted from -c"
+    );
 }
 
 #[test]
@@ -641,7 +783,10 @@ fn respawn_pane_k_flag_parsed_in_execute_command_string() {
     let cmd = "respawn-pane -k -c /tmp";
     let parts: Vec<&str> = cmd.split_whitespace().collect();
     let kill = parts.iter().any(|p| *p == "-k");
-    assert!(kill, "execute_command_string path must detect -k in command parts");
+    assert!(
+        kill,
+        "execute_command_string path must detect -k in command parts"
+    );
 }
 
 #[test]
@@ -649,7 +794,10 @@ fn respawn_pane_execute_command_without_k() {
     let cmd = "respawn-pane -c /tmp";
     let parts: Vec<&str> = cmd.split_whitespace().collect();
     let kill = parts.iter().any(|p| *p == "-k");
-    assert!(!kill, "without -k, kill must be false in execute_command_string path");
+    assert!(
+        !kill,
+        "without -k, kill must be false in execute_command_string path"
+    );
 }
 
 #[test]
@@ -661,7 +809,10 @@ fn status_message_expiry_without_override_uses_global() {
     let (msg, _, dur) = app.status_message.as_ref().unwrap();
     assert_eq!(msg, "global_test");
     let effective = dur.unwrap_or(app.display_time_ms);
-    assert_eq!(effective, 750, "without -d, should use global display_time_ms (750)");
+    assert_eq!(
+        effective, 750,
+        "without -d, should use global display_time_ms (750)"
+    );
 }
 
 // ========================================================================
@@ -676,16 +827,23 @@ fn show_options_local_produces_popup() {
     app.control_port = None;
     execute_command_string(&mut app, "show-options").unwrap();
     match &app.mode {
-        Mode::PopupMode { command, output, .. } => {
+        Mode::PopupMode {
+            command, output, ..
+        } => {
             assert_eq!(command, "show-options");
             // The output should contain known option names
             assert!(
-                output.contains("status-") || output.contains("display-time") || output.contains("base-index"),
+                output.contains("status-")
+                    || output.contains("display-time")
+                    || output.contains("base-index"),
                 "show-options popup should contain known option names, got:\n{}",
                 &output[..output.len().min(500)]
             );
         }
-        other => panic!("expected PopupMode for show-options, got {:?}", std::mem::discriminant(other)),
+        other => panic!(
+            "expected PopupMode for show-options, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
@@ -702,10 +860,17 @@ fn display_message_d_and_I_combined() {
     let _ = execute_command_string(&mut app, "display-message -d 2000 -I ignored combined_test");
     assert!(app.status_message.is_some());
     let (msg, _, duration) = app.status_message.as_ref().unwrap();
-    assert!(msg.contains("combined_test"), "message should contain 'combined_test', got: {}", msg);
+    assert!(
+        msg.contains("combined_test"),
+        "message should contain 'combined_test', got: {}",
+        msg
+    );
     assert!(!msg.contains("-d"), "message should not contain -d flag");
     assert!(!msg.contains("-I"), "message should not contain -I flag");
-    assert!(!msg.contains("ignored"), "message should not contain -I value 'ignored'");
+    assert!(
+        !msg.contains("ignored"),
+        "message should not contain -I value 'ignored'"
+    );
     assert_eq!(*duration, Some(2000), "duration should be 2000ms");
 }
 
@@ -717,6 +882,14 @@ fn display_message_t_flag_consumed() {
     let _ = execute_command_string(&mut app, "display-message -t mysession target_test");
     assert!(app.status_message.is_some());
     let (msg, _, _) = app.status_message.as_ref().unwrap();
-    assert!(msg.contains("target_test"), "message should contain 'target_test', got: {}", msg);
-    assert!(!msg.contains("mysession"), "message should not contain -t target value, got: {}", msg);
+    assert!(
+        msg.contains("target_test"),
+        "message should contain 'target_test', got: {}",
+        msg
+    );
+    assert!(
+        !msg.contains("mysession"),
+        "message should not contain -t target value, got: {}",
+        msg
+    );
 }

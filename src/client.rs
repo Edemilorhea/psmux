@@ -1,36 +1,46 @@
-use std::io::{self, Write, BufRead, BufReader};
-use std::time::{Duration, Instant};
 use std::env;
+use std::io::{self, BufRead, BufReader, Write};
+use std::time::{Duration, Instant};
 
 use chrono::Local;
-use crossterm::event::{Event, KeyCode, KeyModifiers, KeyEventKind};
+use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 
-use crate::layout::LayoutJson;
-use crate::help;
-use crate::util::{WinTree, base64_encode, quote_arg};
-use crate::session::read_session_key;
-use crate::rendering::{dim_predictions_enabled, map_color, dim_color, centered_rect, fix_border_intersections};
-use crate::style::parse_tmux_style_components;
-use crate::config::{parse_key_string, normalize_key_for_binding};
 use crate::clipboard::{copy_to_system_clipboard, read_from_system_clipboard};
+use crate::config::{normalize_key_for_binding, parse_key_string};
 use crate::debug_log::{client_log, client_log_enabled, input_log, input_log_enabled};
+use crate::help;
+use crate::layout::LayoutJson;
 use crate::layout::RowRunsJson;
+use crate::rendering::{
+    centered_rect, dim_color, dim_predictions_enabled, fix_border_intersections, map_color,
+};
+use crate::session::read_session_key;
+use crate::style::parse_tmux_style_components;
 use crate::tree::split_with_gaps;
+use crate::util::{base64_encode, quote_arg, WinTree};
 
 /// A floating pane (tmux new-pane) as shipped from the server: position, size,
 /// border style, focus, title, and the pane's rendered rows.
 #[derive(serde::Deserialize, Clone, Default)]
 pub(crate) struct FloatJson {
-    #[serde(default)] pub x: u16,
-    #[serde(default)] pub y: u16,
-    #[serde(default)] pub w: u16,
-    #[serde(default)] pub h: u16,
-    #[serde(default)] pub border: String,
-    #[serde(default)] pub focused: bool,
-    #[serde(default)] pub title: String,
-    #[serde(default)] pub rows: Vec<crate::layout::RowRunsJson>,
+    #[serde(default)]
+    pub x: u16,
+    #[serde(default)]
+    pub y: u16,
+    #[serde(default)]
+    pub w: u16,
+    #[serde(default)]
+    pub h: u16,
+    #[serde(default)]
+    pub border: String,
+    #[serde(default)]
+    pub focused: bool,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub rows: Vec<crate::layout::RowRunsJson>,
 }
 
 /// Extract the actual command from a confirm-before argument string.
@@ -42,7 +52,7 @@ fn extract_confirm_command(args: &str) -> String {
     while i < parts.len() {
         if parts[i] == "-p" {
             i += 1; // skip flag
-            // skip the prompt value (may be quoted with single quotes spanning multiple parts)
+                    // skip the prompt value (may be quoted with single quotes spanning multiple parts)
             if i < parts.len() {
                 if parts[i].starts_with('\'') {
                     // scan until closing quote
@@ -69,9 +79,15 @@ fn extract_confirm_command(args: &str) -> String {
 /// Build a send-key name with modifier prefix (e.g. "C-Left", "S-Right", "C-S-Up").
 fn modified_key_name(base: &str, mods: KeyModifiers) -> String {
     let mut prefix = String::new();
-    if mods.contains(KeyModifiers::CONTROL) { prefix.push_str("C-"); }
-    if mods.contains(KeyModifiers::ALT) { prefix.push_str("M-"); }
-    if mods.contains(KeyModifiers::SHIFT) { prefix.push_str("S-"); }
+    if mods.contains(KeyModifiers::CONTROL) {
+        prefix.push_str("C-");
+    }
+    if mods.contains(KeyModifiers::ALT) {
+        prefix.push_str("M-");
+    }
+    if mods.contains(KeyModifiers::SHIFT) {
+        prefix.push_str("S-");
+    }
     if prefix.is_empty() {
         base.to_lowercase()
     } else {
@@ -127,7 +143,11 @@ pub(crate) fn frame_hyperlinks_take() -> Vec<HyperlinkRun> {
 fn color_sgr(c: ratatui::style::Color, fg: bool) -> String {
     use ratatui::style::Color::*;
     // 30-37 / 40-47 normal, 90-97 / 100-107 bright, 39/49 default.
-    let (base, bright_base, def) = if fg { (30u8, 90u8, 39u8) } else { (40u8, 100u8, 49u8) };
+    let (base, bright_base, def) = if fg {
+        (30u8, 90u8, 39u8)
+    } else {
+        (40u8, 100u8, 49u8)
+    };
     match c {
         Reset => def.to_string(),
         Black => (base).to_string(),
@@ -168,19 +188,38 @@ pub(crate) fn build_osc8_overlay(runs: &[HyperlinkRun]) -> String {
         }
         // Move to 1-based (row;col), reset, then set the run's style.
         out.push_str(&format!("\x1b[{};{}H\x1b[0m", run.y + 1, run.x + 1));
-        let mut params = vec![color_sgr(run.style.fg.unwrap_or(ratatui::style::Color::Reset), true),
-                              color_sgr(run.style.bg.unwrap_or(ratatui::style::Color::Reset), false)];
+        let mut params = vec![
+            color_sgr(run.style.fg.unwrap_or(ratatui::style::Color::Reset), true),
+            color_sgr(run.style.bg.unwrap_or(ratatui::style::Color::Reset), false),
+        ];
         let m = run.style.add_modifier;
-        if m.contains(Modifier::BOLD) { params.push("1".into()); }
-        if m.contains(Modifier::DIM) { params.push("2".into()); }
-        if m.contains(Modifier::ITALIC) { params.push("3".into()); }
-        if m.contains(Modifier::UNDERLINED) { params.push("4".into()); }
-        if m.contains(Modifier::SLOW_BLINK) { params.push("5".into()); }
-        if m.contains(Modifier::REVERSED) { params.push("7".into()); }
-        if m.contains(Modifier::CROSSED_OUT) { params.push("9".into()); }
+        if m.contains(Modifier::BOLD) {
+            params.push("1".into());
+        }
+        if m.contains(Modifier::DIM) {
+            params.push("2".into());
+        }
+        if m.contains(Modifier::ITALIC) {
+            params.push("3".into());
+        }
+        if m.contains(Modifier::UNDERLINED) {
+            params.push("4".into());
+        }
+        if m.contains(Modifier::SLOW_BLINK) {
+            params.push("5".into());
+        }
+        if m.contains(Modifier::REVERSED) {
+            params.push("7".into());
+        }
+        if m.contains(Modifier::CROSSED_OUT) {
+            params.push("9".into());
+        }
         out.push_str(&format!("\x1b[{}m", params.join(";")));
         // OSC 8 open ; text ; OSC 8 close.
-        out.push_str(&format!("\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\", run.uri, run.text));
+        out.push_str(&format!(
+            "\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\",
+            run.uri, run.text
+        ));
     }
     out.push_str("\x1b[0m"); // reset SGR
     out.push_str("\x1b8"); // DECRC: restore cursor
@@ -190,9 +229,16 @@ pub(crate) fn build_osc8_overlay(runs: &[HyperlinkRun]) -> String {
 fn collect_leaves<'a>(node: &'a LayoutJson, area: Rect, out: &mut Vec<PaneLeaf<'a>>) {
     match node {
         LayoutJson::Leaf { rows_v2, .. } => {
-            out.push(PaneLeaf { inner: area, rows_v2 });
+            out.push(PaneLeaf {
+                inner: area,
+                rows_v2,
+            });
         }
-        LayoutJson::Split { kind, sizes, children } => {
+        LayoutJson::Split {
+            kind,
+            sizes,
+            children,
+        } => {
             let effective_sizes: Vec<u16> = if sizes.len() == children.len() {
                 sizes.clone()
             } else {
@@ -237,11 +283,15 @@ fn row_chars(runs: &[crate::layout::CellRunJson], width: usize) -> Vec<char> {
         let chars: Vec<char> = run.text.chars().collect();
         for i in 0..run_width {
             let col = cursor + i;
-            if col >= width { break; }
+            if col >= width {
+                break;
+            }
             out[col] = chars.get(i).copied().unwrap_or(' ');
         }
         cursor += run_width;
-        if cursor >= width { break; }
+        if cursor >= width {
+            break;
+        }
     }
     out
 }
@@ -302,7 +352,12 @@ pub(crate) fn downscale_rows_v2(
 /// Normalise a selection (start, end) into reading-order or block-mode bounds.
 fn normalize_selection(start: (u16, u16), end: (u16, u16), block: bool) -> (u16, u16, u16, u16) {
     if block {
-        (start.1.min(end.1), start.0.min(end.0), start.1.max(end.1), start.0.max(end.0))
+        (
+            start.1.min(end.1),
+            start.0.min(end.0),
+            start.1.max(end.1),
+            start.0.max(end.0),
+        )
     } else if (start.1, start.0) <= (end.1, end.0) {
         (start.1, start.0, end.1, end.0)
     } else {
@@ -413,7 +468,11 @@ fn extract_selection_text(
 /// as a mouse event to the child (TUI app like htop, Claude Code, etc.).
 fn active_pane_in_alt_screen(layout: &LayoutJson) -> bool {
     match layout {
-        LayoutJson::Leaf { active, alternate_screen, .. } => *active && *alternate_screen,
+        LayoutJson::Leaf {
+            active,
+            alternate_screen,
+            ..
+        } => *active && *alternate_screen,
         LayoutJson::Split { children, .. } => children.iter().any(|c| active_pane_in_alt_screen(c)),
     }
 }
@@ -423,7 +482,9 @@ fn active_pane_in_alt_screen(layout: &LayoutJson) -> bool {
 /// the server handles cursor positioning and selection in copy mode.
 fn active_pane_in_copy_mode(layout: &LayoutJson) -> bool {
     match layout {
-        LayoutJson::Leaf { active, copy_mode, .. } => *active && *copy_mode,
+        LayoutJson::Leaf {
+            active, copy_mode, ..
+        } => *active && *copy_mode,
         LayoutJson::Split { children, .. } => children.iter().any(|c| active_pane_in_copy_mode(c)),
     }
 }
@@ -446,20 +507,31 @@ fn word_bounds_at(
     col: u16,
     row: u16,
 ) -> Option<(u16, u16)> {
-    let content_area = Rect { x: 0, y: 0, width: term_width, height: content_height };
+    let content_area = Rect {
+        x: 0,
+        y: 0,
+        width: term_width,
+        height: content_height,
+    };
     let mut leaves: Vec<PaneLeaf> = Vec::new();
     collect_leaves(layout, content_area, &mut leaves);
 
     let leaf = leaves.iter().find(|l| l.inner == pane_rect)?;
 
     let local_row = row.checked_sub(leaf.inner.y)? as usize;
-    if local_row >= leaf.rows_v2.len() { return None; }
+    if local_row >= leaf.rows_v2.len() {
+        return None;
+    }
     let width = leaf.inner.width as usize;
     let chars = row_chars(&leaf.rows_v2[local_row].runs, width);
 
     let local_col = col.checked_sub(leaf.inner.x)? as usize;
-    if local_col >= width { return None; }
-    if !is_word_char(chars[local_col]) { return None; }
+    if local_col >= width {
+        return None;
+    }
+    if !is_word_char(chars[local_col]) {
+        return None;
+    }
 
     let mut left = local_col;
     while left > 0 && is_word_char(chars[left - 1]) {
@@ -478,7 +550,11 @@ fn word_bounds_at(
 fn is_on_separator(layout: &LayoutJson, area: Rect, x: u16, y: u16) -> bool {
     match layout {
         LayoutJson::Leaf { .. } => false,
-        LayoutJson::Split { kind, sizes, children } => {
+        LayoutJson::Split {
+            kind,
+            sizes,
+            children,
+        } => {
             let effective_sizes: Vec<u16> = if sizes.len() == children.len() {
                 sizes.clone()
             } else {
@@ -489,7 +565,9 @@ fn is_on_separator(layout: &LayoutJson, area: Rect, x: u16, y: u16) -> bool {
 
             // Check if (x, y) is on any separator between children
             for i in 0..children.len().saturating_sub(1) {
-                if i >= rects.len() { break; }
+                if i >= rects.len() {
+                    break;
+                }
                 if is_horizontal {
                     let sep_x = rects[i].x + rects[i].width;
                     if x == sep_x && y >= area.y && y < area.y + area.height {
@@ -530,7 +608,11 @@ pub(crate) fn collect_pane_rects(
         LayoutJson::Leaf { id, .. } => {
             out.push((*id, area));
         }
-        LayoutJson::Split { kind, sizes, children } => {
+        LayoutJson::Split {
+            kind,
+            sizes,
+            children,
+        } => {
             let effective_sizes: Vec<u16> = if sizes.len() == children.len() {
                 sizes.clone()
             } else {
@@ -563,7 +645,12 @@ fn collect_layout_borders(
     path: &mut Vec<usize>,
     out: &mut Vec<(Vec<usize>, String, usize, u16, u16, Vec<u16>, Rect)>,
 ) {
-    if let LayoutJson::Split { kind, sizes, children } = node {
+    if let LayoutJson::Split {
+        kind,
+        sizes,
+        children,
+    } = node
+    {
         let effective_sizes: Vec<u16> = if sizes.len() == children.len() {
             sizes.clone()
         } else {
@@ -571,7 +658,11 @@ fn collect_layout_borders(
         };
         let is_horizontal = kind == "Horizontal";
         let rects = split_with_gaps(is_horizontal, &effective_sizes, area);
-        let total_px = if is_horizontal { area.width } else { area.height };
+        let total_px = if is_horizontal {
+            area.width
+        } else {
+            area.height
+        };
         for i in 0..children.len().saturating_sub(1) {
             if i < rects.len() {
                 let pos = if is_horizontal {
@@ -579,7 +670,15 @@ fn collect_layout_borders(
                 } else {
                     rects[i].y + rects[i].height
                 };
-                out.push((path.clone(), kind.clone(), i, pos, total_px, effective_sizes.clone(), area));
+                out.push((
+                    path.clone(),
+                    kind.clone(),
+                    i,
+                    pos,
+                    total_px,
+                    effective_sizes.clone(),
+                    area,
+                ));
             }
         }
         for (i, child) in children.iter().enumerate() {
@@ -678,9 +777,17 @@ fn mark_layout_borders(
 pub fn compute_active_rect_json(node: &LayoutJson, area: Rect) -> Option<Rect> {
     match node {
         LayoutJson::Leaf { active, .. } => {
-            if *active { Some(area) } else { None }
+            if *active {
+                Some(area)
+            } else {
+                None
+            }
         }
-        LayoutJson::Split { kind, sizes, children } => {
+        LayoutJson::Split {
+            kind,
+            sizes,
+            children,
+        } => {
             let effective_sizes: Vec<u16> = if sizes.len() == children.len() {
                 sizes.clone()
             } else {
@@ -711,9 +818,17 @@ pub(crate) fn compute_active_rect_json_zoom_aware(
 ) -> Option<Rect> {
     match node {
         LayoutJson::Leaf { active, .. } => {
-            if *active { Some(area) } else { None }
+            if *active {
+                Some(area)
+            } else {
+                None
+            }
         }
-        LayoutJson::Split { kind, sizes, children } => {
+        LayoutJson::Split {
+            kind,
+            sizes,
+            children,
+        } => {
             let effective_sizes: Vec<u16> = if sizes.len() == children.len() {
                 sizes.clone()
             } else {
@@ -760,9 +875,15 @@ pub fn render_clock_overlay(f: &mut Frame, area: Rect, colour: Color) {
     const COLON: [&str; 5] = [" ", "#", " ", "#", " "];
     let now = Local::now();
     let time_str = now.format("%H:%M:%S").to_string();
-    let total_w: u16 = time_str.chars().map(|c| if c == ':' { 2 } else { 4 }).sum::<u16>() - 1;
+    let total_w: u16 = time_str
+        .chars()
+        .map(|c| if c == ':' { 2 } else { 4 })
+        .sum::<u16>()
+        - 1;
     let total_h: u16 = 5;
-    if area.width < total_w || area.height < total_h { return; }
+    if area.width < total_w || area.height < total_h {
+        return;
+    }
     let start_x = area.x + (area.width.saturating_sub(total_w)) / 2;
     let start_y = area.y + (area.height.saturating_sub(total_h)) / 2;
     let clock_area = Rect::new(start_x.saturating_sub(1), start_y, total_w + 2, total_h);
@@ -797,12 +918,19 @@ pub fn render_clock_overlay(f: &mut Frame, area: Rect, colour: Color) {
 /// `none` draws no border. The focused float gets a highlighted border.
 pub(crate) fn render_float_overlays(f: &mut Frame, content_chunk: Rect, floats: &[FloatJson]) {
     for fl in floats {
-        if fl.w < 2 || fl.h < 2 { continue; }
+        if fl.w < 2 || fl.h < 2 {
+            continue;
+        }
         let w = fl.w.min(content_chunk.width);
         let h = fl.h.min(content_chunk.height);
         let x = content_chunk.x + fl.x.min(content_chunk.width.saturating_sub(w));
         let y = content_chunk.y + fl.y.min(content_chunk.height.saturating_sub(h));
-        let area = Rect { x, y, width: w, height: h };
+        let area = Rect {
+            x,
+            y,
+            width: w,
+            height: h,
+        };
         let border_type = match fl.border.as_str() {
             "double" => Some(BorderType::Double),
             "heavy" => Some(BorderType::Thick),
@@ -810,30 +938,62 @@ pub(crate) fn render_float_overlays(f: &mut Frame, content_chunk: Rect, floats: 
             // single/simple/number/spaces/unknown -> plain line box
             _ => Some(BorderType::Plain),
         };
-        let bcol = if fl.focused { Color::Green } else { Color::DarkGray };
-        let inner_w = if border_type.is_some() { w.saturating_sub(2) } else { w };
+        let bcol = if fl.focused {
+            Color::Green
+        } else {
+            Color::DarkGray
+        };
+        let inner_w = if border_type.is_some() {
+            w.saturating_sub(2)
+        } else {
+            w
+        };
         let mut lines: Vec<Line<'static>> = Vec::new();
         for row_data in &fl.rows {
             let mut spans: Vec<Span<'static>> = Vec::new();
             let mut col: u16 = 0;
             for run in &row_data.runs {
-                if col >= inner_w { break; }
+                if col >= inner_w {
+                    break;
+                }
                 let fg = crate::style::map_color(&run.fg);
                 let bg = crate::style::map_color(&run.bg);
                 let mut style = Style::default().fg(fg).bg(bg);
-                if run.flags & 1  != 0 { style = style.add_modifier(Modifier::DIM); }
-                if run.flags & 2  != 0 { style = style.add_modifier(Modifier::BOLD); }
-                if run.flags & 4  != 0 { style = style.add_modifier(Modifier::ITALIC); }
-                if run.flags & 8  != 0 { style = style.add_modifier(Modifier::UNDERLINED); }
-                if run.flags & 16 != 0 { style = style.add_modifier(Modifier::REVERSED); }
-                if run.flags & 32 != 0 { style = style.add_modifier(Modifier::SLOW_BLINK); }
-                if run.flags & 128 != 0 { style = style.add_modifier(Modifier::CROSSED_OUT); }
-                let text: &str = if run.flags & 64 != 0 { " " } else if run.text.is_empty() { " " } else { &run.text };
+                if run.flags & 1 != 0 {
+                    style = style.add_modifier(Modifier::DIM);
+                }
+                if run.flags & 2 != 0 {
+                    style = style.add_modifier(Modifier::BOLD);
+                }
+                if run.flags & 4 != 0 {
+                    style = style.add_modifier(Modifier::ITALIC);
+                }
+                if run.flags & 8 != 0 {
+                    style = style.add_modifier(Modifier::UNDERLINED);
+                }
+                if run.flags & 16 != 0 {
+                    style = style.add_modifier(Modifier::REVERSED);
+                }
+                if run.flags & 32 != 0 {
+                    style = style.add_modifier(Modifier::SLOW_BLINK);
+                }
+                if run.flags & 128 != 0 {
+                    style = style.add_modifier(Modifier::CROSSED_OUT);
+                }
+                let text: &str = if run.flags & 64 != 0 {
+                    " "
+                } else if run.text.is_empty() {
+                    " "
+                } else {
+                    &run.text
+                };
                 let run_w = run.width.max(1);
                 if col + run_w > inner_w {
                     let avail = (inner_w - col) as usize;
                     let truncated: String = text.chars().take(avail).collect();
-                    if !truncated.is_empty() { spans.push(Span::styled(truncated, style)); }
+                    if !truncated.is_empty() {
+                        spans.push(Span::styled(truncated, style));
+                    }
                     col = inner_w;
                 } else {
                     spans.push(Span::styled(text.to_string(), style));
@@ -915,7 +1075,8 @@ pub fn render_layout_json(
         } => {
             // When pane-border-status is enabled, reserve 1 row for the
             // border label so it doesn't overlap pane content (#288).
-            let has_border_label = border_status != "off" && !border_format.is_empty() && area.height > 1;
+            let has_border_label =
+                border_status != "off" && !border_format.is_empty() && area.height > 1;
             let inner = if has_border_label {
                 if border_status == "top" {
                     Rect::new(area.x, area.y + 1, area.width, area.height - 1)
@@ -934,12 +1095,15 @@ pub fn render_layout_json(
             // view, matching how a terminal scrolls.
             let needs_scale = !use_full_cells
                 && !rows_v2.is_empty()
-                && *src_rows > 0 && *src_cols > 0
-                && inner.height > 0 && inner.width > 0
+                && *src_rows > 0
+                && *src_cols > 0
+                && inner.height > 0
+                && inner.width > 0
                 && (*src_rows > inner.height || *src_cols > inner.width);
             let scaled_holder: Vec<RowRunsJson>;
             let rows_v2_eff: &[RowRunsJson] = if needs_scale {
-                scaled_holder = downscale_rows_v2(rows_v2, *src_rows, *src_cols, inner.height, inner.width);
+                scaled_holder =
+                    downscale_rows_v2(rows_v2, *src_rows, *src_cols, inner.height, inner.width);
                 &scaled_holder
             } else {
                 rows_v2.as_slice()
@@ -955,10 +1119,17 @@ pub fn render_layout_json(
                         let mut fg = map_color(&cell.fg);
                         let bg = map_color(&cell.bg);
                         let in_selection = if *copy_mode && *active {
-                            if let (Some(sr), Some(sc), Some(er), Some(ec)) = (sel_start_row, sel_start_col, sel_end_row, sel_end_col) {
+                            if let (Some(sr), Some(sc), Some(er), Some(ec)) =
+                                (sel_start_row, sel_start_col, sel_end_row, sel_end_col)
+                            {
                                 let mode = sel_mode.as_deref().unwrap_or("char");
                                 match mode {
-                                    "rect" => r >= *sr && r <= *er && c >= (*sc).min(*ec) && c <= (*sc).max(*ec),
+                                    "rect" => {
+                                        r >= *sr
+                                            && r <= *er
+                                            && c >= (*sc).min(*ec)
+                                            && c <= (*sc).max(*ec)
+                                    }
                                     "line" => r >= *sr && r <= *er,
                                     _ => {
                                         if *sr == *er {
@@ -972,9 +1143,15 @@ pub fn render_layout_json(
                                         }
                                     }
                                 }
-                            } else { false }
-                        } else { false };
-                        if *active && dim_preds && !*alternate_screen
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        };
+                        if *active
+                            && dim_preds
+                            && !*alternate_screen
                             && (r > *cursor_row || (r == *cursor_row && c >= *cursor_col))
                         {
                             fg = dim_color(fg);
@@ -984,13 +1161,27 @@ pub fn render_layout_json(
                             let ms = crate::rendering::parse_tmux_style(mode_style_str);
                             style = ms;
                         }
-                        if cell.inverse { style = style.add_modifier(Modifier::REVERSED); }
-                        if cell.dim { style = style.add_modifier(Modifier::DIM); }
-                        if cell.bold { style = style.add_modifier(Modifier::BOLD); }
-                        if cell.italic { style = style.add_modifier(Modifier::ITALIC); }
-                        if cell.underline { style = style.add_modifier(Modifier::UNDERLINED); }
-                        if cell.blink { style = style.add_modifier(Modifier::SLOW_BLINK); }
-                        if cell.strikethrough { style = style.add_modifier(Modifier::CROSSED_OUT); }
+                        if cell.inverse {
+                            style = style.add_modifier(Modifier::REVERSED);
+                        }
+                        if cell.dim {
+                            style = style.add_modifier(Modifier::DIM);
+                        }
+                        if cell.bold {
+                            style = style.add_modifier(Modifier::BOLD);
+                        }
+                        if cell.italic {
+                            style = style.add_modifier(Modifier::ITALIC);
+                        }
+                        if cell.underline {
+                            style = style.add_modifier(Modifier::UNDERLINED);
+                        }
+                        if cell.blink {
+                            style = style.add_modifier(Modifier::SLOW_BLINK);
+                        }
+                        if cell.strikethrough {
+                            style = style.add_modifier(Modifier::CROSSED_OUT);
+                        }
                         let text: &str = if cell.hidden {
                             " "
                         } else if cell.text.is_empty() {
@@ -1014,7 +1205,9 @@ pub fn render_layout_json(
                     if c < inner.width {
                         let last_bg = if !spans.is_empty() {
                             spans.last().unwrap().style.bg.unwrap_or(Color::Reset)
-                        } else { Color::Reset };
+                        } else {
+                            Color::Reset
+                        };
                         let pad = " ".repeat((inner.width - c) as usize);
                         spans.push(Span::styled(pad, Style::default().bg(last_bg)));
                     }
@@ -1026,23 +1219,41 @@ pub fn render_layout_json(
                     let mut c: u16 = 0;
                     let mut last_bg = Color::Reset;
                     for run in &rows_v2_eff[r as usize].runs {
-                        if c >= inner.width { break; }
+                        if c >= inner.width {
+                            break;
+                        }
                         let mut fg = map_color(&run.fg);
                         let bg = map_color(&run.bg);
                         last_bg = bg;
-                        if *active && dim_preds && !*alternate_screen
+                        if *active
+                            && dim_preds
+                            && !*alternate_screen
                             && (r > *cursor_row || (r == *cursor_row && c >= *cursor_col))
                         {
                             fg = dim_color(fg);
                         }
                         let mut style = Style::default().fg(fg).bg(bg);
-                        if run.flags & 16 != 0 { style = style.add_modifier(Modifier::REVERSED); }
-                        if run.flags & 1 != 0 { style = style.add_modifier(Modifier::DIM); }
-                        if run.flags & 2 != 0 { style = style.add_modifier(Modifier::BOLD); }
-                        if run.flags & 4 != 0 { style = style.add_modifier(Modifier::ITALIC); }
-                        if run.flags & 8 != 0 { style = style.add_modifier(Modifier::UNDERLINED); }
-                        if run.flags & 32 != 0 { style = style.add_modifier(Modifier::SLOW_BLINK); }
-                        if run.flags & 128 != 0 { style = style.add_modifier(Modifier::CROSSED_OUT); }
+                        if run.flags & 16 != 0 {
+                            style = style.add_modifier(Modifier::REVERSED);
+                        }
+                        if run.flags & 1 != 0 {
+                            style = style.add_modifier(Modifier::DIM);
+                        }
+                        if run.flags & 2 != 0 {
+                            style = style.add_modifier(Modifier::BOLD);
+                        }
+                        if run.flags & 4 != 0 {
+                            style = style.add_modifier(Modifier::ITALIC);
+                        }
+                        if run.flags & 8 != 0 {
+                            style = style.add_modifier(Modifier::UNDERLINED);
+                        }
+                        if run.flags & 32 != 0 {
+                            style = style.add_modifier(Modifier::SLOW_BLINK);
+                        }
+                        if run.flags & 128 != 0 {
+                            style = style.add_modifier(Modifier::CROSSED_OUT);
+                        }
                         let text: &str = if run.flags & 64 != 0 {
                             " "
                         } else if run.text.is_empty() {
@@ -1057,15 +1268,20 @@ pub fn render_layout_json(
                             let mut used = 0usize;
                             for ch in text.chars() {
                                 let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1);
-                                if used + cw > avail { break; }
+                                if used + cw > avail {
+                                    break;
+                                }
                                 used += cw;
                                 truncated.push(ch);
                             }
                             if !truncated.is_empty() {
                                 if let Some(uri) = &run.link {
                                     frame_hyperlinks_push(HyperlinkRun {
-                                        x: inner.x + c, y: inner.y + r,
-                                        text: truncated.clone(), uri: uri.clone(), style,
+                                        x: inner.x + c,
+                                        y: inner.y + r,
+                                        text: truncated.clone(),
+                                        uri: uri.clone(),
+                                        style,
                                     });
                                 }
                                 spans.push(Span::styled(truncated, style));
@@ -1074,8 +1290,11 @@ pub fn render_layout_json(
                         } else {
                             if let Some(uri) = &run.link {
                                 frame_hyperlinks_push(HyperlinkRun {
-                                    x: inner.x + c, y: inner.y + r,
-                                    text: text.to_string(), uri: uri.clone(), style,
+                                    x: inner.x + c,
+                                    y: inner.y + r,
+                                    text: text.to_string(),
+                                    uri: uri.clone(),
+                                    style,
                                 });
                             }
                             spans.push(Span::styled(text, style));
@@ -1094,15 +1313,36 @@ pub fn render_layout_json(
             // right and the rightmost columns clip, matching tmux's reduced
             // content width. Only the active copy-mode pane shows the gutter.
             let gutter_w: u16 = if *copy_mode && *active {
-                copy_ln.map(|cfg| crate::copy_line_numbers::gutter_width(cfg.mode, cfg.hsize, inner.height as usize) as u16).unwrap_or(0)
-            } else { 0 };
+                copy_ln
+                    .map(|cfg| {
+                        crate::copy_line_numbers::gutter_width(
+                            cfg.mode,
+                            cfg.hsize,
+                            inner.height as usize,
+                        ) as u16
+                    })
+                    .unwrap_or(0)
+            } else {
+                0
+            };
             if gutter_w > 0 {
                 if let Some(cfg) = copy_ln {
                     let oy = *scroll_offset;
                     let cy = copy_cursor_row.map(|r| r as usize).unwrap_or(usize::MAX);
                     for (r, line) in lines.iter_mut().enumerate() {
-                        let txt = crate::copy_line_numbers::gutter_text(cfg.mode, gutter_w as usize, r, oy, cy, cfg.hsize);
-                        let sty = if crate::copy_line_numbers::is_current_row(r, cy) { cfg.cur_style } else { cfg.num_style };
+                        let txt = crate::copy_line_numbers::gutter_text(
+                            cfg.mode,
+                            gutter_w as usize,
+                            r,
+                            oy,
+                            cy,
+                            cfg.hsize,
+                        );
+                        let sty = if crate::copy_line_numbers::is_current_row(r, cy) {
+                            cfg.cur_style
+                        } else {
+                            cfg.num_style
+                        };
                         line.spans.insert(0, Span::styled(txt, sty));
                     }
                 }
@@ -1118,7 +1358,8 @@ pub fn render_layout_json(
                 if area.width >= lw {
                     let lx = area.x + area.width.saturating_sub(lw);
                     let la = Rect::new(lx, area.y, lw, 1);
-                    let ls = Span::styled(label, Style::default().fg(Color::Black).bg(Color::Yellow));
+                    let ls =
+                        Span::styled(label, Style::default().fg(Color::Black).bg(Color::Yellow));
                     f.render_widget(Paragraph::new(Line::from(ls)), la);
                 }
             }
@@ -1130,7 +1371,10 @@ pub fn render_layout_json(
                     let indicator_x = area.x + area.width - indicator_width - 1;
                     let indicator_y = if *copy_mode { area.y + 1 } else { area.y };
                     let indicator_area = Rect::new(indicator_x, indicator_y, indicator_width, 1);
-                    let indicator_span = Span::styled(indicator, Style::default().fg(Color::Black).bg(Color::Yellow));
+                    let indicator_span = Span::styled(
+                        indicator,
+                        Style::default().fg(Color::Black).bg(Color::Yellow),
+                    );
                     f.render_widget(Paragraph::new(Line::from(indicator_span)), indicator_area);
                 }
             }
@@ -1151,8 +1395,10 @@ pub fn render_layout_json(
                     f.set_cursor_position((cx, cy));
                     let buf = f.buffer_mut();
                     let buf_area = buf.area;
-                    if cy >= buf_area.y && cy < buf_area.y + buf_area.height
-                        && cx >= buf_area.x && cx < buf_area.x + buf_area.width
+                    if cy >= buf_area.y
+                        && cy < buf_area.y + buf_area.height
+                        && cx >= buf_area.x
+                        && cx < buf_area.x + buf_area.width
                     {
                         let idx = (cy - buf_area.y) as usize * buf_area.width as usize
                             + (cx - buf_area.x) as usize;
@@ -1172,14 +1418,26 @@ pub fn render_layout_json(
                     .replace("#P", &id.to_string());
                 let label_width = unicode_width::UnicodeWidthStr::width(pane_label.as_str()) as u16;
                 if label_width > 0 && area.width >= label_width {
-                    let label_y = if border_status == "bottom" { area.y + area.height.saturating_sub(1) } else { area.y };
+                    let label_y = if border_status == "bottom" {
+                        area.y + area.height.saturating_sub(1)
+                    } else {
+                        area.y
+                    };
                     let label_area = Rect::new(area.x, label_y, label_width.min(area.width), 1);
-                    let label_style = Style::default().fg(if *active { active_border_fg } else { border_fg });
-                    f.render_widget(Paragraph::new(Line::from(Span::styled(pane_label, label_style))), label_area);
+                    let label_style =
+                        Style::default().fg(if *active { active_border_fg } else { border_fg });
+                    f.render_widget(
+                        Paragraph::new(Line::from(Span::styled(pane_label, label_style))),
+                        label_area,
+                    );
                 }
             }
         }
-        LayoutJson::Split { kind, sizes, children } => {
+        LayoutJson::Split {
+            kind,
+            sizes,
+            children,
+        } => {
             let effective_sizes: Vec<u16> = if sizes.len() == children.len() {
                 sizes.clone()
             } else {
@@ -1190,7 +1448,24 @@ pub fn render_layout_json(
             if zoomed {
                 if let Some(i) = effective_sizes.iter().position(|&s| s != 0) {
                     if let Some(child) = children.get(i) {
-                        render_layout_json(f, child, area, dim_preds, border_fg, active_border_fg, clock_mode, clock_colour, active_rect, mode_style_str, zoomed, border_status, border_format, total_panes, bchars, copy_ln);
+                        render_layout_json(
+                            f,
+                            child,
+                            area,
+                            dim_preds,
+                            border_fg,
+                            active_border_fg,
+                            clock_mode,
+                            clock_colour,
+                            active_rect,
+                            mode_style_str,
+                            zoomed,
+                            border_status,
+                            border_format,
+                            total_panes,
+                            bchars,
+                            copy_ln,
+                        );
                     }
                 }
                 return;
@@ -1200,17 +1475,38 @@ pub fn render_layout_json(
 
             for (i, child) in children.iter().enumerate() {
                 if i < rects.len() {
-                    render_layout_json(f, child, rects[i], dim_preds, border_fg, active_border_fg, clock_mode, clock_colour, active_rect, mode_style_str, zoomed, border_status, border_format, total_panes, bchars, copy_ln);
+                    render_layout_json(
+                        f,
+                        child,
+                        rects[i],
+                        dim_preds,
+                        border_fg,
+                        active_border_fg,
+                        clock_mode,
+                        clock_colour,
+                        active_rect,
+                        mode_style_str,
+                        zoomed,
+                        border_status,
+                        border_format,
+                        total_panes,
+                        bchars,
+                        copy_ln,
+                    );
                 }
             }
             let border_style = Style::default().fg(border_fg);
             let active_border_style = Style::default().fg(active_border_fg);
             // pane-border-lines none: children are drawn, but no separators.
-            let Some(bc) = bchars else { return; };
+            let Some(bc) = bchars else {
+                return;
+            };
             let (v_char, h_char) = (bc.vertical, bc.horizontal);
             let buf = f.buffer_mut();
             for i in 0..children.len().saturating_sub(1) {
-                if i >= rects.len() { break; }
+                if i >= rects.len() {
+                    break;
+                }
 
                 let both_leaves = matches!(&children[i], LayoutJson::Leaf { .. })
                     && matches!(children.get(i + 1), Some(LayoutJson::Leaf { .. }));
@@ -1219,10 +1515,19 @@ pub fn render_layout_json(
                     let sep_x = rects[i].x + rects[i].width;
                     if sep_x < buf.area.x + buf.area.width {
                         if both_leaves && total_panes == 2 {
-                            let left_active = matches!(&children[i], LayoutJson::Leaf { active, .. } if *active);
+                            let left_active =
+                                matches!(&children[i], LayoutJson::Leaf { active, .. } if *active);
                             let right_active = matches!(children.get(i + 1), Some(LayoutJson::Leaf { active, .. }) if *active);
-                            let left_sty = if left_active { active_border_style } else { border_style };
-                            let right_sty = if right_active { active_border_style } else { border_style };
+                            let left_sty = if left_active {
+                                active_border_style
+                            } else {
+                                border_style
+                            };
+                            let right_sty = if right_active {
+                                active_border_style
+                            } else {
+                                border_style
+                            };
                             let mid_y = area.y + area.height / 2;
                             for y in area.y..area.y + area.height {
                                 let sty = if y < mid_y { left_sty } else { right_sty };
@@ -1236,10 +1541,15 @@ pub fn render_layout_json(
                         } else {
                             for y in area.y..area.y + area.height {
                                 let active = active_rect.map_or(false, |ar| {
-                                    y >= ar.y && y < ar.y + ar.height
-                                    && (sep_x == ar.x + ar.width || sep_x + 1 == ar.x)
+                                    y >= ar.y
+                                        && y < ar.y + ar.height
+                                        && (sep_x == ar.x + ar.width || sep_x + 1 == ar.x)
                                 });
-                                let sty = if active { active_border_style } else { border_style };
+                                let sty = if active {
+                                    active_border_style
+                                } else {
+                                    border_style
+                                };
                                 let idx = (y - buf.area.y) as usize * buf.area.width as usize
                                     + (sep_x - buf.area.x) as usize;
                                 if idx < buf.content.len() {
@@ -1253,10 +1563,19 @@ pub fn render_layout_json(
                     let sep_y = rects[i].y + rects[i].height;
                     if sep_y < buf.area.y + buf.area.height {
                         if both_leaves && total_panes == 2 {
-                            let top_active = matches!(&children[i], LayoutJson::Leaf { active, .. } if *active);
+                            let top_active =
+                                matches!(&children[i], LayoutJson::Leaf { active, .. } if *active);
                             let bot_active = matches!(children.get(i + 1), Some(LayoutJson::Leaf { active, .. }) if *active);
-                            let top_sty = if top_active { active_border_style } else { border_style };
-                            let bot_sty = if bot_active { active_border_style } else { border_style };
+                            let top_sty = if top_active {
+                                active_border_style
+                            } else {
+                                border_style
+                            };
+                            let bot_sty = if bot_active {
+                                active_border_style
+                            } else {
+                                border_style
+                            };
                             let mid_x = area.x + area.width / 2;
                             for x in area.x..area.x + area.width {
                                 let sty = if x < mid_x { top_sty } else { bot_sty };
@@ -1270,10 +1589,15 @@ pub fn render_layout_json(
                         } else {
                             for x in area.x..area.x + area.width {
                                 let active = active_rect.map_or(false, |ar| {
-                                    x >= ar.x && x < ar.x + ar.width
-                                    && (sep_y == ar.y + ar.height || sep_y + 1 == ar.y)
+                                    x >= ar.x
+                                        && x < ar.x + ar.width
+                                        && (sep_y == ar.y + ar.height || sep_y + 1 == ar.y)
                                 });
-                                let sty = if active { active_border_style } else { border_style };
+                                let sty = if active {
+                                    active_border_style
+                                } else {
+                                    border_style
+                                };
                                 let idx = (sep_y - buf.area.y) as usize * buf.area.width as usize
                                     + (x - buf.area.x) as usize;
                                 if idx < buf.content.len() {
@@ -1307,7 +1631,8 @@ fn establish_connection(addr: &str, key: &str) -> io::Result<Connection> {
     // until the ~21s Windows SYN-retransmit and surface as `os error 10060`.
     // A 2s timeout turns that into a fast, clear failure the caller can report
     // (and lets try_reconnect back off promptly instead of stalling).
-    let sockaddr: std::net::SocketAddr = addr.parse()
+    let sockaddr: std::net::SocketAddr = addr
+        .parse()
         .map_err(|_| io::Error::new(io::ErrorKind::Other, format!("bad server address: {addr}")))?;
     let stream = std::net::TcpStream::connect_timeout(&sockaddr, Duration::from_secs(2))?;
     stream.set_nodelay(true)?;
@@ -1319,13 +1644,18 @@ fn establish_connection(addr: &str, key: &str) -> io::Result<Connection> {
     // Bound the AUTH read too: a wedged server that accepts the socket but never
     // answers would otherwise block the attach forever with no feedback. The
     // persistent read timeout is (re)set to 2s just below, after auth.
-    let _ = reader.get_ref().set_read_timeout(Some(Duration::from_secs(3)));
+    let _ = reader
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_secs(3)));
     let _ = writer.write_all(format!("AUTH {}\n", key).as_bytes());
     let _ = writer.flush();
     let mut auth_line = String::new();
     reader.read_line(&mut auth_line)?;
     if !auth_line.trim().starts_with("OK") {
-        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "auth failed"));
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "auth failed",
+        ));
     }
 
     let _ = writer.write_all(b"PERSISTENT\n");
@@ -1333,7 +1663,9 @@ fn establish_connection(addr: &str, key: &str) -> io::Result<Connection> {
     let _ = writer.flush();
 
     // 2-second read timeout keeps the thread from blocking forever on process exit.
-    let _ = reader.get_ref().set_read_timeout(Some(Duration::from_secs(2)));
+    let _ = reader
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_secs(2)));
     let (frame_tx, frame_rx) = std::sync::mpsc::channel::<String>();
     std::thread::spawn(move || {
         let mut reader = reader;
@@ -1344,8 +1676,10 @@ fn establish_connection(addr: &str, key: &str) -> io::Result<Connection> {
                 match reader.read_line(&mut buf) {
                     Ok(0) => return,
                     Ok(_) => break,
-                    Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut
-                        || e.kind() == std::io::ErrorKind::WouldBlock => {
+                    Err(ref e)
+                        if e.kind() == std::io::ErrorKind::TimedOut
+                            || e.kind() == std::io::ErrorKind::WouldBlock =>
+                    {
                         // Do NOT clear buf here. read_line appends to whatever is
                         // already in buf, so a partial line from a previous
                         // fill_buf call is preserved across timeouts. Clearing
@@ -1357,7 +1691,9 @@ fn establish_connection(addr: &str, key: &str) -> io::Result<Connection> {
             }
             let line = std::mem::take(&mut buf);
             buf = String::with_capacity(64 * 1024);
-            if frame_tx.send(line).is_err() { return; }
+            if frame_tx.send(line).is_err() {
+                return;
+            }
         }
     });
 
@@ -1381,11 +1717,21 @@ fn try_reconnect(addr: &str, key: &str) -> Option<Connection> {
     None
 }
 
-pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::PsmuxWriter>>, input: &crate::ssh_input::InputSource) -> io::Result<()> {
+pub fn run_remote(
+    terminal: &mut Terminal<CrosstermBackend<crate::platform::PsmuxWriter>>,
+    input: &crate::ssh_input::InputSource,
+) -> io::Result<()> {
     let name = env::var("PSMUX_SESSION_NAME").unwrap_or_else(|_| "default".to_string());
     let path = crate::paths::port_file(&name);
-    let port = std::fs::read_to_string(&path).ok().and_then(|s| s.trim().parse::<u16>().ok())
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, format!("can't find session '{}' (no server running)", name)))?;
+    let port = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| s.trim().parse::<u16>().ok())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("can't find session '{}' (no server running)", name),
+            )
+        })?;
     let addr = format!("127.0.0.1:{}", port);
     let session_key = read_session_key(&name).unwrap_or_default();
     let last_path = crate::paths::psmux_dir_file("last_session");
@@ -1432,7 +1778,7 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
     let mut window_idx_buf = String::new();
 
     let mut tree_chooser = false;
-    let mut tree_entries: Vec<(bool, usize, usize, String, String)> = Vec::new();  // (is_win, id, sub_id, label, session_name)
+    let mut tree_entries: Vec<(bool, usize, usize, String, String)> = Vec::new(); // (is_win, id, sub_id, label, session_name)
     let mut tree_selected: usize = 0;
     let mut tree_scroll: usize = 0;
     // Digit-jump buffer for the choose-tree / choose-window picker.
@@ -1441,7 +1787,7 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
     // the digit-to-row mapping is visible.
     let mut tree_num_buffer = String::new();
     let mut buffer_chooser = false;
-    let mut buffer_entries: Vec<(usize, usize, String)> = Vec::new();  // (index, byte_len, preview)
+    let mut buffer_entries: Vec<(usize, usize, String)> = Vec::new(); // (index, byte_len, preview)
     let mut buffer_selected: usize = 0;
     let mut buffer_scroll: usize = 0;
     // Digit-jump buffer for the choose-buffer picker.
@@ -1480,7 +1826,7 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
     let mut popup_drag_anchor: (u16, u16) = (0, 0);
     let mut popup_initial_offset: (i32, i32) = (0, 0);
     let mut popup_rect_last: Option<Rect> = None;
-    let mut confirm_cmd: Option<String> = None;  // pending kill confirmation
+    let mut confirm_cmd: Option<String> = None; // pending kill confirmation
     let current_session = name.clone();
     let mut last_sent_size: (u16, u16) = (0, 0);
     let mut last_status_lines: u16 = 1; // track server's status_lines for correct client-size height
@@ -1622,19 +1968,55 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
     let mut srv_customize_options: Vec<CustomizeOption> = Vec::new();
 
     #[derive(serde::Deserialize, Default)]
-    struct WinStatus { id: usize, name: String, active: bool, #[serde(default)] activity: bool, #[serde(default)] bell: bool, #[serde(default)] last: bool, #[serde(default)] tab_text: String, #[serde(default)] idx: usize }
-    
-    fn default_base_index() -> usize { 1 }
-    fn default_prediction_dimming() -> bool { dim_predictions_enabled() }
-    fn default_status_left_length() -> usize { 10 }
-    fn default_status_right_length() -> usize { 40 }
-    fn default_status_lines() -> usize { 1 }
-    fn default_status_visible() -> bool { true }
-    fn default_repeat_time() -> u64 { 500 }
-    fn default_bold_is_bright() -> bool { true }
-    fn default_paste_detection() -> bool { true }
-    fn default_mouse_selection() -> bool { true }
-    fn default_scroll_enter_copy_mode() -> bool { true }
+    struct WinStatus {
+        id: usize,
+        name: String,
+        active: bool,
+        #[serde(default)]
+        activity: bool,
+        #[serde(default)]
+        bell: bool,
+        #[serde(default)]
+        last: bool,
+        #[serde(default)]
+        tab_text: String,
+        #[serde(default)]
+        idx: usize,
+    }
+
+    fn default_base_index() -> usize {
+        1
+    }
+    fn default_prediction_dimming() -> bool {
+        dim_predictions_enabled()
+    }
+    fn default_status_left_length() -> usize {
+        10
+    }
+    fn default_status_right_length() -> usize {
+        40
+    }
+    fn default_status_lines() -> usize {
+        1
+    }
+    fn default_status_visible() -> bool {
+        true
+    }
+    fn default_repeat_time() -> u64 {
+        500
+    }
+    fn default_bold_is_bright() -> bool {
+        true
+    }
+    fn default_paste_detection() -> bool {
+        true
+    }
+    fn default_mouse_selection() -> bool {
+        true
+    }
+    fn default_scroll_enter_copy_mode() -> bool {
+        true
+    }
 
     /// A single key binding synced from the server.
     #[derive(serde::Deserialize, Clone, Debug)]
@@ -1915,15 +2297,17 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
     let mut latency_log: Option<std::fs::File> = if latency_log_enabled {
         let path = crate::paths::psmux_dir_file("latency.log");
         std::fs::File::create(&path).ok()
-    } else { None };
+    } else {
+        None
+    };
     let mut loop_count: u64 = 0;
     let mut _last_key_char: Option<char> = None;
     let mut key_send_instant: Option<Instant> = None; // when the key was SENT to server
 
     // Text selection state (client-side only, left-click drag like pwsh)
-    let mut rsel_start: Option<(u16, u16)> = None;  // (col, row) in terminal coords
+    let mut rsel_start: Option<(u16, u16)> = None; // (col, row) in terminal coords
     let mut rsel_end: Option<(u16, u16)> = None;
-    let mut rsel_pane_rect: Option<Rect> = None;    // clip bounds of the originating pane
+    let mut rsel_pane_rect: Option<Rect> = None; // clip bounds of the originating pane
     let mut rsel_dragged = false;
     // Multi-click tracking for word/line selection.
     let mut last_click: Option<(Instant, (u16, u16))> = None;
@@ -1933,9 +2317,9 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
     let mut rsel_block: bool = false;
     let mut selection_changed = false; // forces redraw for selection overlay
     let mut border_drag = false; // true when dragging a pane separator (resize)
-    // Client-side tab position tracking for accurate mouse click detection.
-    // The server's update_tab_positions() uses a different algorithm than what
-    // the client actually renders, so we track positions at render time.
+                                 // Client-side tab position tracking for accurate mouse click detection.
+                                 // The server's update_tab_positions() uses a different algorithm than what
+                                 // the client actually renders, so we track positions at render time.
     let mut client_tab_positions: Vec<(usize, u16, u16)> = Vec::new(); // (window_display_idx, x_start, x_end)
     let mut client_status_row: u16 = u16::MAX; // row where status bar tabs are rendered
     let mut client_pane_rects: Vec<(usize, Rect)> = Vec::new();
@@ -1999,7 +2383,9 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
         // Expire stale key_send_instant after 30ms — ConPTY echo should
         // have arrived by then; stop force-dumping to save CPU.
         if let Some(ks) = key_send_instant {
-            if ks.elapsed().as_millis() > 30 { key_send_instant = None; }
+            if ks.elapsed().as_millis() > 30 {
+                key_send_instant = None;
+            }
         }
         // Safety valve: if dump_in_flight is stuck for >500ms (e.g. server
         // did not respond), release it so the client doesn't spin at 1ms.
@@ -2027,7 +2413,11 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                         }
                     } else if line.trim().starts_with("SWITCH ") {
                         // Server is telling us to switch to another session
-                        let target_session = line.trim().strip_prefix("SWITCH ").unwrap_or("").to_string();
+                        let target_session = line
+                            .trim()
+                            .strip_prefix("SWITCH ")
+                            .unwrap_or("")
+                            .to_string();
                         if !target_session.is_empty() {
                             env::set_var("PSMUX_SWITCH_TO", &target_session);
                             let _ = writer.write_all(b"client-detach\n");
@@ -2048,7 +2438,9 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                         if client_log_enabled() {
                             client_log("frame", &format!("received {} bytes", line.len()));
                         }
-                        dump_buf = line; got_frame = true; dump_in_flight = false;
+                        dump_buf = line;
+                        got_frame = true;
+                        dump_in_flight = false;
                     }
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
@@ -2072,13 +2464,17 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                 }
             }
         }
-        if quit && !got_frame { break; }
+        if quit && !got_frame {
+            break;
+        }
 
         // ── STEP 1: Poll events with adaptive timeout ────────────────────
         let since_dump = last_dump_time.elapsed().as_millis() as u64;
         // Expire typing timer after 100ms of no new keys
         if let Some(kt) = last_key_send_time {
-            if kt.elapsed().as_millis() > 100 { last_key_send_time = None; }
+            if kt.elapsed().as_millis() > 100 {
+                last_key_send_time = None;
+            }
         }
         let typing_active = last_key_send_time.is_some();
         // When typing: cap at ~100fps to avoid flooding the server with
@@ -2090,27 +2486,30 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
         #[cfg(not(windows))]
         let paste_pend_active = false;
 
-        let poll_ms = if paste_pend_active { 1 }
-            else if got_frame { 0 }
-            else if dump_in_flight { 5 }
-            else if force_dump { 0 }
-            else if typing_active {
-                // Rate-limit to ~100fps (10ms) when typing.  The snapshot-
-                // based serialisation in dump_layout_json_fast now holds
-                // the parser mutex for only ~1ms (cell snapshot), so
-                // polling at 10ms no longer starves the ConPTY reader
-                // thread.  10ms is notably shorter than ConPTY's ~16ms
-                // render interval, avoiding systematic alignment delays.
-                let remaining = 10u64.saturating_sub(since_dump);
-                remaining
-            }
-            else {
-                // Server pushes frames proactively via auto-push —
-                // no need for fast idle polling.  16ms (~60fps) ensures
-                // pushed frames render within one vsync while using
-                // negligible CPU (vs 50ms poll + dump-state roundtrip).
-                16
-            };
+        let poll_ms = if paste_pend_active {
+            1
+        } else if got_frame {
+            0
+        } else if dump_in_flight {
+            5
+        } else if force_dump {
+            0
+        } else if typing_active {
+            // Rate-limit to ~100fps (10ms) when typing.  The snapshot-
+            // based serialisation in dump_layout_json_fast now holds
+            // the parser mutex for only ~1ms (cell snapshot), so
+            // polling at 10ms no longer starves the ConPTY reader
+            // thread.  10ms is notably shorter than ConPTY's ~16ms
+            // render interval, avoiding systematic alignment delays.
+            let remaining = 10u64.saturating_sub(since_dump);
+            remaining
+        } else {
+            // Server pushes frames proactively via auto-push —
+            // no need for fast idle polling.  16ms (~60fps) ensures
+            // pushed frames render within one vsync while using
+            // negligible CPU (vs 50ms poll + dump-state roundtrip).
+            16
+        };
 
         cmd_batch.clear();
 
@@ -2135,8 +2534,14 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                     // Ctrl+V Release already seen — send as paste now
                     if !paste_pend.is_empty() {
                         if input_log_enabled() {
-                            input_log("paste", &format!("paste CONFIRMED (top), sending {} chars as send-paste: {:?}",
-                                paste_pend.len(), &paste_pend.chars().take(200).collect::<String>()));
+                            input_log(
+                                "paste",
+                                &format!(
+                                    "paste CONFIRMED (top), sending {} chars as send-paste: {:?}",
+                                    paste_pend.len(),
+                                    &paste_pend.chars().take(200).collect::<String>()
+                                ),
+                            );
                         }
                         let encoded = base64_encode(&paste_pend);
                         cmd_batch.push(format!("send-paste {}\n", encoded));
@@ -2160,7 +2565,13 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                         paste_stage2 = true;
                         paste_stage2_last_len = paste_pend.len();
                         if input_log_enabled() {
-                            input_log("paste", &format!("stage2: {} chars in 5ms, waiting for Ctrl+V Release", paste_pend.len()));
+                            input_log(
+                                "paste",
+                                &format!(
+                                    "stage2: {} chars in 5ms, waiting for Ctrl+V Release",
+                                    paste_pend.len()
+                                ),
+                            );
                         }
                     } else if paste_pend.chars().count() >= 8 && has_non_ascii {
                         // ≥8 non-ASCII chars in 5ms — almost certainly a paste
@@ -2169,19 +2580,37 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                         paste_stage2 = true;
                         paste_stage2_last_len = paste_pend.len();
                         if input_log_enabled() {
-                            input_log("paste", &format!("stage2 (large non-ASCII): {} chars in 5ms", paste_pend.len()));
+                            input_log(
+                                "paste",
+                                &format!(
+                                    "stage2 (large non-ASCII): {} chars in 5ms",
+                                    paste_pend.len()
+                                ),
+                            );
                         }
                     } else if paste_pend.len() >= 3 && has_non_ascii {
                         // ≥3 chars but contains non-ASCII (IME input) — flush
                         // immediately as normal text to avoid 300ms delay.
                         if input_log_enabled() {
-                            input_log("paste", &format!("flush {} chars as normal (non-ASCII / IME detected)", paste_pend.len()));
+                            input_log(
+                                "paste",
+                                &format!(
+                                    "flush {} chars as normal (non-ASCII / IME detected)",
+                                    paste_pend.len()
+                                ),
+                            );
                         }
                         for c in paste_pend.chars() {
                             match c {
-                                '\n' => { cmd_batch.push("send-key enter\n".into()); }
-                                '\t' => { cmd_batch.push("send-key tab\n".into()); }
-                                ' '  => { cmd_batch.push("send-key space\n".into()); }
+                                '\n' => {
+                                    cmd_batch.push("send-key enter\n".into());
+                                }
+                                '\t' => {
+                                    cmd_batch.push("send-key tab\n".into());
+                                }
+                                ' ' => {
+                                    cmd_batch.push("send-key space\n".into());
+                                }
                                 _ => {
                                     let escaped = match c {
                                         '"' => "\\\"".to_string(),
@@ -2197,13 +2626,22 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                     } else {
                         // <3 chars → normal typing, flush as send-text
                         if input_log_enabled() {
-                            input_log("paste", &format!("flush {} chars as normal (< 3 in 5ms)", paste_pend.len()));
+                            input_log(
+                                "paste",
+                                &format!("flush {} chars as normal (< 3 in 5ms)", paste_pend.len()),
+                            );
                         }
                         for c in paste_pend.chars() {
                             match c {
-                                '\n' => { cmd_batch.push("send-key enter\n".into()); }
-                                '\t' => { cmd_batch.push("send-key tab\n".into()); }
-                                ' '  => { cmd_batch.push("send-key space\n".into()); }
+                                '\n' => {
+                                    cmd_batch.push("send-key enter\n".into());
+                                }
+                                '\t' => {
+                                    cmd_batch.push("send-key tab\n".into());
+                                }
+                                ' ' => {
+                                    cmd_batch.push("send-key space\n".into());
+                                }
                                 _ => {
                                     let escaped = match c {
                                         '"' => "\\\"".to_string(),
@@ -2229,7 +2667,13 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                         // Buffer stopped growing — send accumulated chars as
                         // send-paste so the server wraps in bracketed paste.
                         if input_log_enabled() {
-                            input_log("paste", &format!("stage2 timeout, sending {} chars as send-paste", paste_pend.len()));
+                            input_log(
+                                "paste",
+                                &format!(
+                                    "stage2 timeout, sending {} chars as send-paste",
+                                    paste_pend.len()
+                                ),
+                            );
                         }
                         let encoded = base64_encode(&paste_pend);
                         cmd_batch.push(format!("send-paste {}\n", encoded));
@@ -2253,10 +2697,13 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                 if input_log_enabled() {
                     match &_cur_evt {
                         Event::Key(key) => {
-                            input_log("event", &format!(
-                                "Key code={:?} mods={:?} kind={:?} state={:?}",
-                                key.code, key.modifiers, key.kind, key.state
-                            ));
+                            input_log(
+                                "event",
+                                &format!(
+                                    "Key code={:?} mods={:?} kind={:?} state={:?}",
+                                    key.code, key.modifiers, key.kind, key.state
+                                ),
+                            );
                         }
                         Event::Mouse(me) => {
                             input_log("event", &format!("Mouse {:?}", me.kind));
@@ -2280,9 +2727,10 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                     // Press, drop the Release so it does not trigger the WezTerm
                     // Release-only acceptance path and produce a double newline.
                     #[cfg(windows)]
-                    Event::Key(key) if key.kind == KeyEventKind::Release
-                        && matches!(key.code, KeyCode::Enter)
-                        && modified_enter_press_handled =>
+                    Event::Key(key)
+                        if key.kind == KeyEventKind::Release
+                            && matches!(key.code, KeyCode::Enter)
+                            && modified_enter_press_handled =>
                     {
                         // drop the phantom Release
                     }
@@ -2297,13 +2745,20 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                     // can distinguish paste from typed input.
                     // Skipped when paste-detection is off.
                     #[cfg(windows)]
-                    Event::Key(key) if key.kind == KeyEventKind::Release
-                        && matches!(key.code, KeyCode::Char('v'))
-                        && key.modifiers == KeyModifiers::CONTROL
-                        && paste_detection_enabled =>
+                    Event::Key(key)
+                        if key.kind == KeyEventKind::Release
+                            && matches!(key.code, KeyCode::Char('v'))
+                            && key.modifiers == KeyModifiers::CONTROL
+                            && paste_detection_enabled =>
                     {
                         if input_log_enabled() {
-                            input_log("paste", &format!("Ctrl+V Release detected, paste_pend len={}", paste_pend.len()));
+                            input_log(
+                                "paste",
+                                &format!(
+                                    "Ctrl+V Release detected, paste_pend len={}",
+                                    paste_pend.len()
+                                ),
+                            );
                         }
                         paste_confirmed = true;
                     }
@@ -2311,26 +2766,40 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                     // WezTerm generates only KeyEventKind::Release for Shift+Enter
                     // (no Press, no Repeat).  Accept and promote to Press.
                     #[cfg(windows)]
-                    Event::Key(mut key) if key.kind == KeyEventKind::Release
-                        && matches!(key.code, KeyCode::Enter)
-                        && !key.modifiers.is_empty() =>
+                    Event::Key(mut key)
+                        if key.kind == KeyEventKind::Release
+                            && matches!(key.code, KeyCode::Enter)
+                            && !key.modifiers.is_empty() =>
                     {
                         key.kind = KeyEventKind::Press;
                         crate::platform::augment_enter_shift(&mut key);
                         modified_enter_press_handled = true;
                         // Skip paste buffering — forward directly like a Press.
                         let is_prefix = (key.code, key.modifiers) == prefix_key
-                            || prefix_raw_char.map_or(false, |c| matches!(key.code, KeyCode::Char(ch) if ch == c))
+                            || prefix_raw_char.map_or(
+                                false,
+                                |c| matches!(key.code, KeyCode::Char(ch) if ch == c),
+                            )
                             || prefix2_key.map_or(false, |p2| (key.code, key.modifiers) == p2)
-                            || prefix2_raw_char.map_or(false, |c| matches!(key.code, KeyCode::Char(ch) if ch == c));
+                            || prefix2_raw_char.map_or(
+                                false,
+                                |c| matches!(key.code, KeyCode::Char(ch) if ch == c),
+                            );
                         if !is_prefix {
                             if let Some(encoded) = crate::input::encode_key_event(&key) {
-                                cmd_batch.push(format!("send-key-raw {}\n",
-                                    encoded.iter().map(|b| format!("{:02x}", b)).collect::<String>()));
+                                cmd_batch.push(format!(
+                                    "send-key-raw {}\n",
+                                    encoded
+                                        .iter()
+                                        .map(|b| format!("{:02x}", b))
+                                        .collect::<String>()
+                                ));
                             }
                         }
                     }
-                    Event::Key(mut key) if key.kind == KeyEventKind::Press || key.kind == KeyEventKind::Repeat => {
+                    Event::Key(mut key)
+                        if key.kind == KeyEventKind::Press || key.kind == KeyEventKind::Repeat =>
+                    {
                         // On Windows, VS Code's xterm.js sends ESC+CR for
                         // Shift+Enter.  ConPTY interprets the ESC as Alt, so
                         // crossterm reports Alt+Enter.  Poll the physical
@@ -2359,36 +2828,53 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                         // Non-letter chars with Ctrl+Alt are AltGr-produced
                                         // (e.g. \ @ { } on German/Czech keyboards) and
                                         // should be bufferable like normal text.
-                                        let is_altgr = key.modifiers.contains(KeyModifiers::CONTROL)
-                                            && key.modifiers.contains(KeyModifiers::ALT)
-                                            && !c.is_ascii_lowercase();
-                                        is_altgr || (!key.modifiers.contains(KeyModifiers::CONTROL)
-                                                  && !key.modifiers.contains(KeyModifiers::ALT))
+                                        let is_altgr =
+                                            key.modifiers.contains(KeyModifiers::CONTROL)
+                                                && key.modifiers.contains(KeyModifiers::ALT)
+                                                && !c.is_ascii_lowercase();
+                                        is_altgr
+                                            || (!key.modifiers.contains(KeyModifiers::CONTROL)
+                                                && !key.modifiers.contains(KeyModifiers::ALT))
                                     }
                                     KeyCode::Enter | KeyCode::Tab => true, // buffered when pend non-empty
                                     _ => false,
                                 };
                                 if !is_bufferable {
-                                    flush_paste_pend_as_text(&mut paste_pend, &mut paste_pend_start, &mut paste_stage2, &mut cmd_batch);
+                                    flush_paste_pend_as_text(
+                                        &mut paste_pend,
+                                        &mut paste_pend_start,
+                                        &mut paste_stage2,
+                                        &mut cmd_batch,
+                                    );
                                 }
                             }
                         }
                         // Dynamic prefix key check (default: Ctrl+B, configurable via .psmux.conf)
                         let is_prefix = (key.code, key.modifiers) == prefix_key
-                            || prefix_raw_char.map_or(false, |c| matches!(key.code, KeyCode::Char(ch) if ch == c))
+                            || prefix_raw_char.map_or(
+                                false,
+                                |c| matches!(key.code, KeyCode::Char(ch) if ch == c),
+                            )
                             || prefix2_key.map_or(false, |p2| (key.code, key.modifiers) == p2)
-                            || prefix2_raw_char.map_or(false, |c| matches!(key.code, KeyCode::Char(ch) if ch == c));
+                            || prefix2_raw_char.map_or(
+                                false,
+                                |c| matches!(key.code, KeyCode::Char(ch) if ch == c),
+                            );
 
                         // Expire repeat-mode prefix if repeat-time has elapsed.
                         // This ensures keys are forwarded to the PTY rather than
                         // being interpreted as prefix bindings (tmux parity).
-                        if prefix_armed && prefix_repeating
+                        if prefix_armed
+                            && prefix_repeating
                             && prefix_armed_at.elapsed().as_millis() >= repeat_time_ms as u128
                         {
                             prefix_armed = false;
                             prefix_repeating = false;
                             #[cfg(windows)]
-                            if ime_was_open { crate::platform::ime_restore(); ime_was_open = false; }
+                            if ime_was_open {
+                                crate::platform::ime_restore();
+                                ime_was_open = false;
+                            }
                             cmd_batch.push("prefix-end\n".into());
                         }
 
@@ -2412,14 +2898,19 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                         cmd_batch.push(format!("popup-input {}\n", encoded));
                                     }
                                     KeyCode::Char(c) => {
-                                        let bytes = if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
+                                        let bytes = if key
+                                            .modifiers
+                                            .contains(crossterm::event::KeyModifiers::CONTROL)
+                                        {
                                             vec![(c as u8) & 0x1F]
                                         } else {
                                             let mut buf = [0u8; 4];
                                             let s = c.encode_utf8(&mut buf);
                                             s.as_bytes().to_vec()
                                         };
-                                        let encoded = crate::util::base64_encode(std::str::from_utf8(&bytes).unwrap_or(""));
+                                        let encoded = crate::util::base64_encode(
+                                            std::str::from_utf8(&bytes).unwrap_or(""),
+                                        );
                                         cmd_batch.push(format!("popup-input {}\n", encoded));
                                     }
                                     KeyCode::Enter => {
@@ -2492,7 +2983,8 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                         srv_popup_scroll = srv_popup_scroll.saturating_sub(10);
                                     }
                                     KeyCode::PageDown => {
-                                        srv_popup_scroll = (srv_popup_scroll + 10).min(total_lines.saturating_sub(1));
+                                        srv_popup_scroll = (srv_popup_scroll + 10)
+                                            .min(total_lines.saturating_sub(1));
                                     }
                                     KeyCode::Home | KeyCode::Char('g') => {
                                         srv_popup_scroll = 0;
@@ -2503,8 +2995,7 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                     _ => {}
                                 }
                             }
-                        }
-                        else if srv_confirm_active {
+                        } else if srv_confirm_active {
                             match key.code {
                                 KeyCode::Char('y') | KeyCode::Char('Y') => {
                                     cmd_batch.push("confirm-respond y\n".into());
@@ -2514,45 +3005,58 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                 }
                                 _ => {} // Ignore other keys during confirm
                             }
-                        }
-                        else if srv_menu_active {
+                        } else if srv_menu_active {
                             match key.code {
-                                KeyCode::Up | KeyCode::Char('k') => { cmd_batch.push("menu-navigate -1\n".into()); }
-                                KeyCode::Down | KeyCode::Char('j') => { cmd_batch.push("menu-navigate 1\n".into()); }
+                                KeyCode::Up | KeyCode::Char('k') => {
+                                    cmd_batch.push("menu-navigate -1\n".into());
+                                }
+                                KeyCode::Down | KeyCode::Char('j') => {
+                                    cmd_batch.push("menu-navigate 1\n".into());
+                                }
                                 KeyCode::Enter => {
                                     cmd_batch.push(format!("menu-select {}\n", srv_menu_selected));
                                 }
-                                KeyCode::Esc | KeyCode::Char('q') => { cmd_batch.push("overlay-close\n".into()); }
+                                KeyCode::Esc | KeyCode::Char('q') => {
+                                    cmd_batch.push("overlay-close\n".into());
+                                }
                                 KeyCode::Char(c) => {
                                     // Shortcut key: find menu item with matching key
                                     if let Some(idx) = srv_menu_items.iter().position(|item| {
-                                        item.key.as_ref().map(|k| k.len() == 1 && k.chars().next() == Some(c)).unwrap_or(false)
+                                        item.key
+                                            .as_ref()
+                                            .map(|k| k.len() == 1 && k.chars().next() == Some(c))
+                                            .unwrap_or(false)
                                     }) {
                                         cmd_batch.push(format!("menu-select {}\n", idx));
                                     }
                                 }
                                 _ => {}
                             }
-                        }
-                        else if srv_display_panes {
+                        } else if srv_display_panes {
                             match key.code {
                                 KeyCode::Char(d) if d.is_ascii_digit() => {
                                     let digit = d.to_digit(10).unwrap() as usize;
                                     cmd_batch.push(format!("display-panes-select {}\n", digit));
                                 }
-                                _ => { cmd_batch.push("overlay-close\n".into()); }
+                                _ => {
+                                    cmd_batch.push("overlay-close\n".into());
+                                }
                             }
-                        }
-                        else if srv_customize_active {
+                        } else if srv_customize_active {
                             if srv_customize_editing {
                                 match key.code {
-                                    KeyCode::Esc => { cmd_batch.push("customize-edit-cancel\n".into()); }
-                                    KeyCode::Enter => { cmd_batch.push("customize-edit-confirm\n".into()); }
+                                    KeyCode::Esc => {
+                                        cmd_batch.push("customize-edit-cancel\n".into());
+                                    }
+                                    KeyCode::Enter => {
+                                        cmd_batch.push("customize-edit-confirm\n".into());
+                                    }
                                     KeyCode::Backspace => {
                                         if srv_customize_cursor > 0 {
                                             let mut buf = srv_customize_edit_buf.clone();
                                             buf.remove(srv_customize_cursor - 1);
-                                            cmd_batch.push(format!("customize-edit-update {}\n", buf));
+                                            cmd_batch
+                                                .push(format!("customize-edit-update {}\n", buf));
                                         }
                                     }
                                     KeyCode::Char(c) => {
@@ -2568,16 +3072,34 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                         customize_num_buffer.clear();
                                         cmd_batch.push("overlay-close\n".into());
                                     }
-                                    KeyCode::Up | KeyCode::Char('k') => { cmd_batch.push("customize-navigate -1\n".into()); }
-                                    KeyCode::Down | KeyCode::Char('j') => { cmd_batch.push("customize-navigate 1\n".into()); }
+                                    KeyCode::Up | KeyCode::Char('k') => {
+                                        cmd_batch.push("customize-navigate -1\n".into());
+                                    }
+                                    KeyCode::Down | KeyCode::Char('j') => {
+                                        cmd_batch.push("customize-navigate 1\n".into());
+                                    }
                                     // hjkl parity with tmux mode-tree (issue #259): h = up, l = down for flat lists
-                                    KeyCode::Char('h') => { cmd_batch.push("customize-navigate -1\n".into()); }
-                                    KeyCode::Char('l') => { cmd_batch.push("customize-navigate 1\n".into()); }
-                                    KeyCode::PageUp => { cmd_batch.push("customize-navigate -20\n".into()); }
-                                    KeyCode::PageDown => { cmd_batch.push("customize-navigate 20\n".into()); }
-                                    KeyCode::Home | KeyCode::Char('g') => { cmd_batch.push("customize-navigate -9999\n".into()); }
-                                    KeyCode::End | KeyCode::Char('G') => { cmd_batch.push("customize-navigate 9999\n".into()); }
-                                    KeyCode::Backspace => { customize_num_buffer.pop(); }
+                                    KeyCode::Char('h') => {
+                                        cmd_batch.push("customize-navigate -1\n".into());
+                                    }
+                                    KeyCode::Char('l') => {
+                                        cmd_batch.push("customize-navigate 1\n".into());
+                                    }
+                                    KeyCode::PageUp => {
+                                        cmd_batch.push("customize-navigate -20\n".into());
+                                    }
+                                    KeyCode::PageDown => {
+                                        cmd_batch.push("customize-navigate 20\n".into());
+                                    }
+                                    KeyCode::Home | KeyCode::Char('g') => {
+                                        cmd_batch.push("customize-navigate -9999\n".into());
+                                    }
+                                    KeyCode::End | KeyCode::Char('G') => {
+                                        cmd_batch.push("customize-navigate 9999\n".into());
+                                    }
+                                    KeyCode::Backspace => {
+                                        customize_num_buffer.pop();
+                                    }
                                     KeyCode::Enter => {
                                         // Digit-jump: number+Enter navigates to the Nth visible
                                         // option (1-based). Empty buffer falls back to the
@@ -2585,25 +3107,35 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                         if customize_num_buffer.is_empty() {
                                             cmd_batch.push("customize-edit\n".into());
                                         } else {
-                                            let want_pos = customize_num_buffer.parse::<usize>().ok()
-                                                .filter(|n| *n >= 1 && *n <= srv_customize_options.len());
+                                            let want_pos = customize_num_buffer
+                                                .parse::<usize>()
+                                                .ok()
+                                                .filter(|n| {
+                                                    *n >= 1 && *n <= srv_customize_options.len()
+                                                });
                                             if let Some(pos) = want_pos {
                                                 // current_pos = index of the highlighted opt within the
                                                 // visible (filtered) option list.
-                                                let cur_pos = srv_customize_options.iter()
+                                                let cur_pos = srv_customize_options
+                                                    .iter()
                                                     .position(|o| o.i == srv_customize_selected)
                                                     .unwrap_or(0);
                                                 let target_pos = pos - 1;
                                                 let delta = target_pos as i64 - cur_pos as i64;
                                                 if delta != 0 {
-                                                    cmd_batch.push(format!("customize-navigate {}\n", delta));
+                                                    cmd_batch.push(format!(
+                                                        "customize-navigate {}\n",
+                                                        delta
+                                                    ));
                                                 }
                                                 customize_num_buffer.clear();
                                             }
                                             // unparseable / out-of-range -> keep buffer
                                         }
                                     }
-                                    KeyCode::Char('d') => { cmd_batch.push("customize-reset-default\n".into()); }
+                                    KeyCode::Char('d') => {
+                                        cmd_batch.push("customize-reset-default\n".into());
+                                    }
                                     KeyCode::Char('/') => {
                                         // Toggle filter: if filter active, clear it
                                         if !srv_customize_filter.is_empty() {
@@ -2620,8 +3152,16 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                     _ => {}
                                 }
                             }
-                        }
-                        else if matches!(key.code, KeyCode::Esc) && (command_input || renaming || pane_renaming || tree_chooser || buffer_chooser || session_chooser || confirm_cmd.is_some() || keys_viewer) {
+                        } else if matches!(key.code, KeyCode::Esc)
+                            && (command_input
+                                || renaming
+                                || pane_renaming
+                                || tree_chooser
+                                || buffer_chooser
+                                || session_chooser
+                                || confirm_cmd.is_some()
+                                || keys_viewer)
+                        {
                             command_input = false;
                             command_cursor = 0;
                             renaming = false;
@@ -2640,19 +3180,22 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                             rsel_start = None;
                             rsel_end = None;
                             selection_changed = true;
-                        }
-                        else if rsel_start.is_some() && matches!(key.code, KeyCode::Esc) {
+                        } else if rsel_start.is_some() && matches!(key.code, KeyCode::Esc) {
                             // Escape clears any active text selection
                             rsel_start = None;
                             rsel_end = None;
                             selection_changed = true;
-                        }
-                        else if is_prefix && !prefix_armed {
+                        } else if is_prefix && !prefix_armed {
                             // Suppress IME while in prefix mode so command keys
                             // are not intercepted by the input method (issue #286).
                             #[cfg(windows)]
-                            { ime_was_open = crate::platform::ime_disable(); }
-                            prefix_armed = true; prefix_armed_at = Instant::now(); prefix_repeating = false; cmd_batch.push("prefix-begin\n".into());
+                            {
+                                ime_was_open = crate::platform::ime_disable();
+                            }
+                            prefix_armed = true;
+                            prefix_armed_at = Instant::now();
+                            prefix_repeating = false;
+                            cmd_batch.push("prefix-begin\n".into());
                         }
                         // NOTE: when the prefix key is pressed while the prefix is
                         // ALREADY armed we deliberately do NOT re-arm here. Falling
@@ -2667,31 +3210,47 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                         // table takes exclusive priority, matching tmux: once the prefix
                         // is pressed a key bound in both tables must fire its prefix
                         // binding, not its root binding (issue #472).
-                        else if !prefix_armed && !command_input && !renaming && !pane_renaming && !tree_chooser && !buffer_chooser && !session_chooser && !keys_viewer && confirm_cmd.is_none() && {
-                            let key_tuple = normalize_key_for_binding((key.code, key.modifiers));
-                            synced_bindings.iter().any(|b| {
+                        else if !prefix_armed
+                            && !command_input
+                            && !renaming
+                            && !pane_renaming
+                            && !tree_chooser
+                            && !buffer_chooser
+                            && !session_chooser
+                            && !keys_viewer
+                            && confirm_cmd.is_none()
+                            && {
+                                let key_tuple =
+                                    normalize_key_for_binding((key.code, key.modifiers));
+                                synced_bindings.iter().any(|b| {
                                 b.t == "root" && parse_key_string(&b.k).map_or(false, |k| normalize_key_for_binding(k) == key_tuple)
                                 // Skip scroll-triggered copy mode bindings when option is off (#284)
                                 && !(b.c.starts_with("copy-mode") && b.c.contains("-u") && !scroll_enter_copy_mode)
                             })
-                        } {
+                            }
+                        {
                             let key_tuple = normalize_key_for_binding((key.code, key.modifiers));
                             if let Some(entry) = synced_bindings.iter().find(|b| {
-                                b.t == "root" && parse_key_string(&b.k).map_or(false, |k| normalize_key_for_binding(k) == key_tuple)
-                                && !(b.c.starts_with("copy-mode") && b.c.contains("-u") && !scroll_enter_copy_mode)
+                                b.t == "root"
+                                    && parse_key_string(&b.k).map_or(false, |k| {
+                                        normalize_key_for_binding(k) == key_tuple
+                                    })
+                                    && !(b.c.starts_with("copy-mode")
+                                        && b.c.contains("-u")
+                                        && !scroll_enter_copy_mode)
                             }) {
                                 if entry.c == "detach-client" || entry.c == "detach" {
                                     quit = true;
                                 } else {
                                     // Split on \; to support command chaining (issue #192)
-                                    let sub_cmds = crate::config::split_chained_commands_pub(&entry.c);
+                                    let sub_cmds =
+                                        crate::config::split_chained_commands_pub(&entry.c);
                                     for sub in &sub_cmds {
                                         cmd_batch.push(format!("{}\n", sub));
                                     }
                                 }
                             }
-                        }
-                        else if prefix_armed {
+                        } else if prefix_armed {
                             // Pending flags for complex client-side UI commands
                             // (shared between synced_bindings dispatch and pre-sync hardcoded fallback)
                             let mut do_choose_tree = false;
@@ -2702,7 +3261,10 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                             // Check synced bindings from server (includes defaults from PREFIX_DEFAULTS)
                             let key_tuple = normalize_key_for_binding((key.code, key.modifiers));
                             let user_binding = synced_bindings.iter().find(|b| {
-                                b.t == "prefix" && parse_key_string(&b.k).map_or(false, |k| normalize_key_for_binding(k) == key_tuple)
+                                b.t == "prefix"
+                                    && parse_key_string(&b.k).map_or(false, |k| {
+                                        normalize_key_for_binding(k) == key_tuple
+                                    })
                             });
                             if let Some(entry) = user_binding {
                                 // Dispatch binding (handles both defaults and user overrides).
@@ -2713,18 +3275,27 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                     quit = true;
                                 } else if cmd.starts_with("confirm-before") {
                                     // Extract the actual command from confirm-before wrapper
-                                    let inner = cmd.strip_prefix("confirm-before").unwrap_or(cmd).trim();
+                                    let inner =
+                                        cmd.strip_prefix("confirm-before").unwrap_or(cmd).trim();
                                     // Skip -p 'prompt' flags to get the actual command
                                     let actual_cmd = extract_confirm_command(inner);
                                     confirm_cmd = Some(actual_cmd);
-                                } else if cmd == "kill-pane" || cmd == "kill-window" || cmd == "kill-session" {
+                                } else if cmd == "kill-pane"
+                                    || cmd == "kill-window"
+                                    || cmd == "kill-session"
+                                {
                                     // Direct kill without confirmation (user explicitly bound without confirm-before)
                                     cmd_batch.push(format!("{}\n", cmd));
                                 } else if cmd == "rename-window" {
-                                    renaming = true; rename_buf.clear();
+                                    renaming = true;
+                                    rename_buf.clear();
                                 } else if cmd == "rename-session" {
-                                    renaming = true; rename_buf.clear(); session_renaming = true;
-                                } else if cmd == "command-prompt" || cmd.starts_with("command-prompt ") {
+                                    renaming = true;
+                                    rename_buf.clear();
+                                    session_renaming = true;
+                                } else if cmd == "command-prompt"
+                                    || cmd.starts_with("command-prompt ")
+                                {
                                     command_input = true;
                                     command_cursor = 0;
                                     command_history_idx = command_history.len();
@@ -2745,7 +3316,10 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                             } else if tokens[i] == "-p" && i + 1 < tokens.len() {
                                                 prompt_text = Some(tokens[i + 1].clone());
                                                 i += 2;
-                                            } else if tokens[i] == "-1" || tokens[i] == "-N" || tokens[i] == "-W" {
+                                            } else if tokens[i] == "-1"
+                                                || tokens[i] == "-N"
+                                                || tokens[i] == "-W"
+                                            {
                                                 i += 1; // skip flags
                                             } else if tokens[i].starts_with('-') {
                                                 i += 1; // skip unknown flags
@@ -2774,14 +3348,17 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                     }
                                 } else if cmd == "list-keys" {
                                     keys_viewer_scroll = 0;
-                                    let user_binds: Vec<(bool, String, String, String)> = synced_bindings
-                                        .iter()
-                                        .map(|b| (b.r, b.t.clone(), b.k.clone(), b.c.clone()))
-                                        .collect();
-                                    keys_viewer_lines = help::build_overlay_lines(&user_binds, defaults_suppressed);
+                                    let user_binds: Vec<(bool, String, String, String)> =
+                                        synced_bindings
+                                            .iter()
+                                            .map(|b| (b.r, b.t.clone(), b.k.clone(), b.c.clone()))
+                                            .collect();
+                                    keys_viewer_lines =
+                                        help::build_overlay_lines(&user_binds, defaults_suppressed);
                                     keys_viewer = true;
                                 } else if cmd == "select-window-index" {
-                                    window_idx_input = true; window_idx_buf.clear();
+                                    window_idx_input = true;
+                                    window_idx_buf.clear();
                                 } else if cmd == "choose-tree" || cmd == "choose-window" {
                                     do_choose_tree = true;
                                 } else if cmd == "choose-buffer" || cmd == "chooseb" {
@@ -2792,96 +3369,220 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                     do_session_nav = Some(cmd.contains("-n"));
                                 } else {
                                     // Generic: split on \; for command chaining (issue #192)
-                                    let sub_cmds = crate::config::split_chained_commands_pub(&entry.c);
+                                    let sub_cmds =
+                                        crate::config::split_chained_commands_pub(&entry.c);
                                     for sub in &sub_cmds {
                                         cmd_batch.push(format!("{}\n", sub));
                                     }
                                 }
                             } else if synced_bindings.is_empty() {
-                            // Pre-sync hardcoded fallback (only used before first server state sync)
-                            match key.code {
-                                KeyCode::Char('c') => { cmd_batch.push("new-window\n".into()); }
-                                KeyCode::Char('%') => { cmd_batch.push("split-window -h\n".into()); }
-                                KeyCode::Char('"') => { cmd_batch.push("split-window -v\n".into()); }
-                                KeyCode::Char('x') => { confirm_cmd = Some("kill-pane".into()); }
-                                KeyCode::Char('&') => { confirm_cmd = Some("kill-window".into()); }
-                                KeyCode::Char('z') => { cmd_batch.push("zoom-pane\n".into()); }
-                                KeyCode::Char('[') => { cmd_batch.push("copy-enter\n".into()); }
-                                KeyCode::Char(']') => { cmd_batch.push("paste-buffer\n".into()); }
-                                KeyCode::Char('{') => { cmd_batch.push("swap-pane -U\n".into()); }
-                                KeyCode::Char('}') => { cmd_batch.push("swap-pane -D\n".into()); }
-                                KeyCode::Char('n') => { cmd_batch.push("next-window\n".into()); }
-                                KeyCode::Char('p') => { cmd_batch.push("previous-window\n".into()); }
-                                KeyCode::Char('l') => { cmd_batch.push("last-window\n".into()); }
-                                KeyCode::Char(';') => { cmd_batch.push("last-pane\n".into()); }
-                                KeyCode::Char(' ') => { cmd_batch.push("next-layout\n".into()); }
-                                KeyCode::Char('!') => { cmd_batch.push("break-pane\n".into()); }
-                                KeyCode::Char(d) if d.is_ascii_digit() => {
-                                    let idx = d.to_digit(10).unwrap() as usize;
-                                    cmd_batch.push(format!("select-window {}\n", idx));
+                                // Pre-sync hardcoded fallback (only used before first server state sync)
+                                match key.code {
+                                    KeyCode::Char('c') => {
+                                        cmd_batch.push("new-window\n".into());
+                                    }
+                                    KeyCode::Char('%') => {
+                                        cmd_batch.push("split-window -h\n".into());
+                                    }
+                                    KeyCode::Char('"') => {
+                                        cmd_batch.push("split-window -v\n".into());
+                                    }
+                                    KeyCode::Char('x') => {
+                                        confirm_cmd = Some("kill-pane".into());
+                                    }
+                                    KeyCode::Char('&') => {
+                                        confirm_cmd = Some("kill-window".into());
+                                    }
+                                    KeyCode::Char('z') => {
+                                        cmd_batch.push("zoom-pane\n".into());
+                                    }
+                                    KeyCode::Char('[') => {
+                                        cmd_batch.push("copy-enter\n".into());
+                                    }
+                                    KeyCode::Char(']') => {
+                                        cmd_batch.push("paste-buffer\n".into());
+                                    }
+                                    KeyCode::Char('{') => {
+                                        cmd_batch.push("swap-pane -U\n".into());
+                                    }
+                                    KeyCode::Char('}') => {
+                                        cmd_batch.push("swap-pane -D\n".into());
+                                    }
+                                    KeyCode::Char('n') => {
+                                        cmd_batch.push("next-window\n".into());
+                                    }
+                                    KeyCode::Char('p') => {
+                                        cmd_batch.push("previous-window\n".into());
+                                    }
+                                    KeyCode::Char('l') => {
+                                        cmd_batch.push("last-window\n".into());
+                                    }
+                                    KeyCode::Char(';') => {
+                                        cmd_batch.push("last-pane\n".into());
+                                    }
+                                    KeyCode::Char(' ') => {
+                                        cmd_batch.push("next-layout\n".into());
+                                    }
+                                    KeyCode::Char('!') => {
+                                        cmd_batch.push("break-pane\n".into());
+                                    }
+                                    KeyCode::Char(d) if d.is_ascii_digit() => {
+                                        let idx = d.to_digit(10).unwrap() as usize;
+                                        cmd_batch.push(format!("select-window {}\n", idx));
+                                    }
+                                    KeyCode::Char('o') => {
+                                        cmd_batch.push("select-pane -t :.+\n".into());
+                                    }
+                                    // Alt+Arrow: resize pane by 5 (must be before plain Arrow)
+                                    KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => {
+                                        cmd_batch.push("resize-pane -U 5\n".into());
+                                    }
+                                    KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) => {
+                                        cmd_batch.push("resize-pane -D 5\n".into());
+                                    }
+                                    KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => {
+                                        cmd_batch.push("resize-pane -L 5\n".into());
+                                    }
+                                    KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => {
+                                        cmd_batch.push("resize-pane -R 5\n".into());
+                                    }
+                                    // Ctrl+Arrow: resize pane by 1
+                                    KeyCode::Up
+                                        if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                                    {
+                                        cmd_batch.push("resize-pane -U 1\n".into());
+                                    }
+                                    KeyCode::Down
+                                        if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                                    {
+                                        cmd_batch.push("resize-pane -D 1\n".into());
+                                    }
+                                    KeyCode::Left
+                                        if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                                    {
+                                        cmd_batch.push("resize-pane -L 1\n".into());
+                                    }
+                                    KeyCode::Right
+                                        if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                                    {
+                                        cmd_batch.push("resize-pane -R 1\n".into());
+                                    }
+                                    // Plain Arrow: select pane
+                                    KeyCode::Up => {
+                                        cmd_batch.push("select-pane -U\n".into());
+                                    }
+                                    KeyCode::Down => {
+                                        cmd_batch.push("select-pane -D\n".into());
+                                    }
+                                    KeyCode::Left => {
+                                        cmd_batch.push("select-pane -L\n".into());
+                                    }
+                                    KeyCode::Right => {
+                                        cmd_batch.push("select-pane -R\n".into());
+                                    }
+                                    KeyCode::Char('d') => {
+                                        quit = true;
+                                    }
+                                    KeyCode::Char(',') => {
+                                        renaming = true;
+                                        rename_buf.clear();
+                                    }
+                                    KeyCode::Char('$') => {
+                                        // Rename session — reuse rename overlay
+                                        renaming = true;
+                                        rename_buf.clear();
+                                        // Mark that we're renaming the session, not a window
+                                        // We'll detect this by checking if pane_renaming is used as a flag
+                                        session_renaming = true;
+                                    }
+                                    KeyCode::Char('?') => {
+                                        // Build comprehensive help overlay from help.rs
+                                        keys_viewer_scroll = 0;
+                                        let user_binds: Vec<(bool, String, String, String)> =
+                                            synced_bindings
+                                                .iter()
+                                                .map(|b| {
+                                                    (b.r, b.t.clone(), b.k.clone(), b.c.clone())
+                                                })
+                                                .collect();
+                                        keys_viewer_lines = help::build_overlay_lines(
+                                            &user_binds,
+                                            defaults_suppressed,
+                                        );
+                                        keys_viewer = true;
+                                    }
+                                    KeyCode::Char('t') => {
+                                        cmd_batch.push("clock-mode\n".into());
+                                    }
+                                    KeyCode::Char('=') => {
+                                        do_choose_buffer = true;
+                                    }
+                                    KeyCode::Char('#') => {
+                                        cmd_batch.push("list-buffers\n".into());
+                                    }
+                                    KeyCode::Char(':') => {
+                                        command_input = true;
+                                        command_buf.clear();
+                                        command_cursor = 0;
+                                        command_history_idx = command_history.len();
+                                    }
+                                    KeyCode::Char('\'') => {
+                                        window_idx_input = true;
+                                        window_idx_buf.clear();
+                                    }
+                                    KeyCode::Char('w') => {
+                                        do_choose_tree = true;
+                                    }
+                                    KeyCode::Char('s') => {
+                                        do_choose_session = true;
+                                    }
+                                    KeyCode::Char('q') => {
+                                        cmd_batch.push("display-panes\n".into());
+                                    }
+                                    KeyCode::Char('v') => {
+                                        cmd_batch.push("rectangle-toggle\n".into());
+                                    }
+                                    KeyCode::Char('y') => {
+                                        cmd_batch.push("copy-yank\n".into());
+                                    }
+                                    // Session navigation (like tmux prefix+( and prefix+))
+                                    KeyCode::Char('(') | KeyCode::Char(')') => {
+                                        do_session_nav = Some(key.code == KeyCode::Char(')'));
+                                    }
+                                    // Meta+1..5 preset layouts (like tmux)
+                                    KeyCode::Char('1')
+                                        if key.modifiers.contains(KeyModifiers::ALT) =>
+                                    {
+                                        cmd_batch.push("select-layout even-horizontal\n".into());
+                                    }
+                                    KeyCode::Char('2')
+                                        if key.modifiers.contains(KeyModifiers::ALT) =>
+                                    {
+                                        cmd_batch.push("select-layout even-vertical\n".into());
+                                    }
+                                    KeyCode::Char('3')
+                                        if key.modifiers.contains(KeyModifiers::ALT) =>
+                                    {
+                                        cmd_batch.push("select-layout main-horizontal\n".into());
+                                    }
+                                    KeyCode::Char('4')
+                                        if key.modifiers.contains(KeyModifiers::ALT) =>
+                                    {
+                                        cmd_batch.push("select-layout main-vertical\n".into());
+                                    }
+                                    KeyCode::Char('5')
+                                        if key.modifiers.contains(KeyModifiers::ALT) =>
+                                    {
+                                        cmd_batch.push("select-layout tiled\n".into());
+                                    }
+                                    // Display pane info
+                                    KeyCode::Char('i') => {
+                                        cmd_batch.push("display-message\n".into());
+                                    }
+                                    _ => {
+                                        // No default binding for this key (user bindings already checked above)
+                                    }
                                 }
-                                KeyCode::Char('o') => { cmd_batch.push("select-pane -t :.+\n".into()); }
-                                // Alt+Arrow: resize pane by 5 (must be before plain Arrow)
-                                KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => { cmd_batch.push("resize-pane -U 5\n".into()); }
-                                KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) => { cmd_batch.push("resize-pane -D 5\n".into()); }
-                                KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => { cmd_batch.push("resize-pane -L 5\n".into()); }
-                                KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => { cmd_batch.push("resize-pane -R 5\n".into()); }
-                                // Ctrl+Arrow: resize pane by 1
-                                KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => { cmd_batch.push("resize-pane -U 1\n".into()); }
-                                KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => { cmd_batch.push("resize-pane -D 1\n".into()); }
-                                KeyCode::Left if key.modifiers.contains(KeyModifiers::CONTROL) => { cmd_batch.push("resize-pane -L 1\n".into()); }
-                                KeyCode::Right if key.modifiers.contains(KeyModifiers::CONTROL) => { cmd_batch.push("resize-pane -R 1\n".into()); }
-                                // Plain Arrow: select pane
-                                KeyCode::Up => { cmd_batch.push("select-pane -U\n".into()); }
-                                KeyCode::Down => { cmd_batch.push("select-pane -D\n".into()); }
-                                KeyCode::Left => { cmd_batch.push("select-pane -L\n".into()); }
-                                KeyCode::Right => { cmd_batch.push("select-pane -R\n".into()); }
-                                KeyCode::Char('d') => { quit = true; }
-                                KeyCode::Char(',') => { renaming = true; rename_buf.clear(); }
-                                KeyCode::Char('$') => {
-                                    // Rename session — reuse rename overlay
-                                    renaming = true;
-                                    rename_buf.clear();
-                                    // Mark that we're renaming the session, not a window
-                                    // We'll detect this by checking if pane_renaming is used as a flag
-                                    session_renaming = true;
-                                }
-                                KeyCode::Char('?') => {
-                                    // Build comprehensive help overlay from help.rs
-                                    keys_viewer_scroll = 0;
-                                    let user_binds: Vec<(bool, String, String, String)> = synced_bindings
-                                        .iter()
-                                        .map(|b| (b.r, b.t.clone(), b.k.clone(), b.c.clone()))
-                                        .collect();
-                                    keys_viewer_lines = help::build_overlay_lines(&user_binds, defaults_suppressed);
-                                    keys_viewer = true;
-                                }
-                                KeyCode::Char('t') => { cmd_batch.push("clock-mode\n".into()); }
-                                KeyCode::Char('=') => { do_choose_buffer = true; }
-                                KeyCode::Char('#') => { cmd_batch.push("list-buffers\n".into()); }
-                                KeyCode::Char(':') => { command_input = true; command_buf.clear(); command_cursor = 0; command_history_idx = command_history.len(); }
-                                KeyCode::Char('\'') => { window_idx_input = true; window_idx_buf.clear(); }
-                                KeyCode::Char('w') => { do_choose_tree = true; }
-                                KeyCode::Char('s') => { do_choose_session = true; }
-                                KeyCode::Char('q') => { cmd_batch.push("display-panes\n".into()); }
-                                KeyCode::Char('v') => { cmd_batch.push("rectangle-toggle\n".into()); }
-                                KeyCode::Char('y') => { cmd_batch.push("copy-yank\n".into()); }
-                                // Session navigation (like tmux prefix+( and prefix+))
-                                KeyCode::Char('(') | KeyCode::Char(')') => {
-                                    do_session_nav = Some(key.code == KeyCode::Char(')'));
-                                }
-                                // Meta+1..5 preset layouts (like tmux)
-                                KeyCode::Char('1') if key.modifiers.contains(KeyModifiers::ALT) => { cmd_batch.push("select-layout even-horizontal\n".into()); }
-                                KeyCode::Char('2') if key.modifiers.contains(KeyModifiers::ALT) => { cmd_batch.push("select-layout even-vertical\n".into()); }
-                                KeyCode::Char('3') if key.modifiers.contains(KeyModifiers::ALT) => { cmd_batch.push("select-layout main-horizontal\n".into()); }
-                                KeyCode::Char('4') if key.modifiers.contains(KeyModifiers::ALT) => { cmd_batch.push("select-layout main-vertical\n".into()); }
-                                KeyCode::Char('5') if key.modifiers.contains(KeyModifiers::ALT) => { cmd_batch.push("select-layout tiled\n".into()); }
-                                // Display pane info
-                                KeyCode::Char('i') => { cmd_batch.push("display-message\n".into()); }
-                                _ => {
-                                    // No default binding for this key (user bindings already checked above)
-                                }
-                            }
                             } // end of else (no user binding override)
 
                             // Dispatch pending flags for complex client-side UI commands.
@@ -2895,20 +3596,35 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                 popup_offset = (0, 0);
                                 popup_dragging = false;
                                 popup_rect_last = None;
-                                if choose_tree_preview_default { preview_enabled = true; }
+                                if choose_tree_preview_default {
+                                    preview_enabled = true;
+                                }
                                 // Query ALL sessions (like tmux choose-tree)
                                 let dir = crate::paths::psmux_dir();
                                 if let Ok(entries) = std::fs::read_dir(&dir) {
-                                    let mut sessions: Vec<(String, Vec<(usize, String, bool, Vec<(usize, String)>, usize)>)> = Vec::new();
+                                    let mut sessions: Vec<(
+                                        String,
+                                        Vec<(usize, String, bool, Vec<(usize, String)>, usize)>,
+                                    )> = Vec::new();
                                     for e in entries.flatten() {
-                                        if let Some(fname) = e.file_name().to_str().map(|s| s.to_string()) {
+                                        if let Some(fname) =
+                                            e.file_name().to_str().map(|s| s.to_string())
+                                        {
                                             if let Some((base, ext)) = fname.rsplit_once('.') {
                                                 if ext == "port" {
-                                                    if crate::session::is_warm_session(base) { continue; }
-                                                    if let Ok(port_str) = std::fs::read_to_string(e.path()) {
-                                                        if let Ok(p) = port_str.trim().parse::<u16>() {
-                                                            let sess_addr = format!("127.0.0.1:{}", p);
-                                                            let sess_key = read_session_key(base).unwrap_or_default();
+                                                    if crate::session::is_warm_session(base) {
+                                                        continue;
+                                                    }
+                                                    if let Ok(port_str) =
+                                                        std::fs::read_to_string(e.path())
+                                                    {
+                                                        if let Ok(p) =
+                                                            port_str.trim().parse::<u16>()
+                                                        {
+                                                            let sess_addr =
+                                                                format!("127.0.0.1:{}", p);
+                                                            let sess_key = read_session_key(base)
+                                                                .unwrap_or_default();
                                                             // Centralized AUTH+command helper handles the OK ack race
                                                             // (issue #250) and bounds the response size.
                                                             if let Some(tree_line) = crate::session::fetch_authed_response_multi(
@@ -2934,9 +3650,13 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                         }
                                     }
                                     sessions.sort_by(|a, b| {
-                                        if a.0 == current_session { std::cmp::Ordering::Less }
-                                        else if b.0 == current_session { std::cmp::Ordering::Greater }
-                                        else { a.0.cmp(&b.0) }
+                                        if a.0 == current_session {
+                                            std::cmp::Ordering::Less
+                                        } else if b.0 == current_session {
+                                            std::cmp::Ordering::Greater
+                                        } else {
+                                            a.0.cmp(&b.0)
+                                        }
                                     });
                                     // Row index of the current session's active window, so the
                                     // chooser opens its cursor on it (issue #373) instead of the
@@ -2947,40 +3667,86 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                         let is_current = sess_name == &current_session;
                                         let attached = if is_current { " (attached)" } else { "" };
                                         let nw = wins.len();
-                                        tree_entries.push((true, usize::MAX, 0,
+                                        tree_entries.push((
+                                            true,
+                                            usize::MAX,
+                                            0,
                                             format!("{}: {} windows{}", sess_name, nw, attached),
-                                            sess_name.clone()));
+                                            sess_name.clone(),
+                                        ));
                                         if is_current {
                                             for (wid, wname, active, panes, disp) in wins.iter() {
                                                 let marker = if *active { "*" } else { "" };
-                                                if *active { active_tree_row = Some(tree_entries.len()); }
-                                                tree_entries.push((true, *wid, 0,
-                                                    format!("  {}: {}{} ({} panes)", disp, wname, marker, panes.len()),
-                                                    sess_name.clone()));
+                                                if *active {
+                                                    active_tree_row = Some(tree_entries.len());
+                                                }
+                                                tree_entries.push((
+                                                    true,
+                                                    *wid,
+                                                    0,
+                                                    format!(
+                                                        "  {}: {}{} ({} panes)",
+                                                        disp,
+                                                        wname,
+                                                        marker,
+                                                        panes.len()
+                                                    ),
+                                                    sess_name.clone(),
+                                                ));
                                                 for (pid, ptitle) in panes {
-                                                    tree_entries.push((false, *wid, *pid,
+                                                    tree_entries.push((
+                                                        false,
+                                                        *wid,
+                                                        *pid,
                                                         format!("    {}", ptitle),
-                                                        sess_name.clone()));
+                                                        sess_name.clone(),
+                                                    ));
                                                 }
                                             }
                                         } else {
                                             for (wid, wname, active, panes, disp) in wins.iter() {
                                                 let marker = if *active { "*" } else { "" };
-                                                tree_entries.push((true, *wid, 0,
-                                                    format!("  {}: {}{} ({} panes)", disp, wname, marker, panes.len()),
-                                                    sess_name.clone()));
+                                                tree_entries.push((
+                                                    true,
+                                                    *wid,
+                                                    0,
+                                                    format!(
+                                                        "  {}: {}{} ({} panes)",
+                                                        disp,
+                                                        wname,
+                                                        marker,
+                                                        panes.len()
+                                                    ),
+                                                    sess_name.clone(),
+                                                ));
                                             }
                                         }
                                     }
-                                    if let Some(r) = active_tree_row { tree_selected = r; }
+                                    if let Some(r) = active_tree_row {
+                                        tree_selected = r;
+                                    }
                                 }
                                 if tree_entries.is_empty() {
                                     for wi in &last_tree {
                                         let marker = if wi.active { "*" } else { "" };
-                                        if wi.active { tree_selected = tree_entries.len(); }
-                                        tree_entries.push((true, wi.id, 0, format!("{}{}", wi.name, marker), current_session.clone()));
+                                        if wi.active {
+                                            tree_selected = tree_entries.len();
+                                        }
+                                        tree_entries.push((
+                                            true,
+                                            wi.id,
+                                            0,
+                                            format!("{}{}", wi.name, marker),
+                                            current_session.clone(),
+                                        ));
                                         for pi in &wi.panes {
-                                            tree_entries.push((false, wi.id, pi.id, pi.title.clone(), current_session.clone()));
+                                            tree_entries.push((
+                                                false,
+                                                wi.id,
+                                                pi.id,
+                                                pi.title.clone(),
+                                                current_session.clone(),
+                                            ));
                                         }
                                     }
                                 }
@@ -2994,7 +3760,9 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                 popup_offset = (0, 0);
                                 popup_dragging = false;
                                 popup_rect_last = None;
-                                if choose_tree_preview_default { preview_enabled = true; }
+                                if choose_tree_preview_default {
+                                    preview_enabled = true;
+                                }
                                 let dir = crate::paths::psmux_dir();
                                 // Collect (label, addr, key) for every port file, then run ONE
                                 // bounded liveness probe per session in parallel. This both lists
@@ -3007,12 +3775,24 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                         if let Some(fname) = e.file_name().to_str() {
                                             if let Some((base, ext)) = fname.rsplit_once('.') {
                                                 if ext == "port" {
-                                                    if crate::session::is_warm_session(base) { continue; }
-                                                    if let Ok(port_str) = std::fs::read_to_string(e.path()) {
-                                                        if let Ok(p) = port_str.trim().parse::<u16>() {
-                                                            let sess_addr = format!("127.0.0.1:{}", p);
-                                                            let sess_key = read_session_key(base).unwrap_or_default();
-                                                            targets.push((base.to_string(), sess_addr, sess_key));
+                                                    if crate::session::is_warm_session(base) {
+                                                        continue;
+                                                    }
+                                                    if let Ok(port_str) =
+                                                        std::fs::read_to_string(e.path())
+                                                    {
+                                                        if let Ok(p) =
+                                                            port_str.trim().parse::<u16>()
+                                                        {
+                                                            let sess_addr =
+                                                                format!("127.0.0.1:{}", p);
+                                                            let sess_key = read_session_key(base)
+                                                                .unwrap_or_default();
+                                                            targets.push((
+                                                                base.to_string(),
+                                                                sess_addr,
+                                                                sess_key,
+                                                            ));
                                                         }
                                                     }
                                                 }
@@ -3036,8 +3816,13 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                             // shows as a "(not responding)" zombie. A live-but-slow
                                             // server self-heals on its next 5s registry tick.
                                             if crate::debug_log::session_log_enabled() {
-                                                crate::debug_log::session_log("picker",
-                                                    &format!("reaping dead session '{}' from chooser", label));
+                                                crate::debug_log::session_log(
+                                                    "picker",
+                                                    &format!(
+                                                        "reaping dead session '{}' from chooser",
+                                                        label
+                                                    ),
+                                                );
                                             }
                                             crate::session::remove_session_registry(&label);
                                         }
@@ -3045,15 +3830,24 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                             // Could not connect (transient, non-refused). Keep it
                                             // and show the honest "(not responding)" rather than
                                             // deleting on an ambiguous failure.
-                                            session_entries.push((label.clone(), format!("{}: (not responding)", label)));
+                                            session_entries.push((
+                                                label.clone(),
+                                                format!("{}: (not responding)", label),
+                                            ));
                                         }
                                     }
                                 }
                                 if session_entries.is_empty() {
-                                    session_entries.push((current_session.clone(), format!("{}: (current)", current_session)));
+                                    session_entries.push((
+                                        current_session.clone(),
+                                        format!("{}: (current)", current_session),
+                                    ));
                                 }
                                 for (i, (sname, _)) in session_entries.iter().enumerate() {
-                                    if sname == &current_session { session_selected = i; break; }
+                                    if sname == &current_session {
+                                        session_selected = i;
+                                        break;
+                                    }
                                 }
                             }
                             if do_choose_buffer {
@@ -3066,35 +3860,54 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                 let port_file = crate::paths::port_file(&current_session);
                                 if let Ok(port_str) = std::fs::read_to_string(&port_file) {
                                     if let Ok(p) = port_str.trim().parse::<u16>() {
-                                        let sess_key = read_session_key(&current_session).unwrap_or_default();
+                                        let sess_key =
+                                            read_session_key(&current_session).unwrap_or_default();
                                         let addr = format!("127.0.0.1:{}", p);
-                                        if let Some(buf_line) = crate::session::fetch_authed_response_multi(
-                                            &addr,
-                                            &sess_key,
-                                            b"choose-buffer\n",
-                                            Duration::from_millis(100),
-                                            Duration::from_millis(200),
-                                        ) {
+                                        if let Some(buf_line) =
+                                            crate::session::fetch_authed_response_multi(
+                                                &addr,
+                                                &sess_key,
+                                                b"choose-buffer\n",
+                                                Duration::from_millis(100),
+                                                Duration::from_millis(200),
+                                            )
+                                        {
                                             {
                                                 // Parse "buffer0: 17 bytes: "content"\nbuffer1: ..."
                                                 for line in buf_line.trim().split('\n') {
                                                     let line = line.trim();
-                                                    if line.is_empty() { continue; }
+                                                    if line.is_empty() {
+                                                        continue;
+                                                    }
                                                     // Format: "bufferN: M bytes: "preview""
-                                                    if let Some(rest) = line.strip_prefix("buffer") {
+                                                    if let Some(rest) = line.strip_prefix("buffer")
+                                                    {
                                                         if let Some(colon_pos) = rest.find(':') {
-                                                            if let Ok(idx) = rest[..colon_pos].parse::<usize>() {
-                                                                let after_colon = &rest[colon_pos+1..].trim_start();
-                                                                let byte_len = after_colon.split_whitespace().next()
-                                                                    .and_then(|s| s.parse::<usize>().ok()).unwrap_or(0);
+                                                            if let Ok(idx) =
+                                                                rest[..colon_pos].parse::<usize>()
+                                                            {
+                                                                let after_colon = &rest
+                                                                    [colon_pos + 1..]
+                                                                    .trim_start();
+                                                                let byte_len = after_colon
+                                                                    .split_whitespace()
+                                                                    .next()
+                                                                    .and_then(|s| {
+                                                                        s.parse::<usize>().ok()
+                                                                    })
+                                                                    .unwrap_or(0);
                                                                 // Extract preview (after "bytes: ")
-                                                                let preview = if let Some(bp) = after_colon.find('"') {
-                                                                    let p = &after_colon[bp+1..];
-                                                                    p.trim_end_matches('"').to_string()
+                                                                let preview = if let Some(bp) =
+                                                                    after_colon.find('"')
+                                                                {
+                                                                    let p = &after_colon[bp + 1..];
+                                                                    p.trim_end_matches('"')
+                                                                        .to_string()
                                                                 } else {
                                                                     after_colon.to_string()
                                                                 };
-                                                                buffer_entries.push((idx, byte_len, preview));
+                                                                buffer_entries
+                                                                    .push((idx, byte_len, preview));
                                                             }
                                                         }
                                                     }
@@ -3116,13 +3929,20 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                         if let Some(fname) = e.file_name().to_str() {
                                             if let Some((base, ext)) = fname.rsplit_once('.') {
                                                 if ext == "port" {
-                                                    if crate::session::is_warm_session(base) { continue; }
-                                                    if let Ok(ps) = std::fs::read_to_string(e.path()) {
+                                                    if crate::session::is_warm_session(base) {
+                                                        continue;
+                                                    }
+                                                    if let Ok(ps) =
+                                                        std::fs::read_to_string(e.path())
+                                                    {
                                                         if let Ok(p) = ps.trim().parse::<u16>() {
                                                             let a = format!("127.0.0.1:{}", p);
                                                             if std::net::TcpStream::connect_timeout(
-                                                                &a.parse().unwrap(), Duration::from_millis(25)
-                                                            ).is_ok() {
+                                                                &a.parse().unwrap(),
+                                                                Duration::from_millis(25),
+                                                            )
+                                                            .is_ok()
+                                                            {
                                                                 names.push(base.to_string());
                                                             }
                                                         }
@@ -3134,7 +3954,9 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                 }
                                 names.sort();
                                 if names.len() > 1 {
-                                    if let Some(cur_pos) = names.iter().position(|n| *n == current_session) {
+                                    if let Some(cur_pos) =
+                                        names.iter().position(|n| *n == current_session)
+                                    {
                                         let next_pos = if dir_next {
                                             (cur_pos + 1) % names.len()
                                         } else {
@@ -3150,7 +3972,8 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
 
                             // Arrow keys are repeatable by default (tmux -r flag).
                             // User-defined bindings also respect the repeat flag.
-                            let is_repeatable_default = matches!(key.code,
+                            let is_repeatable_default = matches!(
+                                key.code,
                                 KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right
                             );
                             let is_user_repeat = user_binding.map_or(false, |e| e.r);
@@ -3161,7 +3984,10 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                 prefix_armed = false;
                                 prefix_repeating = false;
                                 #[cfg(windows)]
-                                if ime_was_open { crate::platform::ime_restore(); ime_was_open = false; }
+                                if ime_was_open {
+                                    crate::platform::ime_restore();
+                                    ime_was_open = false;
+                                }
                                 cmd_batch.push("prefix-end\n".into());
                             }
                         } else {
@@ -3176,29 +4002,69 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                             #[cfg(not(windows))]
                             let paste_burst_active = false;
                             match key.code {
-                                KeyCode::Up if session_chooser => { if session_selected > 0 { session_selected -= 1; } }
-                                KeyCode::Down if session_chooser => { if session_selected + 1 < session_entries.len() { session_selected += 1; } }
+                                KeyCode::Up if session_chooser => {
+                                    if session_selected > 0 {
+                                        session_selected -= 1;
+                                    }
+                                }
+                                KeyCode::Down if session_chooser => {
+                                    if session_selected + 1 < session_entries.len() {
+                                        session_selected += 1;
+                                    }
+                                }
                                 // hjkl parity with tmux mode-tree (issue #259): for flat lists
                                 // tmux treats h/k as up and j/l as down. g/G map to Home/End.
-                                KeyCode::Char('k') if session_chooser => { if session_selected > 0 { session_selected -= 1; } }
-                                KeyCode::Char('j') if session_chooser => { if session_selected + 1 < session_entries.len() { session_selected += 1; } }
-                                KeyCode::Char('h') if session_chooser => { if session_selected > 0 { session_selected -= 1; } }
-                                KeyCode::Char('l') if session_chooser => { if session_selected + 1 < session_entries.len() { session_selected += 1; } }
-                                KeyCode::Char('g') if session_chooser => { session_selected = 0; }
-                                KeyCode::Char('G') if session_chooser => { session_selected = session_entries.len().saturating_sub(1); }
-                                KeyCode::PageUp if session_chooser => { session_selected = session_selected.saturating_sub(10); }
-                                KeyCode::PageDown if session_chooser => { session_selected = (session_selected + 10).min(session_entries.len().saturating_sub(1)); }
-                                KeyCode::Home if session_chooser => { session_selected = 0; }
-                                KeyCode::End if session_chooser => { session_selected = session_entries.len().saturating_sub(1); }
+                                KeyCode::Char('k') if session_chooser => {
+                                    if session_selected > 0 {
+                                        session_selected -= 1;
+                                    }
+                                }
+                                KeyCode::Char('j') if session_chooser => {
+                                    if session_selected + 1 < session_entries.len() {
+                                        session_selected += 1;
+                                    }
+                                }
+                                KeyCode::Char('h') if session_chooser => {
+                                    if session_selected > 0 {
+                                        session_selected -= 1;
+                                    }
+                                }
+                                KeyCode::Char('l') if session_chooser => {
+                                    if session_selected + 1 < session_entries.len() {
+                                        session_selected += 1;
+                                    }
+                                }
+                                KeyCode::Char('g') if session_chooser => {
+                                    session_selected = 0;
+                                }
+                                KeyCode::Char('G') if session_chooser => {
+                                    session_selected = session_entries.len().saturating_sub(1);
+                                }
+                                KeyCode::PageUp if session_chooser => {
+                                    session_selected = session_selected.saturating_sub(10);
+                                }
+                                KeyCode::PageDown if session_chooser => {
+                                    session_selected = (session_selected + 10)
+                                        .min(session_entries.len().saturating_sub(1));
+                                }
+                                KeyCode::Home if session_chooser => {
+                                    session_selected = 0;
+                                }
+                                KeyCode::End if session_chooser => {
+                                    session_selected = session_entries.len().saturating_sub(1);
+                                }
                                 KeyCode::Enter if session_chooser => {
                                     // If the user has typed a number, that wins over the arrow cursor.
                                     // Buffer is 1-based: "1" → first entry, "12" → twelfth. Out-of-range
                                     // or unparseable → do nothing (keep buffer so user can Backspace).
-                                    let target_idx: Option<usize> = if session_num_buffer.is_empty() {
+                                    let target_idx: Option<usize> = if session_num_buffer.is_empty()
+                                    {
                                         Some(session_selected)
                                     } else {
                                         match session_num_buffer.parse::<usize>() {
-                                            Ok(n) if n >= 1 && n <= session_entries.len() => Some(n - 1),
+                                            Ok(n) if n >= 1 && n <= session_entries.len() => {
+                                                Some(n - 1)
+                                            }
                                             _ => None,
                                         }
                                     };
@@ -3223,7 +4089,8 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                 }
                                 KeyCode::Char('x') if session_chooser => {
                                     // Kill the selected session (like tmux session chooser)
-                                    if let Some((sname, _)) = session_entries.get(session_selected) {
+                                    if let Some((sname, _)) = session_entries.get(session_selected)
+                                    {
                                         let sname = sname.clone();
                                         if sname == current_session {
                                             // Killing current session — exit after kill
@@ -3234,21 +4101,34 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                             // Kill another session by connecting to it
                                             let port_path = crate::paths::port_file(&sname);
                                             let key_path = crate::paths::key_file(&sname);
-                                            if let Ok(port_str) = std::fs::read_to_string(&port_path) {
+                                            if let Ok(port_str) =
+                                                std::fs::read_to_string(&port_path)
+                                            {
                                                 if let Ok(port) = port_str.trim().parse::<u16>() {
                                                     let addr = format!("127.0.0.1:{}", port);
-                                                    let sess_key = std::fs::read_to_string(&key_path).unwrap_or_default();
-                                                    if let Ok(mut ss) = std::net::TcpStream::connect_timeout(
-                                                        &addr.parse().unwrap(), Duration::from_millis(100)
-                                                    ) {
-                                                        let _ = write!(ss, "AUTH {}\n", sess_key.trim());
+                                                    let sess_key =
+                                                        std::fs::read_to_string(&key_path)
+                                                            .unwrap_or_default();
+                                                    if let Ok(mut ss) =
+                                                        std::net::TcpStream::connect_timeout(
+                                                            &addr.parse().unwrap(),
+                                                            Duration::from_millis(100),
+                                                        )
+                                                    {
+                                                        let _ = write!(
+                                                            ss,
+                                                            "AUTH {}\n",
+                                                            sess_key.trim()
+                                                        );
                                                         let _ = ss.write_all(b"kill-session\n");
                                                     }
                                                 }
                                             }
                                             // Remove the killed session from the list
                                             session_entries.remove(session_selected);
-                                            if session_selected >= session_entries.len() && session_selected > 0 {
+                                            if session_selected >= session_entries.len()
+                                                && session_selected > 0
+                                            {
                                                 session_selected -= 1;
                                             }
                                             if session_entries.is_empty() {
@@ -3273,20 +4153,57 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                 // Absorb any other char while the session picker is open so
                                 // it cannot leak through to the focused pane's PTY.
                                 KeyCode::Char(_) if session_chooser => {}
-                                KeyCode::Up if tree_chooser => { if tree_selected > 0 { tree_selected -= 1; } }
-                                KeyCode::Down if tree_chooser => { if tree_selected + 1 < tree_entries.len() { tree_selected += 1; } }
+                                KeyCode::Up if tree_chooser => {
+                                    if tree_selected > 0 {
+                                        tree_selected -= 1;
+                                    }
+                                }
+                                KeyCode::Down if tree_chooser => {
+                                    if tree_selected + 1 < tree_entries.len() {
+                                        tree_selected += 1;
+                                    }
+                                }
                                 // hjkl parity with tmux mode-tree (issue #259): h/k = up, j/l = down
                                 // for flat lists. g/G map to Home/End.
-                                KeyCode::Char('k') if tree_chooser => { if tree_selected > 0 { tree_selected -= 1; } }
-                                KeyCode::Char('j') if tree_chooser => { if tree_selected + 1 < tree_entries.len() { tree_selected += 1; } }
-                                KeyCode::Char('h') if tree_chooser => { if tree_selected > 0 { tree_selected -= 1; } }
-                                KeyCode::Char('l') if tree_chooser => { if tree_selected + 1 < tree_entries.len() { tree_selected += 1; } }
-                                KeyCode::Char('g') if tree_chooser => { tree_selected = 0; }
-                                KeyCode::Char('G') if tree_chooser => { tree_selected = tree_entries.len().saturating_sub(1); }
-                                KeyCode::PageUp if tree_chooser => { tree_selected = tree_selected.saturating_sub(10); }
-                                KeyCode::PageDown if tree_chooser => { tree_selected = (tree_selected + 10).min(tree_entries.len().saturating_sub(1)); }
-                                KeyCode::Home if tree_chooser => { tree_selected = 0; }
-                                KeyCode::End if tree_chooser => { tree_selected = tree_entries.len().saturating_sub(1); }
+                                KeyCode::Char('k') if tree_chooser => {
+                                    if tree_selected > 0 {
+                                        tree_selected -= 1;
+                                    }
+                                }
+                                KeyCode::Char('j') if tree_chooser => {
+                                    if tree_selected + 1 < tree_entries.len() {
+                                        tree_selected += 1;
+                                    }
+                                }
+                                KeyCode::Char('h') if tree_chooser => {
+                                    if tree_selected > 0 {
+                                        tree_selected -= 1;
+                                    }
+                                }
+                                KeyCode::Char('l') if tree_chooser => {
+                                    if tree_selected + 1 < tree_entries.len() {
+                                        tree_selected += 1;
+                                    }
+                                }
+                                KeyCode::Char('g') if tree_chooser => {
+                                    tree_selected = 0;
+                                }
+                                KeyCode::Char('G') if tree_chooser => {
+                                    tree_selected = tree_entries.len().saturating_sub(1);
+                                }
+                                KeyCode::PageUp if tree_chooser => {
+                                    tree_selected = tree_selected.saturating_sub(10);
+                                }
+                                KeyCode::PageDown if tree_chooser => {
+                                    tree_selected = (tree_selected + 10)
+                                        .min(tree_entries.len().saturating_sub(1));
+                                }
+                                KeyCode::Home if tree_chooser => {
+                                    tree_selected = 0;
+                                }
+                                KeyCode::End if tree_chooser => {
+                                    tree_selected = tree_entries.len().saturating_sub(1);
+                                }
                                 KeyCode::Enter if tree_chooser => {
                                     // Digit-jump: if a number was typed, prefer it over the
                                     // arrow cursor. Buffer is 1-based: "1" -> first row,
@@ -3296,12 +4213,16 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                         Some(tree_selected)
                                     } else {
                                         match tree_num_buffer.parse::<usize>() {
-                                            Ok(n) if n >= 1 && n <= tree_entries.len() => Some(n - 1),
+                                            Ok(n) if n >= 1 && n <= tree_entries.len() => {
+                                                Some(n - 1)
+                                            }
                                             _ => None,
                                         }
                                     };
                                     if let Some(sel_idx) = target_idx {
-                                        if let Some((is_win, wid, pid, _label, sess_name)) = tree_entries.get(sel_idx) {
+                                        if let Some((is_win, wid, pid, _label, sess_name)) =
+                                            tree_entries.get(sel_idx)
+                                        {
                                             if *wid == usize::MAX {
                                                 // Session header — switch to that session
                                                 if *sess_name != current_session {
@@ -3330,8 +4251,13 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                         }
                                     }
                                 }
-                                KeyCode::Esc if tree_chooser => { tree_chooser = false; tree_num_buffer.clear(); }
-                                KeyCode::Backspace if tree_chooser => { tree_num_buffer.pop(); }
+                                KeyCode::Esc if tree_chooser => {
+                                    tree_chooser = false;
+                                    tree_num_buffer.clear();
+                                }
+                                KeyCode::Backspace if tree_chooser => {
+                                    tree_num_buffer.pop();
+                                }
                                 // 'p' toggles the live preview pane in choose-tree
                                 KeyCode::Char('p') if tree_chooser => {
                                     preview_enabled = !preview_enabled;
@@ -3345,7 +4271,9 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                         Some(tree_selected)
                                     } else {
                                         match tree_num_buffer.parse::<usize>() {
-                                            Ok(n) if n >= 1 && n <= tree_entries.len() => Some(n - 1),
+                                            Ok(n) if n >= 1 && n <= tree_entries.len() => {
+                                                Some(n - 1)
+                                            }
                                             _ => None,
                                         }
                                     };
@@ -3356,13 +4284,18 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                             .get(sel_idx)
                                             .map(|(iw, w, _p, _l, s)| (*iw, *w, s.clone()))
                                         {
-                                            if is_win && wid != usize::MAX && sess_name == current_session {
+                                            if is_win
+                                                && wid != usize::MAX
+                                                && sess_name == current_session
+                                            {
                                                 cmd_batch.push(format!("focus-window {}\n", wid));
                                                 cmd_batch.push("kill-window\n".into());
                                                 // Drop the killed row and clamp the cursor so
                                                 // the picker stays open for further kills.
                                                 tree_entries.remove(sel_idx);
-                                                if tree_selected >= tree_entries.len() && tree_selected > 0 {
+                                                if tree_selected >= tree_entries.len()
+                                                    && tree_selected > 0
+                                                {
                                                     tree_selected -= 1;
                                                 }
                                                 if tree_entries.is_empty() {
@@ -3384,28 +4317,56 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                 KeyCode::Char(_) if tree_chooser => {}
                                 // --- buffer chooser (C-b =) ---
                                 KeyCode::Up | KeyCode::Char('k') if buffer_chooser => {
-                                    if buffer_selected > 0 { buffer_selected -= 1; }
+                                    if buffer_selected > 0 {
+                                        buffer_selected -= 1;
+                                    }
                                 }
                                 KeyCode::Down | KeyCode::Char('j') if buffer_chooser => {
-                                    if buffer_selected + 1 < buffer_entries.len() { buffer_selected += 1; }
+                                    if buffer_selected + 1 < buffer_entries.len() {
+                                        buffer_selected += 1;
+                                    }
                                 }
                                 // hjkl parity with tmux mode-tree (issue #259): h = up, l = down for flat lists
-                                KeyCode::Char('h') if buffer_chooser => { if buffer_selected > 0 { buffer_selected -= 1; } }
-                                KeyCode::Char('l') if buffer_chooser => { if buffer_selected + 1 < buffer_entries.len() { buffer_selected += 1; } }
-                                KeyCode::Char('g') if buffer_chooser => { buffer_selected = 0; }
-                                KeyCode::Char('G') if buffer_chooser => { buffer_selected = buffer_entries.len().saturating_sub(1); }
-                                KeyCode::PageUp if buffer_chooser => { buffer_selected = buffer_selected.saturating_sub(10); }
-                                KeyCode::PageDown if buffer_chooser => { buffer_selected = (buffer_selected + 10).min(buffer_entries.len().saturating_sub(1)); }
-                                KeyCode::Home if buffer_chooser => { buffer_selected = 0; }
-                                KeyCode::End if buffer_chooser => { buffer_selected = buffer_entries.len().saturating_sub(1); }
+                                KeyCode::Char('h') if buffer_chooser => {
+                                    if buffer_selected > 0 {
+                                        buffer_selected -= 1;
+                                    }
+                                }
+                                KeyCode::Char('l') if buffer_chooser => {
+                                    if buffer_selected + 1 < buffer_entries.len() {
+                                        buffer_selected += 1;
+                                    }
+                                }
+                                KeyCode::Char('g') if buffer_chooser => {
+                                    buffer_selected = 0;
+                                }
+                                KeyCode::Char('G') if buffer_chooser => {
+                                    buffer_selected = buffer_entries.len().saturating_sub(1);
+                                }
+                                KeyCode::PageUp if buffer_chooser => {
+                                    buffer_selected = buffer_selected.saturating_sub(10);
+                                }
+                                KeyCode::PageDown if buffer_chooser => {
+                                    buffer_selected = (buffer_selected + 10)
+                                        .min(buffer_entries.len().saturating_sub(1));
+                                }
+                                KeyCode::Home if buffer_chooser => {
+                                    buffer_selected = 0;
+                                }
+                                KeyCode::End if buffer_chooser => {
+                                    buffer_selected = buffer_entries.len().saturating_sub(1);
+                                }
                                 KeyCode::Enter if buffer_chooser => {
                                     // Digit-jump: number+Enter selects the Nth visible buffer
                                     // (1-based). Empty buffer falls back to arrow cursor.
-                                    let target_idx: Option<usize> = if buffer_num_buffer.is_empty() {
+                                    let target_idx: Option<usize> = if buffer_num_buffer.is_empty()
+                                    {
                                         Some(buffer_selected)
                                     } else {
                                         match buffer_num_buffer.parse::<usize>() {
-                                            Ok(n) if n >= 1 && n <= buffer_entries.len() => Some(n - 1),
+                                            Ok(n) if n >= 1 && n <= buffer_entries.len() => {
+                                                Some(n - 1)
+                                            }
                                             _ => None,
                                         }
                                     };
@@ -3428,7 +4389,9 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                         for (i, entry) in buffer_entries.iter_mut().enumerate() {
                                             entry.0 = i;
                                         }
-                                        if buffer_selected >= buffer_entries.len() && buffer_selected > 0 {
+                                        if buffer_selected >= buffer_entries.len()
+                                            && buffer_selected > 0
+                                        {
                                             buffer_selected -= 1;
                                         }
                                         if buffer_entries.is_empty() {
@@ -3438,8 +4401,13 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                         buffer_num_buffer.clear();
                                     }
                                 }
-                                KeyCode::Esc | KeyCode::Char('q') if buffer_chooser => { buffer_chooser = false; buffer_num_buffer.clear(); }
-                                KeyCode::Backspace if buffer_chooser => { buffer_num_buffer.pop(); }
+                                KeyCode::Esc | KeyCode::Char('q') if buffer_chooser => {
+                                    buffer_chooser = false;
+                                    buffer_num_buffer.clear();
+                                }
+                                KeyCode::Backspace if buffer_chooser => {
+                                    buffer_num_buffer.pop();
+                                }
                                 KeyCode::Char(c) if buffer_chooser && c.is_ascii_digit() => {
                                     if buffer_num_buffer.len() < 6 {
                                         buffer_num_buffer.push(c);
@@ -3449,41 +4417,114 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                 // it cannot leak through to the focused pane's PTY.
                                 KeyCode::Char(_) if buffer_chooser => {}
                                 // --- list-keys viewer (C-b ?) ---
-                                KeyCode::Up if keys_viewer => { if keys_viewer_scroll > 0 { keys_viewer_scroll -= 1; } }
-                                KeyCode::Down if keys_viewer => { keys_viewer_scroll += 1; }
-                                KeyCode::PageUp if keys_viewer => { keys_viewer_scroll = keys_viewer_scroll.saturating_sub(20); }
-                                KeyCode::PageDown if keys_viewer => { keys_viewer_scroll += 20; }
-                                KeyCode::Home if keys_viewer => { keys_viewer_scroll = 0; }
-                                KeyCode::End if keys_viewer => { keys_viewer_scroll = keys_viewer_lines.len().saturating_sub(1); }
-                                KeyCode::Char('q') if keys_viewer => { keys_viewer = false; }
-                                KeyCode::Esc if keys_viewer => { keys_viewer = false; }
-                                KeyCode::Char('k') if keys_viewer => { if keys_viewer_scroll > 0 { keys_viewer_scroll -= 1; } }
-                                KeyCode::Char('j') if keys_viewer => { keys_viewer_scroll += 1; }
+                                KeyCode::Up if keys_viewer => {
+                                    if keys_viewer_scroll > 0 {
+                                        keys_viewer_scroll -= 1;
+                                    }
+                                }
+                                KeyCode::Down if keys_viewer => {
+                                    keys_viewer_scroll += 1;
+                                }
+                                KeyCode::PageUp if keys_viewer => {
+                                    keys_viewer_scroll = keys_viewer_scroll.saturating_sub(20);
+                                }
+                                KeyCode::PageDown if keys_viewer => {
+                                    keys_viewer_scroll += 20;
+                                }
+                                KeyCode::Home if keys_viewer => {
+                                    keys_viewer_scroll = 0;
+                                }
+                                KeyCode::End if keys_viewer => {
+                                    keys_viewer_scroll = keys_viewer_lines.len().saturating_sub(1);
+                                }
+                                KeyCode::Char('q') if keys_viewer => {
+                                    keys_viewer = false;
+                                }
+                                KeyCode::Esc if keys_viewer => {
+                                    keys_viewer = false;
+                                }
+                                KeyCode::Char('k') if keys_viewer => {
+                                    if keys_viewer_scroll > 0 {
+                                        keys_viewer_scroll -= 1;
+                                    }
+                                }
+                                KeyCode::Char('j') if keys_viewer => {
+                                    keys_viewer_scroll += 1;
+                                }
                                 // hjkl parity with tmux mode-tree (issue #259): h = up, l = down, g/G = home/end
-                                KeyCode::Char('h') if keys_viewer => { if keys_viewer_scroll > 0 { keys_viewer_scroll -= 1; } }
-                                KeyCode::Char('l') if keys_viewer => { keys_viewer_scroll += 1; }
-                                KeyCode::Char('g') if keys_viewer => { keys_viewer_scroll = 0; }
-                                KeyCode::Char('G') if keys_viewer => { keys_viewer_scroll = keys_viewer_lines.len().saturating_sub(1); }
+                                KeyCode::Char('h') if keys_viewer => {
+                                    if keys_viewer_scroll > 0 {
+                                        keys_viewer_scroll -= 1;
+                                    }
+                                }
+                                KeyCode::Char('l') if keys_viewer => {
+                                    keys_viewer_scroll += 1;
+                                }
+                                KeyCode::Char('g') if keys_viewer => {
+                                    keys_viewer_scroll = 0;
+                                }
+                                KeyCode::Char('G') if keys_viewer => {
+                                    keys_viewer_scroll = keys_viewer_lines.len().saturating_sub(1);
+                                }
                                 // --- kill confirmation: y/Y/Enter confirms, n/N/Esc cancels ---
-                                KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter if confirm_cmd.is_some() => {
+                                KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter
+                                    if confirm_cmd.is_some() =>
+                                {
                                     if let Some(cmd) = confirm_cmd.take() {
                                         cmd_batch.push(format!("{}\n", cmd));
                                     }
                                 }
-                                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc if confirm_cmd.is_some() => {
+                                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc
+                                    if confirm_cmd.is_some() =>
+                                {
                                     confirm_cmd = None;
                                 }
-                                KeyCode::Char(c) if renaming && !key.modifiers.contains(KeyModifiers::CONTROL) && !paste_burst_active => { rename_buf.push(c); }
-                                KeyCode::Char(c) if pane_renaming && !key.modifiers.contains(KeyModifiers::CONTROL) && !paste_burst_active => { pane_title_buf.push(c); }
-                                KeyCode::Char(c) if window_idx_input && c.is_ascii_digit() && !paste_burst_active => { window_idx_buf.push(c); }
-                                KeyCode::Char(c) if command_input && !key.modifiers.contains(KeyModifiers::CONTROL) && !paste_burst_active => { command_buf.insert(command_cursor, c); command_cursor += c.len_utf8(); }
-                                KeyCode::Backspace if renaming => { let _ = rename_buf.pop(); }
-                                KeyCode::Backspace if pane_renaming => { let _ = pane_title_buf.pop(); }
-                                KeyCode::Backspace if window_idx_input => { let _ = window_idx_buf.pop(); }
+                                KeyCode::Char(c)
+                                    if renaming
+                                        && !key.modifiers.contains(KeyModifiers::CONTROL)
+                                        && !paste_burst_active =>
+                                {
+                                    rename_buf.push(c);
+                                }
+                                KeyCode::Char(c)
+                                    if pane_renaming
+                                        && !key.modifiers.contains(KeyModifiers::CONTROL)
+                                        && !paste_burst_active =>
+                                {
+                                    pane_title_buf.push(c);
+                                }
+                                KeyCode::Char(c)
+                                    if window_idx_input
+                                        && c.is_ascii_digit()
+                                        && !paste_burst_active =>
+                                {
+                                    window_idx_buf.push(c);
+                                }
+                                KeyCode::Char(c)
+                                    if command_input
+                                        && !key.modifiers.contains(KeyModifiers::CONTROL)
+                                        && !paste_burst_active =>
+                                {
+                                    command_buf.insert(command_cursor, c);
+                                    command_cursor += c.len_utf8();
+                                }
+                                KeyCode::Backspace if renaming => {
+                                    let _ = rename_buf.pop();
+                                }
+                                KeyCode::Backspace if pane_renaming => {
+                                    let _ = pane_title_buf.pop();
+                                }
+                                KeyCode::Backspace if window_idx_input => {
+                                    let _ = window_idx_buf.pop();
+                                }
                                 KeyCode::Backspace if command_input => {
                                     if command_cursor > 0 {
                                         // Walk back to the previous char boundary so we never split a UTF-8 sequence.
-                                        let prev_len = command_buf[..command_cursor].chars().next_back().map(|c| c.len_utf8()).unwrap_or(1);
+                                        let prev_len = command_buf[..command_cursor]
+                                            .chars()
+                                            .next_back()
+                                            .map(|c| c.len_utf8())
+                                            .unwrap_or(1);
                                         let new_cursor = command_cursor - prev_len;
                                         command_buf.replace_range(new_cursor..command_cursor, "");
                                         command_cursor = new_cursor;
@@ -3491,17 +4532,32 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                 }
                                 KeyCode::Enter if renaming => {
                                     if session_renaming {
-                                        cmd_batch.push(format!("rename-session {}\n", quote_arg(&rename_buf)));
+                                        cmd_batch.push(format!(
+                                            "rename-session {}\n",
+                                            quote_arg(&rename_buf)
+                                        ));
                                         session_renaming = false;
                                     } else {
-                                        cmd_batch.push(format!("rename-window {}\n", quote_arg(&rename_buf)));
+                                        cmd_batch.push(format!(
+                                            "rename-window {}\n",
+                                            quote_arg(&rename_buf)
+                                        ));
                                     }
                                     renaming = false;
                                 }
-                                KeyCode::Enter if pane_renaming => { cmd_batch.push(format!("set-pane-title {}\n", quote_arg(&pane_title_buf))); pane_renaming = false; }
+                                KeyCode::Enter if pane_renaming => {
+                                    cmd_batch.push(format!(
+                                        "set-pane-title {}\n",
+                                        quote_arg(&pane_title_buf)
+                                    ));
+                                    pane_renaming = false;
+                                }
                                 KeyCode::Enter if window_idx_input => {
                                     if !window_idx_buf.is_empty() {
-                                        cmd_batch.push(format!("select-window -t :{}\n", window_idx_buf));
+                                        cmd_batch.push(format!(
+                                            "select-window -t :{}\n",
+                                            window_idx_buf
+                                        ));
                                     }
                                     window_idx_input = false;
                                 }
@@ -3520,43 +4576,72 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                             trimmed.clone()
                                         };
                                         // Intercept client-side UI commands from command prompt
-                                        let first_word = final_cmd.split_whitespace().next().unwrap_or("");
-                                        if first_word == "choose-buffer" || first_word == "chooseb" {
+                                        let first_word =
+                                            final_cmd.split_whitespace().next().unwrap_or("");
+                                        if first_word == "choose-buffer" || first_word == "chooseb"
+                                        {
                                             // Open interactive buffer chooser instead of sending to server
                                             buffer_chooser = true;
                                             buffer_entries.clear();
                                             buffer_selected = 0;
                                             buffer_scroll = 0;
                                             buffer_num_buffer.clear();
-                                            let port_file = crate::paths::port_file(&current_session);
-                                            if let Ok(port_str) = std::fs::read_to_string(&port_file) {
+                                            let port_file =
+                                                crate::paths::port_file(&current_session);
+                                            if let Ok(port_str) =
+                                                std::fs::read_to_string(&port_file)
+                                            {
                                                 if let Ok(p) = port_str.trim().parse::<u16>() {
-                                                    let sess_key = read_session_key(&current_session).unwrap_or_default();
+                                                    let sess_key =
+                                                        read_session_key(&current_session)
+                                                            .unwrap_or_default();
                                                     let addr = format!("127.0.0.1:{}", p);
-                                                    if let Some(buf_line) = crate::session::fetch_authed_response_multi(
-                                                        &addr,
-                                                        &sess_key,
-                                                        b"choose-buffer\n",
-                                                        Duration::from_millis(100),
-                                                        Duration::from_millis(200),
-                                                    ) {
+                                                    if let Some(buf_line) =
+                                                        crate::session::fetch_authed_response_multi(
+                                                            &addr,
+                                                            &sess_key,
+                                                            b"choose-buffer\n",
+                                                            Duration::from_millis(100),
+                                                            Duration::from_millis(200),
+                                                        )
+                                                    {
                                                         {
-                                                            for line in buf_line.trim().split('\n') {
+                                                            for line in buf_line.trim().split('\n')
+                                                            {
                                                                 let line = line.trim();
-                                                                if line.is_empty() { continue; }
-                                                                if let Some(rest) = line.strip_prefix("buffer") {
-                                                                    if let Some(colon_pos) = rest.find(':') {
-                                                                        if let Ok(idx) = rest[..colon_pos].parse::<usize>() {
-                                                                            let after_colon = &rest[colon_pos+1..].trim_start();
+                                                                if line.is_empty() {
+                                                                    continue;
+                                                                }
+                                                                if let Some(rest) =
+                                                                    line.strip_prefix("buffer")
+                                                                {
+                                                                    if let Some(colon_pos) =
+                                                                        rest.find(':')
+                                                                    {
+                                                                        if let Ok(idx) = rest
+                                                                            [..colon_pos]
+                                                                            .parse::<usize>()
+                                                                        {
+                                                                            let after_colon = &rest
+                                                                                [colon_pos + 1..]
+                                                                                .trim_start();
                                                                             let byte_len = after_colon.split_whitespace().next()
                                                                                 .and_then(|s| s.parse::<usize>().ok()).unwrap_or(0);
-                                                                            let preview = if let Some(bp) = after_colon.find('"') {
-                                                                                let p = &after_colon[bp+1..];
-                                                                                p.trim_end_matches('"').to_string()
-                                                                            } else {
-                                                                                after_colon.to_string()
-                                                                            };
-                                                                            buffer_entries.push((idx, byte_len, preview));
+                                                                            let preview =
+                                                                                if let Some(bp) =
+                                                                                    after_colon
+                                                                                        .find('"')
+                                                                                {
+                                                                                    let p = &after_colon[bp+1..];
+                                                                                    p.trim_end_matches('"').to_string()
+                                                                                } else {
+                                                                                    after_colon
+                                                                                        .to_string()
+                                                                                };
+                                                                            buffer_entries.push((
+                                                                                idx, byte_len,
+                                                                                preview,
+                                                                            ));
                                                                         }
                                                                     }
                                                                 }
@@ -3565,10 +4650,15 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                                     }
                                                 }
                                             }
-                                            if buffer_entries.is_empty() { buffer_chooser = false; }
+                                            if buffer_entries.is_empty() {
+                                                buffer_chooser = false;
+                                            }
                                         } else {
                                             // Split on \; or ; to support command chaining (issue #192)
-                                            let sub_cmds = crate::config::split_chained_commands_pub(&final_cmd);
+                                            let sub_cmds =
+                                                crate::config::split_chained_commands_pub(
+                                                    &final_cmd,
+                                                );
                                             // detach-client typed at the prompt must also quit
                                             // THIS client unless `-a` (detach others) or
                                             // `-t %<id>`/`-t <tty>` (target someone else) is
@@ -3576,10 +4666,15 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                             // keybinding dispatch level (issue #275).
                                             let mut quit_on_detach = false;
                                             for sub in &sub_cmds {
-                                                let parts: Vec<&str> = sub.split_whitespace().collect();
-                                                if parts.first().map_or(false, |w| *w == "detach-client" || *w == "detach") {
-                                                    let detach_others_only = parts.iter().any(|p| *p == "-a");
-                                                    let has_target = parts.windows(2).any(|w| w[0] == "-t");
+                                                let parts: Vec<&str> =
+                                                    sub.split_whitespace().collect();
+                                                if parts.first().map_or(false, |w| {
+                                                    *w == "detach-client" || *w == "detach"
+                                                }) {
+                                                    let detach_others_only =
+                                                        parts.iter().any(|p| *p == "-a");
+                                                    let has_target =
+                                                        parts.windows(2).any(|w| w[0] == "-t");
                                                     if !detach_others_only && !has_target {
                                                         quit_on_detach = true;
                                                     }
@@ -3594,27 +4689,53 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                     command_input = false;
                                     command_cursor = 0;
                                 }
-                                KeyCode::Esc if renaming => { renaming = false; session_renaming = false; }
-                                KeyCode::Esc if pane_renaming => { pane_renaming = false; }
-                                KeyCode::Esc if window_idx_input => { window_idx_input = false; }
-                                KeyCode::Esc if command_input => { command_input = false; command_cursor = 0; }
+                                KeyCode::Esc if renaming => {
+                                    renaming = false;
+                                    session_renaming = false;
+                                }
+                                KeyCode::Esc if pane_renaming => {
+                                    pane_renaming = false;
+                                }
+                                KeyCode::Esc if window_idx_input => {
+                                    window_idx_input = false;
+                                }
+                                KeyCode::Esc if command_input => {
+                                    command_input = false;
+                                    command_cursor = 0;
+                                }
 
                                 // Command prompt: cursor movement, history, and editing keys
                                 KeyCode::Left if command_input => {
                                     if command_cursor > 0 {
-                                        let prev_len = command_buf[..command_cursor].chars().next_back().map(|c| c.len_utf8()).unwrap_or(1);
+                                        let prev_len = command_buf[..command_cursor]
+                                            .chars()
+                                            .next_back()
+                                            .map(|c| c.len_utf8())
+                                            .unwrap_or(1);
                                         command_cursor -= prev_len;
                                     }
                                 }
                                 KeyCode::Right if command_input => {
                                     if command_cursor < command_buf.len() {
-                                        let next_len = command_buf[command_cursor..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+                                        let next_len = command_buf[command_cursor..]
+                                            .chars()
+                                            .next()
+                                            .map(|c| c.len_utf8())
+                                            .unwrap_or(1);
                                         command_cursor += next_len;
                                     }
                                 }
-                                KeyCode::Home if command_input => { command_cursor = 0; }
-                                KeyCode::End if command_input => { command_cursor = command_buf.len(); }
-                                KeyCode::Delete if command_input => { if command_cursor < command_buf.len() { command_buf.remove(command_cursor); } }
+                                KeyCode::Home if command_input => {
+                                    command_cursor = 0;
+                                }
+                                KeyCode::End if command_input => {
+                                    command_cursor = command_buf.len();
+                                }
+                                KeyCode::Delete if command_input => {
+                                    if command_cursor < command_buf.len() {
+                                        command_buf.remove(command_cursor);
+                                    }
+                                }
                                 KeyCode::Up if command_input => {
                                     if command_history_idx > 0 {
                                         command_history_idx -= 1;
@@ -3625,7 +4746,8 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                 KeyCode::Down if command_input => {
                                     if command_history_idx < command_history.len() {
                                         command_history_idx += 1;
-                                        command_buf = if command_history_idx < command_history.len() {
+                                        command_buf = if command_history_idx < command_history.len()
+                                        {
                                             command_history[command_history_idx].clone()
                                         } else {
                                             String::new()
@@ -3633,19 +4755,46 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                         command_cursor = command_buf.len();
                                     }
                                 }
-                                KeyCode::Char('a') if command_input && key.modifiers.contains(KeyModifiers::CONTROL) => { command_cursor = 0; }
-                                KeyCode::Char('e') if command_input && key.modifiers.contains(KeyModifiers::CONTROL) => { command_cursor = command_buf.len(); }
-                                KeyCode::Char('u') if command_input && key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                KeyCode::Char('a')
+                                    if command_input
+                                        && key.modifiers.contains(KeyModifiers::CONTROL) =>
+                                {
+                                    command_cursor = 0;
+                                }
+                                KeyCode::Char('e')
+                                    if command_input
+                                        && key.modifiers.contains(KeyModifiers::CONTROL) =>
+                                {
+                                    command_cursor = command_buf.len();
+                                }
+                                KeyCode::Char('u')
+                                    if command_input
+                                        && key.modifiers.contains(KeyModifiers::CONTROL) =>
+                                {
                                     command_buf.drain(..command_cursor);
                                     command_cursor = 0;
                                 }
-                                KeyCode::Char('k') if command_input && key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                KeyCode::Char('k')
+                                    if command_input
+                                        && key.modifiers.contains(KeyModifiers::CONTROL) =>
+                                {
                                     command_buf.truncate(command_cursor);
                                 }
-                                KeyCode::Char('w') if command_input && key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                KeyCode::Char('w')
+                                    if command_input
+                                        && key.modifiers.contains(KeyModifiers::CONTROL) =>
+                                {
                                     let mut pos = command_cursor;
-                                    while pos > 0 && command_buf.as_bytes().get(pos - 1) == Some(&b' ') { pos -= 1; }
-                                    while pos > 0 && command_buf.as_bytes().get(pos - 1) != Some(&b' ') { pos -= 1; }
+                                    while pos > 0
+                                        && command_buf.as_bytes().get(pos - 1) == Some(&b' ')
+                                    {
+                                        pos -= 1;
+                                    }
+                                    while pos > 0
+                                        && command_buf.as_bytes().get(pos - 1) != Some(&b' ')
+                                    {
+                                        pos -= 1;
+                                    }
                                     command_buf.drain(pos..command_cursor);
                                     command_cursor = pos;
                                 }
@@ -3667,9 +4816,11 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                 // Ctrl+Alt.  Non-lowercase-letter chars with Ctrl+Alt
                                 // are AltGr-produced (e.g. \ @ { } [ ] | ~ on
                                 // German/Czech keyboards) — treat as plain text.
-                                KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::CONTROL)
-                                    && key.modifiers.contains(KeyModifiers::ALT)
-                                    && !c.is_ascii_lowercase() => {
+                                KeyCode::Char(c)
+                                    if key.modifiers.contains(KeyModifiers::CONTROL)
+                                        && key.modifiers.contains(KeyModifiers::ALT)
+                                        && !c.is_ascii_lowercase() =>
+                                {
                                     #[cfg(windows)]
                                     {
                                         paste_pend.push(c);
@@ -3687,27 +4838,35 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                         cmd_batch.push(format!("send-text \"{}\"\n", escaped));
                                     }
                                 }
-                                KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::CONTROL) && key.modifiers.contains(KeyModifiers::ALT) => {
-                                    cmd_batch.push(format!("send-key C-M-{}\n", c.to_ascii_lowercase()));
+                                KeyCode::Char(c)
+                                    if key.modifiers.contains(KeyModifiers::CONTROL)
+                                        && key.modifiers.contains(KeyModifiers::ALT) =>
+                                {
+                                    cmd_batch
+                                        .push(format!("send-key C-M-{}\n", c.to_ascii_lowercase()));
                                 }
                                 KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::ALT) => {
                                     cmd_batch.push(format!("send-key M-{}\n", c));
                                 }
                                 // pwsh-mouse-selection: Ctrl+Shift+C / Ctrl+Shift+V
                                 // explicit copy/paste regardless of selection state.
-                                KeyCode::Char('C') if client_pwsh_selection
-                                    && key.kind == KeyEventKind::Press
-                                    && key.modifiers.contains(KeyModifiers::CONTROL)
-                                    && key.modifiers.contains(KeyModifiers::SHIFT) =>
+                                KeyCode::Char('C')
+                                    if client_pwsh_selection
+                                        && key.kind == KeyEventKind::Press
+                                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                                        && key.modifiers.contains(KeyModifiers::SHIFT) =>
                                 {
                                     if let (Some(s), Some(e)) = (rsel_start, rsel_end) {
                                         if rsel_dragged {
-                                            if let Ok(state) = serde_json::from_str::<DumpState>(&prev_dump_buf) {
+                                            if let Ok(state) =
+                                                serde_json::from_str::<DumpState>(&prev_dump_buf)
+                                            {
                                                 let text = extract_selection_text(
                                                     &state.layout,
                                                     last_sent_size.0,
                                                     last_sent_size.1,
-                                                    s, e,
+                                                    s,
+                                                    e,
                                                     rsel_block,
                                                     rsel_pane_rect,
                                                 );
@@ -3725,10 +4884,11 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                     rsel_dragged = false;
                                     selection_changed = true;
                                 }
-                                KeyCode::Char('V') if client_pwsh_selection
-                                    && key.kind == KeyEventKind::Press
-                                    && key.modifiers.contains(KeyModifiers::CONTROL)
-                                    && key.modifiers.contains(KeyModifiers::SHIFT) =>
+                                KeyCode::Char('V')
+                                    if client_pwsh_selection
+                                        && key.kind == KeyEventKind::Press
+                                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                                        && key.modifiers.contains(KeyModifiers::SHIFT) =>
                                 {
                                     if let Some(text) = read_from_system_clipboard() {
                                         if !text.is_empty() {
@@ -3741,19 +4901,23 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                 // pwsh-mouse-selection mode, copy and clear.
                                 // Otherwise fall through to the generic Ctrl handler
                                 // which sends SIGINT to the shell.
-                                KeyCode::Char('c') if client_pwsh_selection
-                                    && key.kind == KeyEventKind::Press
-                                    && key.modifiers == KeyModifiers::CONTROL
-                                    && rsel_dragged
-                                    && rsel_start.is_some() =>
+                                KeyCode::Char('c')
+                                    if client_pwsh_selection
+                                        && key.kind == KeyEventKind::Press
+                                        && key.modifiers == KeyModifiers::CONTROL
+                                        && rsel_dragged
+                                        && rsel_start.is_some() =>
                                 {
                                     if let (Some(s), Some(e)) = (rsel_start, rsel_end) {
-                                        if let Ok(state) = serde_json::from_str::<DumpState>(&prev_dump_buf) {
+                                        if let Ok(state) =
+                                            serde_json::from_str::<DumpState>(&prev_dump_buf)
+                                        {
                                             let text = extract_selection_text(
                                                 &state.layout,
                                                 last_sent_size.0,
                                                 last_sent_size.1,
-                                                s, e,
+                                                s,
+                                                e,
                                                 rsel_block,
                                                 rsel_pane_rect,
                                             );
@@ -3776,21 +4940,34 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                 // handles them.  When paste-detection is off, forward C-v
                                 // to the child app (e.g. neovim visual block mode).
                                 #[cfg(windows)]
-                                KeyCode::Char('v') if key.modifiers == KeyModifiers::CONTROL && paste_detection_enabled => {}
+                                KeyCode::Char('v')
+                                    if key.modifiers == KeyModifiers::CONTROL
+                                        && paste_detection_enabled => {}
                                 #[cfg(windows)]
-                                KeyCode::Char('v') if key.modifiers == KeyModifiers::CONTROL && !paste_detection_enabled => {
+                                KeyCode::Char('v')
+                                    if key.modifiers == KeyModifiers::CONTROL
+                                        && !paste_detection_enabled =>
+                                {
                                     cmd_batch.push("send-key C-v\n".to_string());
                                 }
-                                KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                KeyCode::Char(c)
+                                    if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                                {
                                     // Preserve a held Shift so Ctrl+Shift+<letter> is not
                                     // silently collapsed to a plain Ctrl+<letter> on the wire
                                     // (issue #368).  tmux-style name: C-S-x.  The server
                                     // injects a native KEY_EVENT carrying both modifiers so
                                     // console-input apps can tell the two apart.
                                     if key.modifiers.contains(KeyModifiers::SHIFT) {
-                                        cmd_batch.push(format!("send-key C-S-{}\n", c.to_ascii_lowercase()));
+                                        cmd_batch.push(format!(
+                                            "send-key C-S-{}\n",
+                                            c.to_ascii_lowercase()
+                                        ));
                                     } else {
-                                        cmd_batch.push(format!("send-key C-{}\n", c.to_ascii_lowercase()));
+                                        cmd_batch.push(format!(
+                                            "send-key C-{}\n",
+                                            c.to_ascii_lowercase()
+                                        ));
                                     }
                                 }
                                 KeyCode::Char(c) if (c as u32) >= 0x01 && (c as u32) <= 0x1A => {
@@ -3845,11 +5022,19 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                                 paste_pend_start = Some(Instant::now());
                                             }
                                         } else {
-                                            cmd_batch.push(format!("send-key {}\n", modified_key_name("Enter", key.modifiers)));
+                                            cmd_batch.push(format!(
+                                                "send-key {}\n",
+                                                modified_key_name("Enter", key.modifiers)
+                                            ));
                                         }
                                     }
                                     #[cfg(not(windows))]
-                                    { cmd_batch.push(format!("send-key {}\n", modified_key_name("Enter", key.modifiers))); }
+                                    {
+                                        cmd_batch.push(format!(
+                                            "send-key {}\n",
+                                            modified_key_name("Enter", key.modifiers)
+                                        ));
+                                    }
                                 }
                                 KeyCode::Tab => {
                                     #[cfg(windows)]
@@ -3869,22 +5054,85 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                         }
                                     }
                                     #[cfg(not(windows))]
-                                    { cmd_batch.push("send-key tab\n".into()); }
+                                    {
+                                        cmd_batch.push("send-key tab\n".into());
+                                    }
                                 }
-                                KeyCode::BackTab => { cmd_batch.push("send-key btab\n".into()); }
-                                KeyCode::Backspace => { cmd_batch.push("send-key backspace\n".into()); }
-                                KeyCode::Delete => { cmd_batch.push(format!("send-key {}\n", modified_key_name("Delete", key.modifiers))); }
-                                KeyCode::Esc => { cmd_batch.push("send-key esc\n".into()); }
-                                KeyCode::Left => { cmd_batch.push(format!("send-key {}\n", modified_key_name("Left", key.modifiers))); }
-                                KeyCode::Right => { cmd_batch.push(format!("send-key {}\n", modified_key_name("Right", key.modifiers))); }
-                                KeyCode::Up => { cmd_batch.push(format!("send-key {}\n", modified_key_name("Up", key.modifiers))); }
-                                KeyCode::Down => { cmd_batch.push(format!("send-key {}\n", modified_key_name("Down", key.modifiers))); }
-                                KeyCode::PageUp => { cmd_batch.push(format!("send-key {}\n", modified_key_name("PageUp", key.modifiers))); }
-                                KeyCode::PageDown => { cmd_batch.push(format!("send-key {}\n", modified_key_name("PageDown", key.modifiers))); }
-                                KeyCode::Home => { cmd_batch.push(format!("send-key {}\n", modified_key_name("Home", key.modifiers))); }
-                                KeyCode::End => { cmd_batch.push(format!("send-key {}\n", modified_key_name("End", key.modifiers))); }
-                                KeyCode::Insert => { cmd_batch.push(format!("send-key {}\n", modified_key_name("Insert", key.modifiers))); }
-                                KeyCode::F(n) => { cmd_batch.push(format!("send-key {}\n", modified_key_name(&format!("F{}", n), key.modifiers))); }
+                                KeyCode::BackTab => {
+                                    cmd_batch.push("send-key btab\n".into());
+                                }
+                                KeyCode::Backspace => {
+                                    cmd_batch.push("send-key backspace\n".into());
+                                }
+                                KeyCode::Delete => {
+                                    cmd_batch.push(format!(
+                                        "send-key {}\n",
+                                        modified_key_name("Delete", key.modifiers)
+                                    ));
+                                }
+                                KeyCode::Esc => {
+                                    cmd_batch.push("send-key esc\n".into());
+                                }
+                                KeyCode::Left => {
+                                    cmd_batch.push(format!(
+                                        "send-key {}\n",
+                                        modified_key_name("Left", key.modifiers)
+                                    ));
+                                }
+                                KeyCode::Right => {
+                                    cmd_batch.push(format!(
+                                        "send-key {}\n",
+                                        modified_key_name("Right", key.modifiers)
+                                    ));
+                                }
+                                KeyCode::Up => {
+                                    cmd_batch.push(format!(
+                                        "send-key {}\n",
+                                        modified_key_name("Up", key.modifiers)
+                                    ));
+                                }
+                                KeyCode::Down => {
+                                    cmd_batch.push(format!(
+                                        "send-key {}\n",
+                                        modified_key_name("Down", key.modifiers)
+                                    ));
+                                }
+                                KeyCode::PageUp => {
+                                    cmd_batch.push(format!(
+                                        "send-key {}\n",
+                                        modified_key_name("PageUp", key.modifiers)
+                                    ));
+                                }
+                                KeyCode::PageDown => {
+                                    cmd_batch.push(format!(
+                                        "send-key {}\n",
+                                        modified_key_name("PageDown", key.modifiers)
+                                    ));
+                                }
+                                KeyCode::Home => {
+                                    cmd_batch.push(format!(
+                                        "send-key {}\n",
+                                        modified_key_name("Home", key.modifiers)
+                                    ));
+                                }
+                                KeyCode::End => {
+                                    cmd_batch.push(format!(
+                                        "send-key {}\n",
+                                        modified_key_name("End", key.modifiers)
+                                    ));
+                                }
+                                KeyCode::Insert => {
+                                    cmd_batch.push(format!(
+                                        "send-key {}\n",
+                                        modified_key_name("Insert", key.modifiers)
+                                    ));
+                                }
+                                KeyCode::F(n) => {
+                                    cmd_batch.push(format!(
+                                        "send-key {}\n",
+                                        modified_key_name(&format!("F{}", n), key.modifiers)
+                                    ));
+                                }
                                 _ => {}
                             }
                         }
@@ -3895,10 +5143,15 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                         // prompt / rename prompts into the underlying pane.
                         let consumed = route_paste_to_overlay(
                             &data,
-                            command_input, &mut command_buf, &mut command_cursor,
-                            renaming, &mut rename_buf,
-                            pane_renaming, &mut pane_title_buf,
-                            window_idx_input, &mut window_idx_buf,
+                            command_input,
+                            &mut command_buf,
+                            &mut command_cursor,
+                            renaming,
+                            &mut rename_buf,
+                            pane_renaming,
+                            &mut pane_title_buf,
+                            window_idx_input,
+                            &mut window_idx_buf,
                         );
                         if !consumed {
                             let encoded = base64_encode(&data);
@@ -3918,11 +5171,12 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                             paste_pend_start = None;
                             paste_stage2 = false;
                             paste_confirmed = false;
-                            paste_suppress_until = Some(Instant::now() + Duration::from_millis(200));
+                            paste_suppress_until =
+                                Some(Instant::now() + Duration::from_millis(200));
                         }
                     }
                     Event::Mouse(me) => {
-                        use crossterm::event::{MouseEventKind, MouseButton};
+                        use crossterm::event::{MouseButton, MouseEventKind};
                         // Intercept mouse events while a draggable picker is open
                         // so the user can move the popup by dragging its border
                         // and so clicks behind the popup don't leak through to
@@ -3953,12 +5207,22 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                     popup_dragging = false;
                                 }
                                 MouseEventKind::ScrollUp => {
-                                    if tree_chooser && tree_selected > 0 { tree_selected -= 1; }
-                                    if session_chooser && session_selected > 0 { session_selected -= 1; }
+                                    if tree_chooser && tree_selected > 0 {
+                                        tree_selected -= 1;
+                                    }
+                                    if session_chooser && session_selected > 0 {
+                                        session_selected -= 1;
+                                    }
                                 }
                                 MouseEventKind::ScrollDown => {
-                                    if tree_chooser && tree_selected + 1 < tree_entries.len() { tree_selected += 1; }
-                                    if session_chooser && session_selected + 1 < session_entries.len() { session_selected += 1; }
+                                    if tree_chooser && tree_selected + 1 < tree_entries.len() {
+                                        tree_selected += 1;
+                                    }
+                                    if session_chooser
+                                        && session_selected + 1 < session_entries.len()
+                                    {
+                                        session_selected += 1;
+                                    }
                                 }
                                 _ => {}
                             }
@@ -3988,20 +5252,30 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                     let mut on_border = false;
                                     if !client_zoomed {
                                         let tol = 0u16;
-                                        for (bpath, bkind, bidx, bpos, btotal, bsizes, barea) in &client_borders {
+                                        for (bpath, bkind, bidx, bpos, btotal, bsizes, barea) in
+                                            &client_borders
+                                        {
                                             let hit = if bkind == "Horizontal" {
-                                                me.column >= bpos.saturating_sub(tol) && me.column <= bpos + tol
-                                                && me.row >= barea.y && me.row < barea.y + barea.height
+                                                me.column >= bpos.saturating_sub(tol)
+                                                    && me.column <= bpos + tol
+                                                    && me.row >= barea.y
+                                                    && me.row < barea.y + barea.height
                                             } else {
-                                                me.row >= bpos.saturating_sub(tol) && me.row <= bpos + tol
-                                                && me.column >= barea.x && me.column < barea.x + barea.width
+                                                me.row >= bpos.saturating_sub(tol)
+                                                    && me.row <= bpos + tol
+                                                    && me.column >= barea.x
+                                                    && me.column < barea.x + barea.width
                                             };
                                             if hit {
                                                 client_drag = Some(ClientDragState {
                                                     path: bpath.clone(),
                                                     kind: bkind.clone(),
                                                     index: *bidx,
-                                                    start_pos: if bkind == "Horizontal" { me.column } else { me.row },
+                                                    start_pos: if bkind == "Horizontal" {
+                                                        me.column
+                                                    } else {
+                                                        me.row
+                                                    },
                                                     initial_sizes: bsizes.clone(),
                                                     total_pixels: *btotal,
                                                 });
@@ -4016,26 +5290,35 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                     }
 
                                     if !on_border {
-                                        let clicked_pane = client_pane_rects.iter().find(|(_, rect)| {
-                                            rect.contains(ratatui::layout::Position { x: me.column, y: me.row })
-                                        });
+                                        let clicked_pane =
+                                            client_pane_rects.iter().find(|(_, rect)| {
+                                                rect.contains(ratatui::layout::Position {
+                                                    x: me.column,
+                                                    y: me.row,
+                                                })
+                                            });
 
                                         if let Some(&(pane_id, pane_rect)) = clicked_pane {
-                                            cmd_batch.push(format!("select-pane -t %{}\n", pane_id));
+                                            cmd_batch
+                                                .push(format!("select-pane -t %{}\n", pane_id));
                                             let rel_col = me.column as i16 - pane_rect.x as i16;
                                             let rel_row = me.row as i16 - pane_rect.y as i16;
 
                                             if client_copy_mode {
-                                                cmd_batch.push(format!("pane-mouse {} 0 {} {} M\n",
-                                                    pane_id, rel_col, rel_row));
+                                                cmd_batch.push(format!(
+                                                    "pane-mouse {} 0 {} {} M\n",
+                                                    pane_id, rel_col, rel_row
+                                                ));
                                                 rsel_start = None;
                                                 rsel_end = None;
                                                 rsel_pane_rect = None;
                                                 rsel_block = false;
                                                 selection_changed = true;
                                             } else {
-                                                cmd_batch.push(format!("pane-mouse {} 0 {} {} M\n",
-                                                    pane_id, rel_col, rel_row));
+                                                cmd_batch.push(format!(
+                                                    "pane-mouse {} 0 {} {} M\n",
+                                                    pane_id, rel_col, rel_row
+                                                ));
                                                 border_drag = false;
 
                                                 // mouse-selection off: do not start any client-side
@@ -4050,77 +5333,107 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                                     rsel_dragged = false;
                                                     selection_changed = true;
                                                 } else {
-                                                // Ctrl+click extends an existing selection to the click
-                                                // position without starting a new one. (Shift+click
-                                                // cannot be used on Windows Terminal — it is reserved
-                                                // for WT's native selection override.) Only active
-                                                // when pwsh-mouse-selection is on and a selection
-                                                // already exists in the same pane.
-                                                let ctrl_extend = client_pwsh_selection
-                                                    && me.modifiers.contains(KeyModifiers::CONTROL)
-                                                    && rsel_start.is_some()
-                                                    && rsel_pane_rect == Some(pane_rect);
+                                                    // Ctrl+click extends an existing selection to the click
+                                                    // position without starting a new one. (Shift+click
+                                                    // cannot be used on Windows Terminal — it is reserved
+                                                    // for WT's native selection override.) Only active
+                                                    // when pwsh-mouse-selection is on and a selection
+                                                    // already exists in the same pane.
+                                                    let ctrl_extend = client_pwsh_selection
+                                                        && me
+                                                            .modifiers
+                                                            .contains(KeyModifiers::CONTROL)
+                                                        && rsel_start.is_some()
+                                                        && rsel_pane_rect == Some(pane_rect);
 
-                                                if ctrl_extend {
-                                                    let r = pane_rect;
-                                                    let col = me.column.clamp(r.x, r.x + r.width.saturating_sub(1));
-                                                    let row = me.row.clamp(r.y, r.y + r.height.saturating_sub(1));
-                                                    rsel_end = Some((col, row));
-                                                    rsel_dragged = true;
-                                                    selection_changed = true;
-                                                } else if client_pwsh_selection {
-                                                    rsel_block = me.modifiers.contains(KeyModifiers::ALT);
-                                                    rsel_pane_rect = Some(pane_rect);
-                                                    rsel_dragged = false;
-                                                    selection_changed = true;
-
-                                                    let now = Instant::now();
-                                                    let is_multi = last_click.map_or(false, |(t, (c, r))| {
-                                                        now.duration_since(t) < Duration::from_millis(400)
-                                                            && c == me.column && r == me.row
-                                                    });
-                                                    click_count = if is_multi { click_count + 1 } else { 1 };
-                                                    last_click = Some((now, (me.column, me.row)));
-
-                                                    let word = if click_count == 2 {
-                                                        serde_json::from_str::<DumpState>(&prev_dump_buf).ok()
-                                                            .and_then(|s| word_bounds_at(
-                                                                &s.layout,
-                                                                last_sent_size.0,
-                                                                last_sent_size.1,
-                                                                pane_rect,
-                                                                me.column, me.row,
-                                                            ))
-                                                    } else {
-                                                        None
-                                                    };
-
-                                                    if let Some((ws, we)) = word {
-                                                        rsel_start = Some((ws, me.row));
-                                                        rsel_end = Some((we, me.row));
+                                                    if ctrl_extend {
+                                                        let r = pane_rect;
+                                                        let col = me.column.clamp(
+                                                            r.x,
+                                                            r.x + r.width.saturating_sub(1),
+                                                        );
+                                                        let row = me.row.clamp(
+                                                            r.y,
+                                                            r.y + r.height.saturating_sub(1),
+                                                        );
+                                                        rsel_end = Some((col, row));
                                                         rsel_dragged = true;
-                                                    } else if click_count >= 3 {
-                                                        let left = pane_rect.x;
-                                                        let right = pane_rect.x + pane_rect.width.saturating_sub(1);
-                                                        rsel_start = Some((left, me.row));
-                                                        rsel_end = Some((right, me.row));
-                                                        rsel_dragged = true;
+                                                        selection_changed = true;
+                                                    } else if client_pwsh_selection {
+                                                        rsel_block = me
+                                                            .modifiers
+                                                            .contains(KeyModifiers::ALT);
+                                                        rsel_pane_rect = Some(pane_rect);
+                                                        rsel_dragged = false;
+                                                        selection_changed = true;
+
+                                                        let now = Instant::now();
+                                                        let is_multi = last_click.map_or(
+                                                            false,
+                                                            |(t, (c, r))| {
+                                                                now.duration_since(t)
+                                                                    < Duration::from_millis(400)
+                                                                    && c == me.column
+                                                                    && r == me.row
+                                                            },
+                                                        );
+                                                        click_count = if is_multi {
+                                                            click_count + 1
+                                                        } else {
+                                                            1
+                                                        };
+                                                        last_click =
+                                                            Some((now, (me.column, me.row)));
+
+                                                        let word = if click_count == 2 {
+                                                            serde_json::from_str::<DumpState>(
+                                                                &prev_dump_buf,
+                                                            )
+                                                            .ok()
+                                                            .and_then(|s| {
+                                                                word_bounds_at(
+                                                                    &s.layout,
+                                                                    last_sent_size.0,
+                                                                    last_sent_size.1,
+                                                                    pane_rect,
+                                                                    me.column,
+                                                                    me.row,
+                                                                )
+                                                            })
+                                                        } else {
+                                                            None
+                                                        };
+
+                                                        if let Some((ws, we)) = word {
+                                                            rsel_start = Some((ws, me.row));
+                                                            rsel_end = Some((we, me.row));
+                                                            rsel_dragged = true;
+                                                        } else if click_count >= 3 {
+                                                            let left = pane_rect.x;
+                                                            let right = pane_rect.x
+                                                                + pane_rect.width.saturating_sub(1);
+                                                            rsel_start = Some((left, me.row));
+                                                            rsel_end = Some((right, me.row));
+                                                            rsel_dragged = true;
+                                                        } else {
+                                                            rsel_start = Some((me.column, me.row));
+                                                            rsel_end = None;
+                                                        }
                                                     } else {
+                                                        // Legacy: start == end for 1-cell hint.
                                                         rsel_start = Some((me.column, me.row));
-                                                        rsel_end = None;
+                                                        rsel_end = Some((me.column, me.row));
+                                                        rsel_pane_rect = Some(pane_rect);
+                                                        rsel_dragged = false;
+                                                        selection_changed = true;
                                                     }
-                                                } else {
-                                                    // Legacy: start == end for 1-cell hint.
-                                                    rsel_start = Some((me.column, me.row));
-                                                    rsel_end = Some((me.column, me.row));
-                                                    rsel_pane_rect = Some(pane_rect);
-                                                    rsel_dragged = false;
-                                                    selection_changed = true;
-                                                }
                                                 } // end if client_mouse_selection
                                             }
                                         } else {
-                                            cmd_batch.push(format!("mouse-down {} {}\n", me.column, me.row));
+                                            cmd_batch.push(format!(
+                                                "mouse-down {} {}\n",
+                                                me.column, me.row
+                                            ));
                                         }
                                     }
                                 }
@@ -4133,17 +5446,26 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                     serde_json::from_str::<DumpState>(&prev_dump_buf)
                                         .map(|s| active_pane_in_alt_screen(&s.layout))
                                         .unwrap_or(false)
-                                } else { false };
+                                } else {
+                                    false
+                                };
 
                                 if tui_active {
                                     // Forward right-click as pane-relative mouse event
-                                    if let Some(&(pane_id, pane_rect)) = client_pane_rects.iter().find(|(_, r)| {
-                                        r.contains(ratatui::layout::Position { x: me.column, y: me.row })
-                                    }) {
+                                    if let Some(&(pane_id, pane_rect)) =
+                                        client_pane_rects.iter().find(|(_, r)| {
+                                            r.contains(ratatui::layout::Position {
+                                                x: me.column,
+                                                y: me.row,
+                                            })
+                                        })
+                                    {
                                         let rel_col = me.column as i16 - pane_rect.x as i16;
                                         let rel_row = me.row as i16 - pane_rect.y as i16;
-                                        cmd_batch.push(format!("pane-mouse {} 2 {} {} M\n",
-                                            pane_id, rel_col, rel_row));
+                                        cmd_batch.push(format!(
+                                            "pane-mouse {} 2 {} {} M\n",
+                                            pane_id, rel_col, rel_row
+                                        ));
                                     }
                                     rsel_start = None;
                                     rsel_end = None;
@@ -4151,12 +5473,15 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                 } else if rsel_start.is_some() && rsel_dragged {
                                     // pwsh-style: right-click with active selection → copy + clear
                                     if let (Some(s), Some(e)) = (rsel_start, rsel_end) {
-                                        if let Ok(state) = serde_json::from_str::<DumpState>(&prev_dump_buf) {
+                                        if let Ok(state) =
+                                            serde_json::from_str::<DumpState>(&prev_dump_buf)
+                                        {
                                             let text = extract_selection_text(
                                                 &state.layout,
                                                 last_sent_size.0,
                                                 last_sent_size.1,
-                                                s, e,
+                                                s,
+                                                e,
                                                 rsel_block,
                                                 rsel_pane_rect,
                                             );
@@ -4174,7 +5499,8 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                     selection_changed = true;
                                     // Suppress text key events that VS Code's ConPTY
                                     // injects after a right-click copy action.
-                                    paste_suppress_until = Some(Instant::now() + Duration::from_millis(200));
+                                    paste_suppress_until =
+                                        Some(Instant::now() + Duration::from_millis(200));
                                 } else {
                                     // No selection, no TUI — paste from clipboard (pwsh-style)
                                     rsel_start = None;
@@ -4189,58 +5515,109 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                 }
                             }
                             MouseEventKind::Down(MouseButton::Middle) => {
-                                if let Some(&(pane_id, pane_rect)) = client_pane_rects.iter().find(|(_, r)| {
-                                    r.contains(ratatui::layout::Position { x: me.column, y: me.row })
-                                }) {
+                                if let Some(&(pane_id, pane_rect)) =
+                                    client_pane_rects.iter().find(|(_, r)| {
+                                        r.contains(ratatui::layout::Position {
+                                            x: me.column,
+                                            y: me.row,
+                                        })
+                                    })
+                                {
                                     let rel_col = me.column as i16 - pane_rect.x as i16;
                                     let rel_row = me.row as i16 - pane_rect.y as i16;
-                                    cmd_batch.push(format!("pane-mouse {} 1 {} {} M\n",
-                                        pane_id, rel_col, rel_row));
+                                    cmd_batch.push(format!(
+                                        "pane-mouse {} 1 {} {} M\n",
+                                        pane_id, rel_col, rel_row
+                                    ));
                                 } else {
-                                    cmd_batch.push(format!("mouse-down-middle {} {}\n", me.column, me.row));
+                                    cmd_batch.push(format!(
+                                        "mouse-down-middle {} {}\n",
+                                        me.column, me.row
+                                    ));
                                 }
                             }
                             MouseEventKind::Drag(MouseButton::Left) => {
                                 if border_drag {
                                     if let Some(ref d) = client_drag {
-                                        let current_pos = if d.kind == "Horizontal" { me.column } else { me.row };
+                                        let current_pos = if d.kind == "Horizontal" {
+                                            me.column
+                                        } else {
+                                            me.row
+                                        };
                                         let pixel_delta = current_pos as i32 - d.start_pos as i32;
-                                        let total_pct: i32 = d.initial_sizes.iter().map(|&s| s as i32).sum();
+                                        let total_pct: i32 =
+                                            d.initial_sizes.iter().map(|&s| s as i32).sum();
                                         let total_px = d.total_pixels.max(1) as i32;
                                         let pct_delta = (pixel_delta * total_pct) / total_px;
                                         let min_pct = 5i32;
 
                                         let mut new_sizes = d.initial_sizes.clone();
-                                        let left = (d.initial_sizes[d.index] as i32 + pct_delta)
-                                            .clamp(min_pct, d.initial_sizes[d.index] as i32 + d.initial_sizes[d.index + 1] as i32 - min_pct) as u16;
-                                        let right = d.initial_sizes[d.index] + d.initial_sizes[d.index + 1] - left;
+                                        let left =
+                                            (d.initial_sizes[d.index] as i32 + pct_delta).clamp(
+                                                min_pct,
+                                                d.initial_sizes[d.index] as i32
+                                                    + d.initial_sizes[d.index + 1] as i32
+                                                    - min_pct,
+                                            ) as u16;
+                                        let right = d.initial_sizes[d.index]
+                                            + d.initial_sizes[d.index + 1]
+                                            - left;
                                         new_sizes[d.index] = left;
                                         new_sizes[d.index + 1] = right;
 
-                                        let path_str = if d.path.is_empty() { "_".to_string() } else { d.path.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(".") };
-                                        let sizes_str = new_sizes.iter().map(|s| s.to_string()).collect::<Vec<_>>().join(",");
-                                        cmd_batch.push(format!("split-sizes {} {}\n", path_str, sizes_str));
+                                        let path_str = if d.path.is_empty() {
+                                            "_".to_string()
+                                        } else {
+                                            d.path
+                                                .iter()
+                                                .map(|i| i.to_string())
+                                                .collect::<Vec<_>>()
+                                                .join(".")
+                                        };
+                                        let sizes_str = new_sizes
+                                            .iter()
+                                            .map(|s| s.to_string())
+                                            .collect::<Vec<_>>()
+                                            .join(",");
+                                        cmd_batch.push(format!(
+                                            "split-sizes {} {}\n",
+                                            path_str, sizes_str
+                                        ));
                                     }
                                 } else if rsel_start.is_none() || !client_mouse_selection {
                                     if client_copy_mode {
-                                        if let Some(&(pane_id, pane_rect)) = client_pane_rects.iter().find(|(_, r)| {
-                                            r.contains(ratatui::layout::Position { x: me.column, y: me.row })
-                                        }) {
+                                        if let Some(&(pane_id, pane_rect)) =
+                                            client_pane_rects.iter().find(|(_, r)| {
+                                                r.contains(ratatui::layout::Position {
+                                                    x: me.column,
+                                                    y: me.row,
+                                                })
+                                            })
+                                        {
                                             let rel_col = me.column as i16 - pane_rect.x as i16;
                                             let rel_row = me.row as i16 - pane_rect.y as i16;
-                                            cmd_batch.push(format!("pane-mouse {} 32 {} {} M\n",
-                                                pane_id, rel_col, rel_row));
+                                            cmd_batch.push(format!(
+                                                "pane-mouse {} 32 {} {} M\n",
+                                                pane_id, rel_col, rel_row
+                                            ));
                                         }
                                     } else {
-                                        cmd_batch.push(format!("mouse-drag {} {}\n", me.column, me.row));
+                                        cmd_batch
+                                            .push(format!("mouse-drag {} {}\n", me.column, me.row));
                                     }
                                 } else {
                                     if let Some(start) = rsel_start {
                                         let (col, row) = if client_pwsh_selection {
                                             if let Some(r) = rsel_pane_rect {
                                                 (
-                                                    me.column.clamp(r.x, r.x + r.width.saturating_sub(1)),
-                                                    me.row.clamp(r.y, r.y + r.height.saturating_sub(1)),
+                                                    me.column.clamp(
+                                                        r.x,
+                                                        r.x + r.width.saturating_sub(1),
+                                                    ),
+                                                    me.row.clamp(
+                                                        r.y,
+                                                        r.y + r.height.saturating_sub(1),
+                                                    ),
                                                 )
                                             } else {
                                                 (me.column, me.row)
@@ -4274,12 +5651,15 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                         // double/triple-click bounds remain
                                         // intact, then clear transient state.
                                         if let (Some(s), Some(e)) = (rsel_start, rsel_end) {
-                                            if let Ok(state) = serde_json::from_str::<DumpState>(&prev_dump_buf) {
+                                            if let Ok(state) =
+                                                serde_json::from_str::<DumpState>(&prev_dump_buf)
+                                            {
                                                 let text = extract_selection_text(
                                                     &state.layout,
                                                     last_sent_size.0,
                                                     last_sent_size.1,
-                                                    s, e,
+                                                    s,
+                                                    e,
                                                     rsel_block,
                                                     rsel_pane_rect,
                                                 );
@@ -4299,12 +5679,15 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                         // Legacy: copy-on-release.
                                         rsel_end = Some((me.column, me.row));
                                         if let (Some(s), Some(e)) = (rsel_start, rsel_end) {
-                                            if let Ok(state) = serde_json::from_str::<DumpState>(&prev_dump_buf) {
+                                            if let Ok(state) =
+                                                serde_json::from_str::<DumpState>(&prev_dump_buf)
+                                            {
                                                 let text = extract_selection_text(
                                                     &state.layout,
                                                     last_sent_size.0,
                                                     last_sent_size.1,
-                                                    s, e,
+                                                    s,
+                                                    e,
                                                     false,
                                                     rsel_pane_rect,
                                                 );
@@ -4328,16 +5711,24 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                     rsel_block = false;
                                     selection_changed = true;
                                     if client_copy_mode {
-                                        if let Some(&(pane_id, pane_rect)) = client_pane_rects.iter().find(|(_, r)| {
-                                            r.contains(ratatui::layout::Position { x: me.column, y: me.row })
-                                        }) {
+                                        if let Some(&(pane_id, pane_rect)) =
+                                            client_pane_rects.iter().find(|(_, r)| {
+                                                r.contains(ratatui::layout::Position {
+                                                    x: me.column,
+                                                    y: me.row,
+                                                })
+                                            })
+                                        {
                                             let rel_col = me.column as i16 - pane_rect.x as i16;
                                             let rel_row = me.row as i16 - pane_rect.y as i16;
-                                            cmd_batch.push(format!("pane-mouse {} 0 {} {} m\n",
-                                                pane_id, rel_col, rel_row));
+                                            cmd_batch.push(format!(
+                                                "pane-mouse {} 0 {} {} m\n",
+                                                pane_id, rel_col, rel_row
+                                            ));
                                         }
                                     } else {
-                                        cmd_batch.push(format!("mouse-up {} {}\n", me.column, me.row));
+                                        cmd_batch
+                                            .push(format!("mouse-up {} {}\n", me.column, me.row));
                                     }
                                 }
                             }
@@ -4350,11 +5741,15 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                     let tol = 0u16;
                                     for (_, bkind, _, bpos, _, _, barea) in &client_borders {
                                         let hit = if bkind == "Horizontal" {
-                                            me.column >= bpos.saturating_sub(tol) && me.column <= bpos + tol
-                                            && me.row >= barea.y && me.row < barea.y + barea.height
+                                            me.column >= bpos.saturating_sub(tol)
+                                                && me.column <= bpos + tol
+                                                && me.row >= barea.y
+                                                && me.row < barea.y + barea.height
                                         } else {
-                                            me.row >= bpos.saturating_sub(tol) && me.row <= bpos + tol
-                                            && me.column >= barea.x && me.column < barea.x + barea.width
+                                            me.row >= bpos.saturating_sub(tol)
+                                                && me.row <= bpos + tol
+                                                && me.column >= barea.x
+                                                && me.column < barea.x + barea.width
                                         };
                                         if hit {
                                             new_hover = Some((*bpos, bkind.clone(), *barea));
@@ -4367,15 +5762,23 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                     selection_changed = true; // trigger redraw
                                 }
                                 // Forward hover to PTY
-                                if let Some(&(pane_id, pane_rect)) = client_pane_rects.iter().find(|(_, r)| {
-                                    r.contains(ratatui::layout::Position { x: me.column, y: me.row })
-                                }) {
+                                if let Some(&(pane_id, pane_rect)) =
+                                    client_pane_rects.iter().find(|(_, r)| {
+                                        r.contains(ratatui::layout::Position {
+                                            x: me.column,
+                                            y: me.row,
+                                        })
+                                    })
+                                {
                                     let rel_col = me.column as i16 - pane_rect.x as i16;
                                     let rel_row = me.row as i16 - pane_rect.y as i16;
-                                    cmd_batch.push(format!("pane-mouse {} 35 {} {} M\n",
-                                        pane_id, rel_col, rel_row));
+                                    cmd_batch.push(format!(
+                                        "pane-mouse {} 35 {} {} M\n",
+                                        pane_id, rel_col, rel_row
+                                    ));
                                 } else {
-                                    cmd_batch.push(format!("mouse-move {} {}\n", me.column, me.row));
+                                    cmd_batch
+                                        .push(format!("mouse-move {} {}\n", me.column, me.row));
                                 }
                             }
                             MouseEventKind::ScrollUp => {
@@ -4383,9 +5786,14 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                 rsel_end = None;
                                 rsel_dragged = false;
                                 selection_changed = true;
-                                if let Some(&(pane_id, _)) = client_pane_rects.iter().find(|(_, r)| {
-                                    r.contains(ratatui::layout::Position { x: me.column, y: me.row })
-                                }) {
+                                if let Some(&(pane_id, _)) =
+                                    client_pane_rects.iter().find(|(_, r)| {
+                                        r.contains(ratatui::layout::Position {
+                                            x: me.column,
+                                            y: me.row,
+                                        })
+                                    })
+                                {
                                     cmd_batch.push(format!("pane-scroll {} up\n", pane_id));
                                 } else {
                                     cmd_batch.push(format!("scroll-up {} {}\n", me.column, me.row));
@@ -4396,12 +5804,18 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                 rsel_end = None;
                                 rsel_dragged = false;
                                 selection_changed = true;
-                                if let Some(&(pane_id, _)) = client_pane_rects.iter().find(|(_, r)| {
-                                    r.contains(ratatui::layout::Position { x: me.column, y: me.row })
-                                }) {
+                                if let Some(&(pane_id, _)) =
+                                    client_pane_rects.iter().find(|(_, r)| {
+                                        r.contains(ratatui::layout::Position {
+                                            x: me.column,
+                                            y: me.row,
+                                        })
+                                    })
+                                {
                                     cmd_batch.push(format!("pane-scroll {} down\n", pane_id));
                                 } else {
-                                    cmd_batch.push(format!("scroll-down {} {}\n", me.column, me.row));
+                                    cmd_batch
+                                        .push(format!("scroll-down {} {}\n", me.column, me.row));
                                 }
                             }
                             _ => {}
@@ -4415,11 +5829,15 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                     }
                     _ => {}
                 }
-                if quit { break; }
+                if quit {
+                    break;
+                }
                 _pending_evt = input.try_read()?;
             }
         }
-        if quit { break; }
+        if quit {
+            break;
+        }
 
         // ── Windows zero-latency typing flush (post-event) ─────────────
         // After exhausting all available events, if paste_pend has 1-2
@@ -4445,15 +5863,22 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                 paste_stage2,
             ) {
                 if input_log_enabled() {
-                    input_log("paste", &format!(
-                        "zero-latency flush {} char(s) as typing",
-                        paste_pend.len()));
+                    input_log(
+                        "paste",
+                        &format!("zero-latency flush {} char(s) as typing", paste_pend.len()),
+                    );
                 }
                 for c in paste_pend.chars() {
                     match c {
-                        '\n' => { cmd_batch.push("send-key enter\n".into()); }
-                        '\t' => { cmd_batch.push("send-key tab\n".into()); }
-                        ' '  => { cmd_batch.push("send-key space\n".into()); }
+                        '\n' => {
+                            cmd_batch.push("send-key enter\n".into());
+                        }
+                        '\t' => {
+                            cmd_batch.push("send-key tab\n".into());
+                        }
+                        ' ' => {
+                            cmd_batch.push("send-key space\n".into());
+                        }
                         _ => {
                             let escaped = match c {
                                 '"' => "\\\"".to_string(),
@@ -4476,8 +5901,14 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
         {
             if paste_confirmed && !paste_pend.is_empty() {
                 if input_log_enabled() {
-                    input_log("paste", &format!("paste CONFIRMED (post-event), sending {} chars as send-paste: {:?}",
-                        paste_pend.len(), &paste_pend.chars().take(200).collect::<String>()));
+                    input_log(
+                        "paste",
+                        &format!(
+                            "paste CONFIRMED (post-event), sending {} chars as send-paste: {:?}",
+                            paste_pend.len(),
+                            &paste_pend.chars().take(200).collect::<String>()
+                        ),
+                    );
                 }
                 let encoded = base64_encode(&paste_pend);
                 cmd_batch.push(format!("send-paste {}\n", encoded));
@@ -4492,21 +5923,27 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                 // Ctrl+V Release with no buffered chars.  If paste was
                 // already sent via stage2 timeout or Event::Paste, the
                 // suppress window prevents a redundant clipboard read.
-                let suppressed = paste_suppress_until
-                    .map_or(false, |t| Instant::now() < t);
+                let suppressed = paste_suppress_until.map_or(false, |t| Instant::now() < t);
                 if !suppressed {
                     // No recent paste — read clipboard as fallback
                     if let Some(text) = read_from_system_clipboard() {
                         if !text.is_empty() {
                             if input_log_enabled() {
-                                input_log("paste", &format!("paste CONFIRMED (no buffer), clipboard read len={}", text.len()));
+                                input_log(
+                                    "paste",
+                                    &format!(
+                                        "paste CONFIRMED (no buffer), clipboard read len={}",
+                                        text.len()
+                                    ),
+                                );
                             }
                             let encoded = base64_encode(&text);
                             cmd_batch.push(format!("send-paste {}\n", encoded));
                             // Suppress subsequent char accumulation — the
                             // clipboard chars may arrive later (async inject)
                             // and would cause a duplicate paste via stage2.
-                            paste_suppress_until = Some(Instant::now() + Duration::from_millis(200));
+                            paste_suppress_until =
+                                Some(Instant::now() + Duration::from_millis(200));
                         }
                     }
                 }
@@ -4523,7 +5960,10 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
             if new_size != last_sent_size {
                 last_sent_size = new_size;
                 size_changed = true;
-                if writer.write_all(format!("client-size {} {}\n", new_size.0, new_size.1).as_bytes()).is_err() {
+                if writer
+                    .write_all(format!("client-size {} {}\n", new_size.0, new_size.1).as_bytes())
+                    .is_err()
+                {
                     break; // Connection lost
                 }
                 // SSH: re-send mouse-enable on resize — terminal may reset
@@ -4543,13 +5983,17 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
         // stay stuck on indefinitely. This runs every poll tick, so once
         // repeat-time elapses with no repeat key we disarm and emit prefix-end,
         // matching tmux where the indicator clears when the repeat window closes.
-        if prefix_armed && prefix_repeating
+        if prefix_armed
+            && prefix_repeating
             && prefix_armed_at.elapsed().as_millis() >= repeat_time_ms as u128
         {
             prefix_armed = false;
             prefix_repeating = false;
             #[cfg(windows)]
-            if ime_was_open { crate::platform::ime_restore(); ime_was_open = false; }
+            if ime_was_open {
+                crate::platform::ime_restore();
+                ime_was_open = false;
+            }
             cmd_batch.push("prefix-end\n".into());
         }
 
@@ -4579,11 +6023,23 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
         // Rate-limit dump-state requests to avoid flooding the server.
         // dump_in_flight prevents >1 concurrent request; the interval check
         // ensures we don't re-request faster than ~100fps when typing.
-        let overlays_active = command_input || renaming || pane_renaming || tree_chooser || buffer_chooser || session_chooser || keys_viewer || confirm_cmd.is_some() || srv_popup_active || srv_confirm_active || srv_menu_active || srv_display_panes || clock_active;
+        let overlays_active = command_input
+            || renaming
+            || pane_renaming
+            || tree_chooser
+            || buffer_chooser
+            || session_chooser
+            || keys_viewer
+            || confirm_cmd.is_some()
+            || srv_popup_active
+            || srv_confirm_active
+            || srv_menu_active
+            || srv_display_panes
+            || clock_active;
         let should_dump = if force_dump || size_changed {
             true
         } else if typing_active {
-            since_dump >= 10  // ~100fps cap when typing (matches poll_ms)
+            since_dump >= 10 // ~100fps cap when typing (matches poll_ms)
         } else {
             // Server auto-pushes frames when state changes (PTY output,
             // new window, etc.) — no idle dump-state polling needed.
@@ -4592,8 +6048,12 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
             false
         };
         if should_dump && !dump_in_flight {
-            if writer.write_all(b"dump-state\n").is_err() { break; }
-            if writer.flush().is_err() { break; }
+            if writer.write_all(b"dump-state\n").is_err() {
+                break;
+            }
+            if writer.flush().is_err() {
+                break;
+            }
             dump_in_flight = true;
             dump_flight_start = Instant::now();
         }
@@ -4613,12 +6073,19 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
         }
 
         // Parse the frame (use prev_dump_buf for selection-only redraws)
-        let frame_to_parse = if got_frame && dump_buf != prev_dump_buf { &dump_buf } else { &prev_dump_buf };
+        let frame_to_parse = if got_frame && dump_buf != prev_dump_buf {
+            &dump_buf
+        } else {
+            &prev_dump_buf
+        };
         let _t_parse = Instant::now();
         let state: DumpState = match serde_json::from_str(frame_to_parse) {
             Ok(s) => s,
             Err(_e) => {
-                client_log("parse", &format!("JSON parse error: {} (len={})", _e, frame_to_parse.len()));
+                client_log(
+                    "parse",
+                    &format!("JSON parse error: {} (len={})", _e, frame_to_parse.len()),
+                );
                 force_dump = true;
                 selection_changed = false;
                 continue;
@@ -4626,7 +6093,10 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
         };
         let _parse_us = _t_parse.elapsed().as_micros();
         if client_log_enabled() {
-            client_log("parse", &format!("OK in {}us, {} windows", _parse_us, state.windows.len()));
+            client_log(
+                "parse",
+                &format!("OK in {}us, {} windows", _parse_us, state.windows.len()),
+            );
         }
 
         let root = state.layout;
@@ -4641,7 +6111,9 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
         client_pwsh_selection = state.pwsh_mouse_selection;
         client_mouse_selection = state.mouse_selection;
         #[cfg(windows)]
-        { paste_detection_enabled = state.paste_detection; }
+        {
+            paste_detection_enabled = state.paste_detection;
+        }
         choose_tree_preview_default = state.choose_tree_preview;
         client_zoomed = state.zoomed;
         let dim_preds = state.prediction_dimming;
@@ -4699,8 +6171,19 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
         {
             fn active_cursor_info(node: &LayoutJson) -> Option<(bool, u16, u16, bool)> {
                 match node {
-                    LayoutJson::Leaf { active, hide_cursor, cursor_row, cursor_col, copy_mode, .. } => {
-                        if *active { Some((*hide_cursor, *cursor_row, *cursor_col, *copy_mode)) } else { None }
+                    LayoutJson::Leaf {
+                        active,
+                        hide_cursor,
+                        cursor_row,
+                        cursor_col,
+                        copy_mode,
+                        ..
+                    } => {
+                        if *active {
+                            Some((*hide_cursor, *cursor_row, *cursor_col, *copy_mode))
+                        } else {
+                            None
+                        }
                     }
                     LayoutJson::Split { children, .. } => {
                         children.iter().find_map(active_cursor_info)
@@ -4750,8 +6233,12 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                     prefix_raw_char = if km.contains(KeyModifiers::CONTROL) {
                         if let KeyCode::Char(c) = kc {
                             Some((c as u8 & 0x1f) as char)
-                        } else { None }
-                    } else { None };
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
                 }
             }
         }
@@ -4764,8 +6251,12 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                     prefix2_raw_char = if km.contains(KeyModifiers::CONTROL) {
                         if let KeyCode::Char(c) = kc {
                             Some((c as u8 & 0x1f) as char)
-                        } else { None }
-                    } else { None };
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
                 }
             } else {
                 prefix2_key = None;
@@ -4811,7 +6302,11 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
         if let Some(sr) = state.status_right {
             custom_status_right = if sr.is_empty() { None } else { Some(sr) };
         }
-        let status_lines = if state.status_visible { state.status_lines } else { 0 };
+        let status_lines = if state.status_visible {
+            state.status_lines
+        } else {
+            0
+        };
         // If server's status_lines changed, re-send client-size with the
         // correct content-area height so the server's pane rects match the
         // client's render area exactly.
@@ -4826,25 +6321,41 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
         if let Some(ref pbs) = state.pane_border_style {
             if !pbs.is_empty() {
                 let (fg, _bg, _bold) = parse_tmux_style_components(pbs);
-                if let Some(c) = fg { pane_border_fg = c; }
+                if let Some(c) = fg {
+                    pane_border_fg = c;
+                }
             }
         }
         if let Some(ref pabs) = state.pane_active_border_style {
             if !pabs.is_empty() {
                 let (fg, _bg, _bold) = parse_tmux_style_components(pabs);
-                if let Some(c) = fg { pane_active_border_fg = c; }
+                if let Some(c) = fg {
+                    pane_active_border_fg = c;
+                }
             }
         }
         if let Some(ref pbhs) = state.pane_border_hover_style {
             if !pbhs.is_empty() {
                 let (fg, _bg, _bold) = parse_tmux_style_components(pbhs);
-                if let Some(c) = fg { pane_border_hover_fg = c; }
+                if let Some(c) = fg {
+                    pane_border_hover_fg = c;
+                }
             }
         }
         // Update window-status-format strings
-        if let Some(ref f) = state.wsf { if !f.is_empty() { win_status_fmt = f.clone(); } }
-        if let Some(ref f) = state.wscf { if !f.is_empty() { win_status_current_fmt = f.clone(); } }
-        if let Some(ref s) = state.wss { win_status_sep = s.clone(); }
+        if let Some(ref f) = state.wsf {
+            if !f.is_empty() {
+                win_status_fmt = f.clone();
+            }
+        }
+        if let Some(ref f) = state.wscf {
+            if !f.is_empty() {
+                win_status_current_fmt = f.clone();
+            }
+        }
+        if let Some(ref s) = state.wss {
+            win_status_sep = s.clone();
+        }
         // Update window-status styles
         if let Some(ref s) = state.ws_style {
             if !s.is_empty() {
@@ -4858,13 +6369,19 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
         }
         // Update mode-style, status-position, status-justify from server
         if let Some(ref ms) = state.mode_style {
-            if !ms.is_empty() { mode_style_str = ms.clone(); }
+            if !ms.is_empty() {
+                mode_style_str = ms.clone();
+            }
         }
         if let Some(ref sp) = state.status_position {
-            if !sp.is_empty() { status_position_str = sp.clone(); }
+            if !sp.is_empty() {
+                status_position_str = sp.clone();
+            }
         }
         if let Some(ref sj) = state.status_justify {
-            if !sj.is_empty() { status_justify_str = sj.clone(); }
+            if !sj.is_empty() {
+                status_justify_str = sj.clone();
+            }
         }
 
         // ── STEP 3: Render ───────────────────────────────────────────────
@@ -4876,7 +6393,10 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
         let status_at_top = status_position_str == "top";
         if client_log_enabled() {
             let sz = terminal.size().unwrap_or_default();
-            client_log("draw", &format!("pre-draw terminal_size={}x{}", sz.width, sz.height));
+            client_log(
+                "draw",
+                &format!("pre-draw terminal_size={}x{}", sz.width, sz.height),
+            );
         }
         // Reset OSC 8 hyperlink runs collected during this frame's render (#361).
         frame_hyperlinks_clear();
@@ -6087,10 +7607,20 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
 
         })?;
         if client_log_enabled() {
-            client_log("draw", &format!("draw OK, render={}us overlays: popup={} confirm={} menu={} display_panes={}",
-                _t_parse.elapsed().as_micros().saturating_sub(_parse_us as u128),
-                srv_popup_active, srv_confirm_active, srv_menu_active, srv_display_panes
-            ));
+            client_log(
+                "draw",
+                &format!(
+                    "draw OK, render={}us overlays: popup={} confirm={} menu={} display_panes={}",
+                    _t_parse
+                        .elapsed()
+                        .as_micros()
+                        .saturating_sub(_parse_us as u128),
+                    srv_popup_active,
+                    srv_confirm_active,
+                    srv_menu_active,
+                    srv_display_panes
+                ),
+            );
         }
 
         // ── Post-draw: overlay OSC 8 hyperlinks (#361) ───────────────
@@ -6149,7 +7679,8 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
         if host_progress_this_frame != last_emitted_host_progress {
             if let Some(ref prog) = host_progress_this_frame {
                 if let Some((s, v)) = prog.split_once(';') {
-                    if !s.is_empty() && !v.is_empty()
+                    if !s.is_empty()
+                        && !v.is_empty()
                         && s.bytes().all(|b| b.is_ascii_digit())
                         && v.bytes().all(|b| b.is_ascii_digit())
                     {
@@ -6185,16 +7716,25 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
             use std::io::Write;
             fn find_active_cursor_shape(node: &LayoutJson) -> Option<u8> {
                 match node {
-                    LayoutJson::Leaf { active, cursor_shape, .. } => {
-                        if *active && *cursor_shape >= 1 && *cursor_shape <= 6 { Some(*cursor_shape) } else { None }
+                    LayoutJson::Leaf {
+                        active,
+                        cursor_shape,
+                        ..
+                    } => {
+                        if *active && *cursor_shape >= 1 && *cursor_shape <= 6 {
+                            Some(*cursor_shape)
+                        } else {
+                            None
+                        }
                     }
                     LayoutJson::Split { children, .. } => {
                         children.iter().find_map(find_active_cursor_shape)
                     }
                 }
             }
-            let effective = find_active_cursor_shape(&root)
-                .unwrap_or_else(|| state_cursor_style_code.unwrap_or_else(crate::rendering::configured_cursor_code));
+            let effective = find_active_cursor_shape(&root).unwrap_or_else(|| {
+                state_cursor_style_code.unwrap_or_else(crate::rendering::configured_cursor_code)
+            });
             let active_pane_area: Option<Rect> = {
                 let sz = terminal.size().unwrap_or_default();
                 let constraints = if status_at_top {
@@ -6202,19 +7742,22 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                 } else {
                     vec![Constraint::Min(1), Constraint::Length(status_lines as u16)]
                 };
-                let chunks = Layout::default().direction(Direction::Vertical)
-                    .constraints(constraints).split(sz.into());
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints(constraints)
+                    .split(sz.into());
                 let content_chunk = if status_at_top { chunks[1] } else { chunks[0] };
                 compute_active_rect_json_zoom_aware(&root, content_chunk, client_zoomed)
             };
             // Compute screen-global cursor position from pane-local coords.
-            let cursor_visible = if let (Some((cc, cr)), Some(inner)) = (post_draw_cursor, active_pane_area) {
-                let cy = inner.y + cr.min(inner.height.saturating_sub(1));
-                let cx = inner.x + cc.min(inner.width.saturating_sub(1));
-                Some((cx, cy))
-            } else {
-                None
-            };
+            let cursor_visible =
+                if let (Some((cc, cr)), Some(inner)) = (post_draw_cursor, active_pane_area) {
+                    let cy = inner.y + cr.min(inner.height.saturating_sub(1));
+                    let cx = inner.x + cc.min(inner.width.saturating_sub(1));
+                    Some((cx, cy))
+                } else {
+                    None
+                };
             // Build a single VT string with: ?25h + CUP + DECSCUSR
             // ratatui's draw() always emits ?25l (since we never call
             // f.set_cursor_position), so we must re-emit ?25h + CUP
@@ -6248,19 +7791,33 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
             }
         }
 
-        let _render_us = _t_parse.elapsed().as_micros().saturating_sub(_parse_us as u128);
+        let _render_us = _t_parse
+            .elapsed()
+            .as_micros()
+            .saturating_sub(_parse_us as u128);
         last_dump_time = Instant::now();
         // Latency log: measure full cycle from key-send to render-complete
         if let (Some(ref mut log), Some(ks)) = (&mut latency_log, key_send_instant) {
             let elapsed_ms = ks.elapsed().as_millis();
             loop_count += 1;
             use std::io::Write;
-            let _ = writeln!(log, "L{}: key->render {}ms  parse={}us  render={}us  json_len={}  since_dump={}",
-                loop_count, elapsed_ms, _parse_us, _render_us, dump_buf.len(), since_dump);
+            let _ = writeln!(
+                log,
+                "L{}: key->render {}ms  parse={}us  render={}us  json_len={}  since_dump={}",
+                loop_count,
+                elapsed_ms,
+                _parse_us,
+                _render_us,
+                dump_buf.len(),
+                since_dump
+            );
             // Only clear after we rendered a DIFFERENT frame (echo arrived)
             if got_frame && dump_buf != prev_dump_buf {
-                let _ = writeln!(log, "L{}: ECHO VISIBLE after {}ms  (parse={}us render={}us)",
-                    loop_count, elapsed_ms, _parse_us, _render_us);
+                let _ = writeln!(
+                    log,
+                    "L{}: ECHO VISIBLE after {}ms  (parse={}us render={}us)",
+                    loop_count, elapsed_ms, _parse_us, _render_us
+                );
                 key_send_instant = None;
             }
         }
@@ -6319,9 +7876,15 @@ fn flush_paste_pend_as_text(
     } else {
         for c in paste_pend.chars() {
             match c {
-                '\n' => { cmd_batch.push("send-key enter\n".into()); }
-                '\t' => { cmd_batch.push("send-key tab\n".into()); }
-                ' '  => { cmd_batch.push("send-key space\n".into()); }
+                '\n' => {
+                    cmd_batch.push("send-key enter\n".into());
+                }
+                '\t' => {
+                    cmd_batch.push("send-key tab\n".into());
+                }
+                ' ' => {
+                    cmd_batch.push("send-key space\n".into());
+                }
                 _ => {
                     let escaped = match c {
                         '"' => "\\\"".to_string(),
@@ -6412,7 +7975,9 @@ fn route_paste_to_overlay(
         true
     } else if window_idx_input {
         for c in data.chars() {
-            if c.is_ascii_digit() { window_idx_buf.push(c); }
+            if c.is_ascii_digit() {
+                window_idx_buf.push(c);
+            }
         }
         true
     } else {

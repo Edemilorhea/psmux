@@ -14,15 +14,34 @@ fn parses_cd_and_env_prefix() {
     // CLI -> server arg pipeline; claude.exe path has no spaces).
     let cmd = "cd C:\\cctest && env CLAUDECODE=1 CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 CLAUDE_CODE_SUBAGENT_MODEL=haiku C:\\Users\\me\\.local\\bin\\claude.exe --agent-id Bob@team --model haiku";
     let (cwd, sets, remainder) = detect_env_prefix_command(cmd).expect("should match env idiom");
-    assert_eq!(cwd.as_deref(), Some("C:\\cctest"), "cd target becomes cwd override");
-    assert_eq!(sets, vec![
-        ("CLAUDECODE".to_string(), "1".to_string()),
-        ("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS".to_string(), "1".to_string()),
-        ("CLAUDE_CODE_SUBAGENT_MODEL".to_string(), "haiku".to_string()),
-    ], "all env assignments are parsed");
-    assert_eq!(remainder, "C:\\Users\\me\\.local\\bin\\claude.exe --agent-id Bob@team --model haiku",
-        "the program + args remain, with the env prefix removed");
-    assert!(!remainder.contains("env "), "the `env` token must be stripped");
+    assert_eq!(
+        cwd.as_deref(),
+        Some("C:\\cctest"),
+        "cd target becomes cwd override"
+    );
+    assert_eq!(
+        sets,
+        vec![
+            ("CLAUDECODE".to_string(), "1".to_string()),
+            (
+                "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS".to_string(),
+                "1".to_string()
+            ),
+            (
+                "CLAUDE_CODE_SUBAGENT_MODEL".to_string(),
+                "haiku".to_string()
+            ),
+        ],
+        "all env assignments are parsed"
+    );
+    assert_eq!(
+        remainder, "C:\\Users\\me\\.local\\bin\\claude.exe --agent-id Bob@team --model haiku",
+        "the program + args remain, with the env prefix removed"
+    );
+    assert!(
+        !remainder.contains("env "),
+        "the `env` token must be stripped"
+    );
 }
 
 #[cfg(windows)]
@@ -31,7 +50,13 @@ fn parses_env_prefix_without_cd() {
     let cmd = "env FOO=bar BAZ=qux C:\\tools\\app.exe --flag";
     let (cwd, sets, remainder) = detect_env_prefix_command(cmd).expect("should match");
     assert!(cwd.is_none(), "no cd -> no cwd override");
-    assert_eq!(sets, vec![("FOO".to_string(), "bar".to_string()), ("BAZ".to_string(), "qux".to_string())]);
+    assert_eq!(
+        sets,
+        vec![
+            ("FOO".to_string(), "bar".to_string()),
+            ("BAZ".to_string(), "qux".to_string())
+        ]
+    );
     assert_eq!(remainder, "C:\\tools\\app.exe --flag");
 }
 
@@ -51,7 +76,10 @@ fn non_env_commands_are_not_matched() {
     // Plain commands, bash-c wrappers, and shell one-liners must NOT be treated
     // as the env idiom (they are handled by their own paths).
     assert!(detect_env_prefix_command("pwsh -NoLogo -Command foo").is_none());
-    assert!(detect_env_prefix_command("cd C:\\x && cmd /c echo hi").is_none(), "cd without env is not this idiom");
+    assert!(
+        detect_env_prefix_command("cd C:\\x && cmd /c echo hi").is_none(),
+        "cd without env is not this idiom"
+    );
     assert!(detect_env_prefix_command("node app.js").is_none());
     assert!(detect_env_prefix_command("claude --version").is_none());
 }
@@ -75,10 +103,23 @@ fn build_command_env_idiom_does_not_leak_env_token() {
         false,
         false,
     );
-    let args: Vec<String> = builder.get_argv().iter().map(|s| s.to_string_lossy().to_string()).collect();
+    let args: Vec<String> = builder
+        .get_argv()
+        .iter()
+        .map(|s| s.to_string_lossy().to_string())
+        .collect();
     let joined = args.join(" ");
-    assert!(joined.contains("claude.exe"), "the program must be present, got: {joined}");
-    assert!(joined.contains("& "), "the pwsh call operator must invoke the program, got: {joined}");
+    assert!(
+        joined.contains("claude.exe"),
+        "the program must be present, got: {joined}"
+    );
+    assert!(
+        joined.contains("& "),
+        "the pwsh call operator must invoke the program, got: {joined}"
+    );
     // The literal `env ` launcher prefix must be gone (env is applied on the builder).
-    assert!(!joined.contains("env CLAUDECODE"), "the env prefix must be stripped, got: {joined}");
+    assert!(
+        !joined.contains("env CLAUDECODE"),
+        "the env prefix must be stripped, got: {joined}"
+    );
 }

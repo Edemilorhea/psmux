@@ -26,7 +26,11 @@ fn mock_app() -> AppState {
 
 fn make_window(name: &str, id: usize) -> crate::types::Window {
     crate::types::Window {
-        root: Node::Split { kind: LayoutKind::Horizontal, sizes: vec![], children: vec![] },
+        root: Node::Split {
+            kind: LayoutKind::Horizontal,
+            sizes: vec![],
+            children: vec![],
+        },
         active_path: vec![],
         name: name.to_string(),
         id,
@@ -85,7 +89,10 @@ fn is_popup_with_text(app: &AppState, text: &str) -> bool {
 fn issue36_set_option_mouse_on() {
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, "set-option -g mouse on").unwrap();
-    assert!(app.mouse_enabled, "#36: set-option mouse on should enable mouse");
+    assert!(
+        app.mouse_enabled,
+        "#36: set-option mouse on should enable mouse"
+    );
 }
 
 #[test]
@@ -93,7 +100,10 @@ fn issue36_set_option_mouse_off() {
     let mut app = mock_app_with_window();
     app.mouse_enabled = true;
     execute_command_string(&mut app, "set-option -g mouse off").unwrap();
-    assert!(!app.mouse_enabled, "#36: set-option mouse off should disable mouse");
+    assert!(
+        !app.mouse_enabled,
+        "#36: set-option mouse off should disable mouse"
+    );
 }
 
 #[test]
@@ -114,7 +124,10 @@ fn issue36_set_option_escape_time() {
 fn issue63_set_option_status_off() {
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, "set-option -g status off").unwrap();
-    assert!(!app.status_visible, "#63: status off should disable status bar");
+    assert!(
+        !app.status_visible,
+        "#63: status off should disable status bar"
+    );
 }
 
 #[test]
@@ -122,7 +135,10 @@ fn issue63_set_option_status_on() {
     let mut app = mock_app_with_window();
     app.status_visible = false;
     execute_command_string(&mut app, "set-option -g status on").unwrap();
-    assert!(app.status_visible, "#63: status on should enable status bar");
+    assert!(
+        app.status_visible,
+        "#63: status on should enable status bar"
+    );
 }
 
 #[test]
@@ -136,7 +152,10 @@ fn issue36_set_option_history_limit() {
 fn issue36_set_option_status_style() {
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, r#"set-option -g status-style "bg=red""#).unwrap();
-    assert_eq!(app.status_style, "bg=red", "#36: status-style should be bg=red");
+    assert_eq!(
+        app.status_style, "bg=red",
+        "#36: status-style should be bg=red"
+    );
 }
 
 #[test]
@@ -150,7 +169,10 @@ fn issue36_set_option_status_left() {
 fn issue36_set_option_status_right() {
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, r#"set-option -g status-right "RIGHT""#).unwrap();
-    assert_eq!(app.status_right, "RIGHT", "#36: status-right should be RIGHT");
+    assert_eq!(
+        app.status_right, "RIGHT",
+        "#36: status-right should be RIGHT"
+    );
 }
 
 // ─── User @options ──────────────────────────────────────────────────────────
@@ -188,8 +210,11 @@ fn issue215_show_options_dispatches() {
     // show-options should produce a popup with option listing
     if is_popup(&app) {
         let output = popup_output(&app);
-        assert!(output.contains("mouse") || output.contains("status") || output.len() > 10,
-            "#215: show-options popup should contain options. Got: {}", output);
+        assert!(
+            output.contains("mouse") || output.contains("status") || output.len() > 10,
+            "#215: show-options popup should contain options. Got: {}",
+            output
+        );
     }
     // Even if not popup, the command should not crash
 }
@@ -202,7 +227,11 @@ fn issue215_show_options_v_returns_value() {
     // Should show popup with value only
     if is_popup(&app) {
         let output = popup_output(&app);
-        assert!(output.contains("myval"), "#215: show-options -v should contain 'myval'. Got: {}", output);
+        assert!(
+            output.contains("myval"),
+            "#215: show-options -v should contain 'myval'. Got: {}",
+            output
+        );
     }
 }
 
@@ -214,10 +243,13 @@ fn issue215_show_options_v_returns_value() {
 fn issue19_bind_key_basic() {
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, "bind-key x split-window -v").unwrap();
-    let table = app.key_tables.get("prefix").expect("prefix table should exist");
-    let found = table.iter().any(|kb| {
-        kb.key.0 == crossterm::event::KeyCode::Char('x')
-    });
+    let table = app
+        .key_tables
+        .get("prefix")
+        .expect("prefix table should exist");
+    let found = table
+        .iter()
+        .any(|kb| kb.key.0 == crossterm::event::KeyCode::Char('x'));
     assert!(found, "#19: bind-key x should be in prefix table");
 }
 
@@ -226,9 +258,9 @@ fn issue19_bind_key_root_table() {
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, "bind-key -T root F5 split-window -v").unwrap();
     let table = app.key_tables.get("root").expect("root table should exist");
-    let found = table.iter().any(|kb| {
-        kb.key.0 == crossterm::event::KeyCode::F(5)
-    });
+    let found = table
+        .iter()
+        .any(|kb| kb.key.0 == crossterm::event::KeyCode::F(5));
     assert!(found, "#19: bind-key -T root F5 should be in root table");
 }
 
@@ -251,7 +283,11 @@ fn issue108_bind_key_ctrl_tab() {
 #[test]
 fn issue133_set_hook_registers() {
     let mut app = mock_app_with_window();
-    execute_command_string(&mut app, r#"set-hook -g after-new-window "display-message hello""#).unwrap();
+    execute_command_string(
+        &mut app,
+        r#"set-hook -g after-new-window "display-message hello""#,
+    )
+    .unwrap();
     assert!(
         app.hooks.contains_key("after-new-window"),
         "#133: after-new-window hook should be registered"
@@ -261,8 +297,16 @@ fn issue133_set_hook_registers() {
 #[test]
 fn issue133_set_hook_append() {
     let mut app = mock_app_with_window();
-    execute_command_string(&mut app, r#"set-hook -g after-new-window "display-message first""#).unwrap();
-    execute_command_string(&mut app, r#"set-hook -ga after-new-window "display-message second""#).unwrap();
+    execute_command_string(
+        &mut app,
+        r#"set-hook -g after-new-window "display-message first""#,
+    )
+    .unwrap();
+    execute_command_string(
+        &mut app,
+        r#"set-hook -ga after-new-window "display-message second""#,
+    )
+    .unwrap();
     let hooks = app.hooks.get("after-new-window").unwrap();
     assert!(
         hooks.len() >= 2,
@@ -469,7 +513,10 @@ fn issue95_choose_window_dispatches() {
 fn issue201_rename_session() {
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, "rename-session newname").unwrap();
-    assert_eq!(app.session_name, "newname", "#201: rename-session should change session_name");
+    assert_eq!(
+        app.session_name, "newname",
+        "#201: rename-session should change session_name"
+    );
 }
 
 #[test]
@@ -477,8 +524,14 @@ fn issue169_rename_window() {
     let mut app = mock_app_with_windows(&["shell"]);
     app.active_idx = 0;
     execute_command_string(&mut app, "rename-window mywindow").unwrap();
-    assert_eq!(app.windows[0].name, "mywindow", "#169: rename-window should change name");
-    assert!(app.windows[0].manual_rename, "#169: rename-window should set manual_rename flag");
+    assert_eq!(
+        app.windows[0].name, "mywindow",
+        "#169: rename-window should change name"
+    );
+    assert!(
+        app.windows[0].manual_rename,
+        "#169: rename-window should set manual_rename flag"
+    );
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -512,7 +565,10 @@ fn command_prompt_set_option() {
         cursor: 0,
     };
     execute_command_prompt(&mut app).unwrap();
-    assert_eq!(app.escape_time_ms, 42, "Command prompt should execute set-option");
+    assert_eq!(
+        app.escape_time_ms, 42,
+        "Command prompt should execute set-option"
+    );
 }
 
 #[test]
@@ -523,7 +579,10 @@ fn command_prompt_rename_session() {
         cursor: 0,
     };
     execute_command_prompt(&mut app).unwrap();
-    assert_eq!(app.session_name, "prompt_renamed", "Command prompt rename-session");
+    assert_eq!(
+        app.session_name, "prompt_renamed",
+        "Command prompt rename-session"
+    );
 }
 
 #[test]
@@ -610,7 +669,10 @@ fn previous_window_command() {
     let mut app = mock_app_with_windows(&["w0", "w1"]);
     app.active_idx = 1;
     execute_command_string(&mut app, "previous-window").unwrap();
-    assert_eq!(app.active_idx, 0, "previous-window should go back to window 0");
+    assert_eq!(
+        app.active_idx, 0,
+        "previous-window should go back to window 0"
+    );
 }
 
 #[test]
@@ -626,7 +688,10 @@ fn select_window_by_index() {
     let mut app = mock_app_with_windows(&["w0", "w1", "w2"]);
     app.active_idx = 0;
     execute_command_string(&mut app, "select-window -t 2").unwrap();
-    assert_eq!(app.active_idx, 2, "select-window -t 2 should go to window 2");
+    assert_eq!(
+        app.active_idx, 2,
+        "select-window -t 2 should go to window 2"
+    );
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

@@ -4,11 +4,11 @@
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::{mpsc, Arc};
 use std::sync::atomic::AtomicBool;
+use std::sync::{mpsc, Arc};
 
-use crate::types::{AppState, ForwardedPane, Node, LayoutKind};
 use crate::tree;
+use crate::types::{AppState, ForwardedPane, LayoutKind, Node};
 
 /// Handle `PaneForwardExtract`: extract a pane from the window tree, keep
 /// its real ConPTY alive, start a TCP forwarding listener, and reply with
@@ -45,7 +45,11 @@ pub fn handle_pane_forward_extract(
     // Extract the pane node from the tree
     let src_root = std::mem::replace(
         &mut app.windows[win_idx].root,
-        Node::Split { kind: LayoutKind::Horizontal, sizes: vec![], children: vec![] },
+        Node::Split {
+            kind: LayoutKind::Horizontal,
+            sizes: vec![],
+            children: vec![],
+        },
     );
     let (remaining, extracted) = tree::extract_node(src_root, &src_path);
     let pane_node = match extracted {
@@ -133,11 +137,15 @@ pub fn handle_pane_forward_extract(
             std::thread::spawn(move || {
                 let mut buf = [0u8; 65536];
                 loop {
-                    if sd2.load(std::sync::atomic::Ordering::Relaxed) { break; }
+                    if sd2.load(std::sync::atomic::Ordering::Relaxed) {
+                        break;
+                    }
                     match pty_reader.read(&mut buf) {
                         Ok(0) => break,
                         Ok(n) => {
-                            if tcp_writer.write_all(&buf[..n]).is_err() { break; }
+                            if tcp_writer.write_all(&buf[..n]).is_err() {
+                                break;
+                            }
                             let _ = tcp_writer.flush();
                         }
                         Err(_) => break,
@@ -149,11 +157,15 @@ pub fn handle_pane_forward_extract(
             let mut pty_writer = pty_writer;
             let mut buf = [0u8; 65536];
             loop {
-                if sd.load(std::sync::atomic::Ordering::Relaxed) { break; }
+                if sd.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
                 match tcp_reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        if pty_writer.write_all(&buf[..n]).is_err() { break; }
+                        if pty_writer.write_all(&buf[..n]).is_err() {
+                            break;
+                        }
                         let _ = pty_writer.flush();
                     }
                     Err(_) => break,
@@ -162,21 +174,30 @@ pub fn handle_pane_forward_extract(
         }
     });
     // Store forwarded pane state
-    app.forwarded_panes.insert(fwd_id, ForwardedPane {
-        master: pane.master,
-        child: pane.child,
-        listener_port: listen_port,
-        pid,
-        title: title.clone(),
-        rows,
-        cols,
-        shutdown,
-    });
+    app.forwarded_panes.insert(
+        fwd_id,
+        ForwardedPane {
+            master: pane.master,
+            child: pane.child,
+            listener_port: listen_port,
+            pid,
+            title: title.clone(),
+            rows,
+            cols,
+            shutdown,
+        },
+    );
     // Send response
     let title_wire = title.replace(' ', "\x01");
     let response = format!(
         "FORWARD {} {} {} {} {} {} {}",
-        fwd_id, listen_port, pid.unwrap_or(0), title_wire, rows, cols, screen_b64.len(),
+        fwd_id,
+        listen_port,
+        pid.unwrap_or(0),
+        title_wire,
+        rows,
+        cols,
+        screen_b64.len(),
     );
     if screen_b64.is_empty() {
         let _ = resp.send(response);
@@ -224,7 +245,9 @@ pub fn handle_pane_forward_inject(
     // Decode screen snapshot
     let screen_snapshot = if !screen_b64.is_empty() {
         use base64::Engine;
-        base64::engine::general_purpose::STANDARD.decode(&screen_b64).ok()
+        base64::engine::general_purpose::STANDARD
+            .decode(&screen_b64)
+            .ok()
     } else {
         None
     };
@@ -235,7 +258,9 @@ pub fn handle_pane_forward_inject(
             let mut leaves = Vec::new();
             tree::collect_leaf_paths_pub(&win.root, &mut Vec::new(), &mut leaves);
             for (id, _) in &leaves {
-                if *id > max_id { max_id = *id; }
+                if *id > max_id {
+                    max_id = *id;
+                }
             }
         }
         max_id + 1
@@ -293,7 +318,11 @@ pub fn handle_pane_forward_inject(
         } else {
             app.windows[tgt_idx].active_path.clone()
         };
-        let split_kind = if horizontal { LayoutKind::Horizontal } else { LayoutKind::Vertical };
+        let split_kind = if horizontal {
+            LayoutKind::Horizontal
+        } else {
+            LayoutKind::Vertical
+        };
         tree::replace_leaf_with_split(
             &mut app.windows[tgt_idx].root,
             &tgt_path,

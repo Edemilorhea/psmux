@@ -16,7 +16,10 @@ fn mock_app() -> crate::types::AppState {
 #[test]
 fn scroll_enter_copy_mode_defaults_to_on() {
     let app = mock_app();
-    assert!(app.scroll_enter_copy_mode, "scroll_enter_copy_mode should default to true");
+    assert!(
+        app.scroll_enter_copy_mode,
+        "scroll_enter_copy_mode should default to true"
+    );
 }
 
 #[test]
@@ -54,7 +57,10 @@ fn apply_set_option_scroll_enter_copy_mode_off() {
     let mut app = mock_app();
     assert!(app.scroll_enter_copy_mode);
     crate::server::options::apply_set_option(&mut app, "scroll-enter-copy-mode", "off", false);
-    assert!(!app.scroll_enter_copy_mode, "apply_set_option should set scroll_enter_copy_mode to false");
+    assert!(
+        !app.scroll_enter_copy_mode,
+        "apply_set_option should set scroll_enter_copy_mode to false"
+    );
 }
 
 #[test]
@@ -62,5 +68,8 @@ fn apply_set_option_scroll_enter_copy_mode_on() {
     let mut app = mock_app();
     app.scroll_enter_copy_mode = false;
     crate::server::options::apply_set_option(&mut app, "scroll-enter-copy-mode", "on", false);
-    assert!(app.scroll_enter_copy_mode, "apply_set_option should set scroll_enter_copy_mode to true");
+    assert!(
+        app.scroll_enter_copy_mode,
+        "apply_set_option should set scroll_enter_copy_mode to true"
+    );
 }

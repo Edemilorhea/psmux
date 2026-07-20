@@ -1,5 +1,4 @@
-const BASE64: &[u8] =
-    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
+const BASE64: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
 const CLIPBOARD_SELECTOR: &[u8] = b"cpqs01234567";
 
 pub struct WrappedScreen<CB: crate::callbacks::Callbacks = ()> {
@@ -14,17 +13,9 @@ impl WrappedScreen<()> {
 }
 
 impl<CB: crate::callbacks::Callbacks> WrappedScreen<CB> {
-    pub fn new_with_callbacks(
-        rows: u16,
-        cols: u16,
-        scrollback_len: usize,
-        callbacks: CB,
-    ) -> Self {
+    pub fn new_with_callbacks(rows: u16, cols: u16, scrollback_len: usize, callbacks: CB) -> Self {
         Self {
-            screen: crate::screen::Screen::new(
-                crate::grid::Size { rows, cols },
-                scrollback_len,
-            ),
+            screen: crate::screen::Screen::new(crate::grid::Size { rows, cols }, scrollback_len),
             callbacks,
         }
     }
@@ -76,24 +67,14 @@ impl<CB: crate::callbacks::Callbacks> vte::Perform for WrappedScreen<CB> {
                 b'c' => self.screen.ris(),
                 b'g' => self.callbacks.visual_bell(&mut self.screen),
                 _ => {
-                    self.callbacks.unhandled_escape(
-                        &mut self.screen,
-                        None,
-                        None,
-                        b,
-                    );
+                    self.callbacks
+                        .unhandled_escape(&mut self.screen, None, None, b);
                 }
             }
         }
     }
 
-    fn csi_dispatch(
-        &mut self,
-        params: &vte::Params,
-        intermediates: &[u8],
-        _ignore: bool,
-        c: char,
-    ) {
+    fn csi_dispatch(&mut self, params: &vte::Params, intermediates: &[u8], _ignore: bool, c: char) {
         let unhandled = |screen: &mut crate::screen::Screen| {
             self.callbacks.unhandled_csi(
                 screen,
@@ -114,12 +95,8 @@ impl<CB: crate::callbacks::Callbacks> vte::Perform for WrappedScreen<CB> {
                 'F' => self.screen.cpl(canonicalize_params_1(params, 1)),
                 'G' => self.screen.cha(canonicalize_params_1(params, 1)),
                 'H' | 'f' => self.screen.cup(canonicalize_params_2(params, 1, 1)),
-                'J' => self
-                    .screen
-                    .ed(canonicalize_params_1(params, 0), unhandled),
-                'K' => self
-                    .screen
-                    .el(canonicalize_params_1(params, 0), unhandled),
+                'J' => self.screen.ed(canonicalize_params_1(params, 0), unhandled),
+                'K' => self.screen.el(canonicalize_params_1(params, 0), unhandled),
                 'L' => self.screen.il(canonicalize_params_1(params, 1)),
                 'M' => self.screen.dl(canonicalize_params_1(params, 1)),
                 'P' => self.screen.dch(canonicalize_params_1(params, 1)),
@@ -142,18 +119,15 @@ impl<CB: crate::callbacks::Callbacks> vte::Perform for WrappedScreen<CB> {
                 'u' => self.screen.decrc(),
                 't' => {
                     let mut params_iter = params.iter();
-                    let op =
-                        params_iter.next().and_then(|x| x.first().copied());
+                    let op = params_iter.next().and_then(|x| x.first().copied());
                     if op == Some(8) {
                         let (screen_rows, screen_cols) = self.screen.size();
-                        let rows =
-                            params_iter.next().map_or(screen_rows, |x| {
-                                *x.first().unwrap_or(&screen_rows)
-                            });
-                        let cols =
-                            params_iter.next().map_or(screen_cols, |x| {
-                                *x.first().unwrap_or(&screen_cols)
-                            });
+                        let rows = params_iter
+                            .next()
+                            .map_or(screen_rows, |x| *x.first().unwrap_or(&screen_rows));
+                        let cols = params_iter
+                            .next()
+                            .map_or(screen_cols, |x| *x.first().unwrap_or(&screen_cols));
                         self.callbacks.resize(&mut self.screen, (rows, cols));
                     } else {
                         self.callbacks.unhandled_csi(
@@ -255,32 +229,21 @@ impl<CB: crate::callbacks::Callbacks> vte::Perform for WrappedScreen<CB> {
                 self.screen.set_hyperlink(id_params, &uri);
             }
             [b"52", ty, data] => {
-                match (
-                    ty.iter().all(|c| CLIPBOARD_SELECTOR.contains(c)),
-                    *data,
-                ) {
+                match (ty.iter().all(|c| CLIPBOARD_SELECTOR.contains(c)), *data) {
                     (true, b"?") => {
-                        self.callbacks
-                            .paste_from_clipboard(&mut self.screen, ty);
+                        self.callbacks.paste_from_clipboard(&mut self.screen, ty);
                     }
-                    (true, data)
-                        if data.iter().all(|c| BASE64.contains(c)) =>
-                    {
+                    (true, data) if data.iter().all(|c| BASE64.contains(c)) => {
                         // Stage the payload on Screen so the psmux server
                         // can drain it and forward an OSC 52 to the host
                         // terminal.  Unblocks tools like Claude Code's
                         // `/copy` running inside a pane (OSC 52 was being
                         // swallowed by the default no-op callbacks).
                         self.screen.set_clipboard(ty, data);
-                        self.callbacks.copy_to_clipboard(
-                            &mut self.screen,
-                            ty,
-                            data,
-                        );
+                        self.callbacks.copy_to_clipboard(&mut self.screen, ty, data);
                     }
                     _ => {
-                        self.callbacks
-                            .unhandled_osc(&mut self.screen, params);
+                        self.callbacks.unhandled_osc(&mut self.screen, params);
                     }
                 }
             }
@@ -462,11 +425,7 @@ fn canonicalize_params_1(params: &vte::Params, default: u16) -> u16 {
     }
 }
 
-fn canonicalize_params_2(
-    params: &vte::Params,
-    default1: u16,
-    default2: u16,
-) -> (u16, u16) {
+fn canonicalize_params_2(params: &vte::Params, default1: u16, default2: u16) -> (u16, u16) {
     let mut iter = params.iter();
     let first = iter.next().map_or(0, |x| *x.first().unwrap_or(&0));
     let first = if first == 0 { default1 } else { first };
@@ -477,10 +436,7 @@ fn canonicalize_params_2(
     (first, second)
 }
 
-fn canonicalize_params_decstbm(
-    params: &vte::Params,
-    size: crate::grid::Size,
-) -> (u16, u16) {
+fn canonicalize_params_decstbm(params: &vte::Params, size: crate::grid::Size) -> (u16, u16) {
     let mut iter = params.iter();
     let top = iter.next().map_or(0, |x| *x.first().unwrap_or(&0));
     let top = if top == 0 { 1 } else { top };

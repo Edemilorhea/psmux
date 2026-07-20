@@ -71,7 +71,10 @@ fn wait_until_dead(pid: u32, timeout_ms: u64) -> bool {
 #[test]
 fn terminate_pid_unguarded_kills_by_raw_pid() {
     let (mut bystander, pid) = spawn_bystander();
-    assert!(pid_alive(pid), "bystander should be alive right after spawn");
+    assert!(
+        pid_alive(pid),
+        "bystander should be alive right after spawn"
+    );
 
     // None disables the reuse guard -> unconditional kill.
     terminate_pid(pid, None);
@@ -101,7 +104,10 @@ fn guarded_terminate_rejects_pid_reused_after_cutoff() {
     std::thread::sleep(std::time::Duration::from_millis(200));
 
     let (mut innocent, pid) = spawn_bystander();
-    assert!(pid_alive(pid), "innocent process should be alive after spawn");
+    assert!(
+        pid_alive(pid),
+        "innocent process should be alive after spawn"
+    );
 
     // The sweep asks to kill this PID believing it was a descendant, but the
     // real process was created after the cutoff -> guard must skip it.
@@ -154,8 +160,14 @@ fn creation_filetime_ordering_is_monotonic() {
     std::thread::sleep(std::time::Duration::from_millis(200));
     let after = now_filetime();
 
-    assert!(created > before, "creation time must be after a pre-spawn cutoff");
-    assert!(created <= after, "creation time must be at/before a post-spawn instant");
+    assert!(
+        created > before,
+        "creation time must be after a pre-spawn cutoff"
+    );
+    assert!(
+        created <= after,
+        "creation time must be at/before a post-spawn instant"
+    );
 
     terminate_pid(pid, None);
     let _ = wait_until_dead(pid, 3000);

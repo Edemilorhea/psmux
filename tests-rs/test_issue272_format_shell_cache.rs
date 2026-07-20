@@ -102,7 +102,9 @@ fn cache_expires_and_respawns_after_ttl() {
     assert_eq!(line_count(&counter), 1, "First call should spawn");
 
     // Burst of calls within TTL — should not respawn.
-    for _ in 0..10 { let _ = expand_format(&fmt, &app); }
+    for _ in 0..10 {
+        let _ = expand_format(&fmt, &app);
+    }
     assert_eq!(
         line_count(&counter),
         1,
@@ -145,8 +147,16 @@ fn different_commands_have_independent_cache_entries() {
     cleanup(&counter_a);
     cleanup(&counter_b);
 
-    assert_eq!(a, 1, "Command A should spawn exactly once across 20 calls; got {}", a);
-    assert_eq!(b, 1, "Command B should spawn exactly once across 20 calls; got {}", b);
+    assert_eq!(
+        a, 1,
+        "Command A should spawn exactly once across 20 calls; got {}",
+        a
+    );
+    assert_eq!(
+        b, 1,
+        "Command B should spawn exactly once across 20 calls; got {}",
+        b
+    );
 }
 
 #[test]
@@ -209,10 +219,7 @@ fn cached_value_is_returned_to_callers_not_just_silently_dropped() {
         first, second,
         "Cached call must return same value as first call"
     );
-    assert_eq!(
-        second, third,
-        "Cached call must keep returning same value"
-    );
+    assert_eq!(second, third, "Cached call must keep returning same value");
     assert_eq!(
         spawns, 1,
         "Only one spawn should have occurred across 3 calls within TTL; got {}",
@@ -240,7 +247,10 @@ fn cache_does_not_leak_command_text_into_output() {
     let out = expand_format(&fmt, &app);
     cleanup(&counter);
 
-    assert!(out.contains("SAFE_OUT"), "Output should contain helper stdout");
+    assert!(
+        out.contains("SAFE_OUT"),
+        "Output should contain helper stdout"
+    );
     assert!(
         !out.contains("echo SAFE_OUT"),
         "Output must NOT contain the raw command text (cache key vs value mixup): {:?}",

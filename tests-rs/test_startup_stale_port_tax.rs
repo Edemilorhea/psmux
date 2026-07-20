@@ -68,9 +68,18 @@ fn dead_pid_anchor_reaps_registry_without_any_network_probe() {
         panic!("network probe must not run when the .pid anchor says dead");
     });
 
-    assert!(!port_path.exists(), ".port of a dead-PID session must be reaped");
-    assert!(!key_path.exists(), ".key of a dead-PID session must be reaped");
-    assert!(!sid_path.exists(), ".sid of a dead-PID session must be reaped");
+    assert!(
+        !port_path.exists(),
+        ".port of a dead-PID session must be reaped"
+    );
+    assert!(
+        !key_path.exists(),
+        ".key of a dead-PID session must be reaped"
+    );
+    assert!(
+        !sid_path.exists(),
+        ".sid of a dead-PID session must be reaped"
+    );
     assert!(!pid_path.exists(), ".pid sentinel itself must be reaped");
     let _ = fs::remove_dir_all(dir.parent().unwrap());
 }
@@ -106,7 +115,10 @@ fn missing_pid_anchor_falls_back_to_network_probe() {
         PortProbeResult::Inconclusive
     });
 
-    assert!(probe_ran, "without a .pid anchor the network probe must still run");
+    assert!(
+        probe_ran,
+        "without a .pid anchor the network probe must still run"
+    );
     assert!(port_path.exists(), "inconclusive probe must keep .port");
     assert!(key_path.exists(), "inconclusive probe must keep .key");
     assert!(sid_path.exists(), "inconclusive probe must keep .sid");
@@ -125,7 +137,10 @@ fn unparseable_pid_anchor_falls_back_to_network_probe() {
         PortProbeResult::Inconclusive
     });
 
-    assert!(probe_ran, "garbage .pid must fall back to the network probe");
+    assert!(
+        probe_ran,
+        "garbage .pid must fall back to the network probe"
+    );
     assert!(port_path.exists(), "inconclusive fallback must keep files");
     let _ = fs::remove_dir_all(dir.parent().unwrap());
 }
@@ -155,7 +170,10 @@ fn cleanup_with_many_dead_pid_registries_is_fast() {
         elapsed
     );
     for i in 0..6 {
-        assert!(!dir.join(format!("dead{i}.port")).exists(), "dead{i}.port must be reaped");
+        assert!(
+            !dir.join(format!("dead{i}.port")).exists(),
+            "dead{i}.port must be reaped"
+        );
     }
     let _ = fs::remove_dir_all(dir.parent().unwrap());
 }
@@ -169,5 +187,8 @@ fn filetime_conversion_is_monotonic_and_anchored() {
     let b = system_time_to_filetime_ticks(later).unwrap();
     assert!(b > a, "later SystemTime must map to larger FILETIME ticks");
     assert_eq!(b - a, 10 * 10_000_000, "10s must be exactly 10^8 ticks");
-    assert!(a > 116_444_736_000_000_000, "ticks must include the 1601 epoch offset");
+    assert!(
+        a > 116_444_736_000_000_000,
+        "ticks must include the 1601 epoch offset"
+    );
 }

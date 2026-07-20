@@ -1,5 +1,5 @@
 use super::*;
-use crate::types::{AppState, Node, LayoutKind};
+use crate::types::{AppState, LayoutKind, Node};
 
 fn mock_app() -> AppState {
     let mut app = AppState::new("test_session".to_string());
@@ -10,7 +10,11 @@ fn mock_app() -> AppState {
 
 fn make_window(name: &str, id: usize) -> crate::types::Window {
     crate::types::Window {
-        root: Node::Split { kind: LayoutKind::Horizontal, sizes: vec![], children: vec![] },
+        root: Node::Split {
+            kind: LayoutKind::Horizontal,
+            sizes: vec![],
+            children: vec![],
+        },
         active_path: vec![],
         name: name.to_string(),
         id,
@@ -117,7 +121,10 @@ fn toggle_synchronize_panes() {
 fn toggle_non_boolean_returns_false() {
     let mut app = mock_app_with_window();
     let toggled = crate::server::options::toggle_option(&mut app, "escape-time");
-    assert!(!toggled, "escape-time is not boolean, toggle should return false");
+    assert!(
+        !toggled,
+        "escape-time is not boolean, toggle should return false"
+    );
 }
 
 #[test]
@@ -125,7 +132,10 @@ fn toggle_non_boolean_does_not_change_value() {
     let mut app = mock_app_with_window();
     let before = app.escape_time_ms;
     crate::server::options::toggle_option(&mut app, "escape-time");
-    assert_eq!(app.escape_time_ms, before, "Non-boolean option should be unchanged");
+    assert_eq!(
+        app.escape_time_ms, before,
+        "Non-boolean option should be unchanged"
+    );
 }
 
 // --- config parse_set_option toggle path ---
@@ -135,7 +145,10 @@ fn config_set_mouse_no_value_toggles() {
     let mut app = mock_app_with_window();
     app.mouse_enabled = true;
     crate::config::parse_config_content(&mut app, "set -g mouse\n");
-    assert!(!app.mouse_enabled, "set mouse with no value should toggle on->off");
+    assert!(
+        !app.mouse_enabled,
+        "set mouse with no value should toggle on->off"
+    );
 }
 
 #[test]
@@ -143,7 +156,10 @@ fn config_set_mouse_no_value_toggles_off_to_on() {
     let mut app = mock_app_with_window();
     app.mouse_enabled = false;
     crate::config::parse_config_content(&mut app, "set -g mouse\n");
-    assert!(app.mouse_enabled, "set mouse with no value should toggle off->on");
+    assert!(
+        app.mouse_enabled,
+        "set mouse with no value should toggle off->on"
+    );
 }
 
 #[test]
@@ -151,7 +167,10 @@ fn config_set_option_mouse_no_value_toggles() {
     let mut app = mock_app_with_window();
     app.mouse_enabled = true;
     crate::config::parse_config_content(&mut app, "set-option -g mouse\n");
-    assert!(!app.mouse_enabled, "set-option mouse with no value should toggle");
+    assert!(
+        !app.mouse_enabled,
+        "set-option mouse with no value should toggle"
+    );
 }
 
 #[test]
@@ -183,7 +202,10 @@ fn config_set_non_boolean_no_value_is_noop() {
     let mut app = mock_app_with_window();
     let before = app.escape_time_ms;
     crate::config::parse_config_content(&mut app, "set -g escape-time\n");
-    assert_eq!(app.escape_time_ms, before, "Non-boolean without value should not change");
+    assert_eq!(
+        app.escape_time_ms, before,
+        "Non-boolean without value should not change"
+    );
 }
 
 #[test]
@@ -191,7 +213,10 @@ fn config_set_without_g_flag_toggles() {
     let mut app = mock_app_with_window();
     app.mouse_enabled = true;
     crate::config::parse_config_content(&mut app, "set mouse\n");
-    assert!(!app.mouse_enabled, "set mouse (no -g flag) should still toggle");
+    assert!(
+        !app.mouse_enabled,
+        "set mouse (no -g flag) should still toggle"
+    );
 }
 
 // --- Exact user scenario from issue #278 ---
@@ -202,13 +227,19 @@ fn issue278_bind_m_set_mouse_simulated() {
     // When triggered, it runs "set mouse" which should toggle
     let mut app = mock_app_with_window();
     app.mouse_enabled = true;
-    
+
     // Simulate what execute_command_string does when keybinding triggers "set mouse"
     crate::config::parse_config_line(&mut app, "set mouse");
-    assert!(!app.mouse_enabled, "bind m set mouse: first press should toggle on->off");
-    
+    assert!(
+        !app.mouse_enabled,
+        "bind m set mouse: first press should toggle on->off"
+    );
+
     crate::config::parse_config_line(&mut app, "set mouse");
-    assert!(app.mouse_enabled, "bind m set mouse: second press should toggle off->on");
+    assert!(
+        app.mouse_enabled,
+        "bind m set mouse: second press should toggle off->on"
+    );
 }
 
 // --- All boolean options should be recognized ---
@@ -216,16 +247,34 @@ fn issue278_bind_m_set_mouse_simulated() {
 #[test]
 fn all_boolean_options_recognized() {
     let booleans = [
-        "mouse", "scroll-enter-copy-mode", "pwsh-mouse-selection",
-        "mouse-selection", "paste-detection", "choose-tree-preview",
-        "focus-events", "renumber-windows", "automatic-rename",
-        "allow-rename", "allow-set-title", "monitor-activity",
-        "visual-activity", "synchronize-panes", "remain-on-exit",
-        "destroy-unattached", "exit-empty", "set-titles",
-        "aggressive-resize", "visual-bell", "prediction-dimming",
-        "allow-predictions", "cursor-blink", "warm",
-        "alternate-screen", "claude-code-fix-tty",
-        "claude-code-force-interactive", "status",
+        "mouse",
+        "scroll-enter-copy-mode",
+        "pwsh-mouse-selection",
+        "mouse-selection",
+        "paste-detection",
+        "choose-tree-preview",
+        "focus-events",
+        "renumber-windows",
+        "automatic-rename",
+        "allow-rename",
+        "allow-set-title",
+        "monitor-activity",
+        "visual-activity",
+        "synchronize-panes",
+        "remain-on-exit",
+        "destroy-unattached",
+        "exit-empty",
+        "set-titles",
+        "aggressive-resize",
+        "visual-bell",
+        "prediction-dimming",
+        "allow-predictions",
+        "cursor-blink",
+        "warm",
+        "alternate-screen",
+        "claude-code-fix-tty",
+        "claude-code-force-interactive",
+        "status",
     ];
     for name in &booleans {
         assert!(

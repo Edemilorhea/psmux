@@ -24,7 +24,11 @@ fn rehome_command_wraps_dir_and_clears() {
     );
     let clear = if cfg!(windows) { "cls" } else { "clear" };
     assert!(cmd.contains(clear), "must chain {clear}, got {cmd:?}");
-    assert_eq!(cmd.matches('\r').count(), 1, "exactly one line, got {cmd:?}");
+    assert_eq!(
+        cmd.matches('\r').count(),
+        1,
+        "exactly one line, got {cmd:?}"
+    );
 }
 
 /// A single quote in the path must be doubled so the single-quoted string stays
@@ -33,7 +37,11 @@ fn rehome_command_wraps_dir_and_clears() {
 #[test]
 fn rehome_command_escapes_single_quotes() {
     let input = r"C:\weird'dir";
-    assert_eq!(input.matches('\'').count(), 1, "precondition: one lone quote");
+    assert_eq!(
+        input.matches('\'').count(),
+        1,
+        "precondition: one lone quote"
+    );
 
     let cmd = rehome_command(input);
     assert!(
@@ -71,7 +79,12 @@ fn rehome_command_exact_windows_form() {
 fn test_app() -> AppState {
     let mut app = AppState::new("warm_start_dir_test".to_string());
     app.warm_enabled = true;
-    app.last_window_area = ratatui::prelude::Rect { x: 0, y: 0, width: 100, height: 30 };
+    app.last_window_area = ratatui::prelude::Rect {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 30,
+    };
     app
 }
 
@@ -118,7 +131,10 @@ fn create_window_live_spare_without_start_dir_does_not_rehome() {
     create_window(&*pty, &mut app, None, None, false).expect("create_window");
 
     let pane = active_pane_of(&mut app.windows[0]);
-    assert_eq!(pane.id, warm_id, "live spare must be transplanted (warm fast path)");
+    assert_eq!(
+        pane.id, warm_id,
+        "live spare must be transplanted (warm fast path)"
+    );
     assert!(
         pane.squelch_until.is_none(),
         "no start_dir means no silent_rehome, so squelch_until must be None"
@@ -173,7 +189,10 @@ fn create_window_dead_spare_with_start_dir_cold_spawns() {
 
     create_window(&*pty, &mut app, None, Some(dir), false).expect("create_window");
 
-    assert!(app.warm_pane.is_none(), "the dead spare must be discarded, not restored");
+    assert!(
+        app.warm_pane.is_none(),
+        "the dead spare must be discarded, not restored"
+    );
     let pane = active_pane_of(&mut app.windows[0]);
     assert_ne!(
         pane.id, warm_id,
@@ -204,9 +223,15 @@ fn split_dead_spare_with_start_dir_cold_spawns() {
         .expect("split");
 
     let win = &mut app.windows[0];
-    assert!(matches!(win.root, Node::Split { .. }), "split must still happen");
+    assert!(
+        matches!(win.root, Node::Split { .. }),
+        "split must still happen"
+    );
     let pane = active_pane_of(win);
-    assert_ne!(pane.id, warm_id, "dead spare transplanted into the -c split (#450 bug)");
+    assert_ne!(
+        pane.id, warm_id,
+        "dead spare transplanted into the -c split (#450 bug)"
+    );
     assert!(
         matches!(pane.child.try_wait(), Ok(None)),
         "the split's cold-spawned shell must be alive"

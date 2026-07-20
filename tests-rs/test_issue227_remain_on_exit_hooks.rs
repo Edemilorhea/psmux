@@ -29,7 +29,11 @@ fn mock_app() -> AppState {
 
 fn make_window(name: &str, id: usize) -> crate::types::Window {
     crate::types::Window {
-        root: Node::Split { kind: LayoutKind::Horizontal, sizes: vec![], children: vec![] },
+        root: Node::Split {
+            kind: LayoutKind::Horizontal,
+            sizes: vec![],
+            children: vec![],
+        },
         active_path: vec![],
         name: name.to_string(),
         id,
@@ -69,10 +73,17 @@ fn mock_app_with_windows(names: &[&str]) -> AppState {
 fn set_hook_registers_hook() {
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, "set-hook pane-died \"set -g @hook-marker yes\"").unwrap();
-    assert!(app.hooks.contains_key("pane-died"), "pane-died hook should be registered");
+    assert!(
+        app.hooks.contains_key("pane-died"),
+        "pane-died hook should be registered"
+    );
     let cmds = app.hooks.get("pane-died").unwrap();
     assert_eq!(cmds.len(), 1, "Should have exactly one command");
-    assert!(cmds[0].contains("set -g @hook-marker yes"), "Command should match, got: {}", cmds[0]);
+    assert!(
+        cmds[0].contains("set -g @hook-marker yes"),
+        "Command should match, got: {}",
+        cmds[0]
+    );
 }
 
 // ============================================================================
@@ -82,14 +93,21 @@ fn set_hook_registers_hook() {
 fn fire_hooks_executes_registered_commands() {
     let mut app = mock_app_with_window();
     // Register a hook that sets a user option
-    app.hooks.insert("pane-died".to_string(), vec!["set -g @pane-died-fired yes".to_string()]);
-    
+    app.hooks.insert(
+        "pane-died".to_string(),
+        vec!["set -g @pane-died-fired yes".to_string()],
+    );
+
     // Fire the hook
     fire_hooks(&mut app, "pane-died");
-    
+
     // Verify the hook command executed: @pane-died-fired should be set
     let val = app.user_options.get("@pane-died-fired");
-    assert_eq!(val.map(|s| s.as_str()), Some("yes"), "Hook command should have set user option");
+    assert_eq!(
+        val.map(|s| s.as_str()),
+        Some("yes"),
+        "Hook command should have set user option"
+    );
 }
 
 // ============================================================================
@@ -111,17 +129,26 @@ fn fire_hooks_noop_when_no_hooks() {
 #[test]
 fn fire_hooks_fires_all_commands() {
     let mut app = mock_app_with_window();
-    app.hooks.insert("pane-died".to_string(), vec![
-        "set -g @hook-first yes".to_string(),
-        "set -g @hook-second yes".to_string(),
-    ]);
-    
+    app.hooks.insert(
+        "pane-died".to_string(),
+        vec![
+            "set -g @hook-first yes".to_string(),
+            "set -g @hook-second yes".to_string(),
+        ],
+    );
+
     fire_hooks(&mut app, "pane-died");
-    
-    assert_eq!(app.user_options.get("@hook-first").map(|s| s.as_str()), Some("yes"),
-        "First hook command should execute");
-    assert_eq!(app.user_options.get("@hook-second").map(|s| s.as_str()), Some("yes"),
-        "Second hook command should execute");
+
+    assert_eq!(
+        app.user_options.get("@hook-first").map(|s| s.as_str()),
+        Some("yes"),
+        "First hook command should execute"
+    );
+    assert_eq!(
+        app.user_options.get("@hook-second").map(|s| s.as_str()),
+        Some("yes"),
+        "Second hook command should execute"
+    );
 }
 
 // ============================================================================
@@ -132,10 +159,16 @@ fn set_hook_unset_removes_hook() {
     let mut app = mock_app_with_window();
     // Register then unset
     execute_command_string(&mut app, "set-hook pane-died \"display-message test\"").unwrap();
-    assert!(app.hooks.contains_key("pane-died"), "Hook should exist before unset");
-    
+    assert!(
+        app.hooks.contains_key("pane-died"),
+        "Hook should exist before unset"
+    );
+
     execute_command_string(&mut app, "set-hook -u pane-died").unwrap();
-    assert!(!app.hooks.contains_key("pane-died"), "Hook should be removed after -u");
+    assert!(
+        !app.hooks.contains_key("pane-died"),
+        "Hook should be removed after -u"
+    );
 }
 
 // ============================================================================
@@ -146,7 +179,7 @@ fn set_hook_append_adds_to_existing() {
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, "set-hook pane-died \"set -g @first yes\"").unwrap();
     execute_command_string(&mut app, "set-hook -a pane-died \"set -g @second yes\"").unwrap();
-    
+
     let cmds = app.hooks.get("pane-died").unwrap();
     assert_eq!(cmds.len(), 2, "Should have two commands after append");
 }
@@ -159,10 +192,18 @@ fn set_hook_replaces_without_append() {
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, "set-hook pane-died \"set -g @old yes\"").unwrap();
     execute_command_string(&mut app, "set-hook pane-died \"set -g @new yes\"").unwrap();
-    
+
     let cmds = app.hooks.get("pane-died").unwrap();
-    assert_eq!(cmds.len(), 1, "Should have only one command after replacement");
-    assert!(cmds[0].contains("@new"), "Should be the new command, got: {}", cmds[0]);
+    assert_eq!(
+        cmds.len(),
+        1,
+        "Should have only one command after replacement"
+    );
+    assert!(
+        cmds[0].contains("@new"),
+        "Should be the new command, got: {}",
+        cmds[0]
+    );
 }
 
 // ============================================================================
@@ -171,17 +212,29 @@ fn set_hook_replaces_without_append() {
 #[test]
 fn pane_died_and_pane_exited_hooks_coexist() {
     let mut app = mock_app_with_window();
-    app.hooks.insert("pane-died".to_string(), vec!["set -g @died-marker yes".to_string()]);
-    app.hooks.insert("pane-exited".to_string(), vec!["set -g @exited-marker yes".to_string()]);
-    
+    app.hooks.insert(
+        "pane-died".to_string(),
+        vec!["set -g @died-marker yes".to_string()],
+    );
+    app.hooks.insert(
+        "pane-exited".to_string(),
+        vec!["set -g @exited-marker yes".to_string()],
+    );
+
     // Fire both (as the server does after reap_children)
     fire_hooks(&mut app, "pane-died");
     fire_hooks(&mut app, "pane-exited");
-    
-    assert_eq!(app.user_options.get("@died-marker").map(|s| s.as_str()), Some("yes"),
-        "pane-died hook should fire");
-    assert_eq!(app.user_options.get("@exited-marker").map(|s| s.as_str()), Some("yes"),
-        "pane-exited hook should fire");
+
+    assert_eq!(
+        app.user_options.get("@died-marker").map(|s| s.as_str()),
+        Some("yes"),
+        "pane-died hook should fire"
+    );
+    assert_eq!(
+        app.user_options.get("@exited-marker").map(|s| s.as_str()),
+        Some("yes"),
+        "pane-exited hook should fire"
+    );
 }
 
 // ============================================================================
@@ -190,16 +243,27 @@ fn pane_died_and_pane_exited_hooks_coexist() {
 #[test]
 fn fire_hooks_only_fires_named_event() {
     let mut app = mock_app_with_window();
-    app.hooks.insert("pane-died".to_string(), vec!["set -g @died yes".to_string()]);
-    app.hooks.insert("pane-exited".to_string(), vec!["set -g @exited yes".to_string()]);
-    
+    app.hooks.insert(
+        "pane-died".to_string(),
+        vec!["set -g @died yes".to_string()],
+    );
+    app.hooks.insert(
+        "pane-exited".to_string(),
+        vec!["set -g @exited yes".to_string()],
+    );
+
     // Only fire pane-died
     fire_hooks(&mut app, "pane-died");
-    
-    assert_eq!(app.user_options.get("@died").map(|s| s.as_str()), Some("yes"),
-        "pane-died should fire");
-    assert!(app.user_options.get("@exited").is_none(),
-        "pane-exited should NOT fire when only pane-died is triggered");
+
+    assert_eq!(
+        app.user_options.get("@died").map(|s| s.as_str()),
+        Some("yes"),
+        "pane-died should fire"
+    );
+    assert!(
+        app.user_options.get("@exited").is_none(),
+        "pane-exited should NOT fire when only pane-died is triggered"
+    );
 }
 
 // ============================================================================
@@ -213,8 +277,10 @@ fn set_hook_from_command_prompt() {
         cursor: 0,
     };
     execute_command_prompt(&mut app).unwrap();
-    assert!(app.hooks.contains_key("pane-died"),
-        "set-hook from command prompt should register the hook");
+    assert!(
+        app.hooks.contains_key("pane-died"),
+        "set-hook from command prompt should register the hook"
+    );
 }
 
 // ============================================================================
@@ -227,17 +293,20 @@ fn hook_set_user_option_proves_execution() {
     // Note: no surrounding quotes on the command; set-hook stores everything
     // after the hook name verbatim, and fire_hooks passes it to execute_command_string.
     execute_command_string(&mut app, "set-hook pane-died set -g @hook-proof confirmed").unwrap();
-    
+
     // Verify hook is registered
     assert!(app.hooks.contains_key("pane-died"));
-    
+
     // Fire the hook (simulating what reap_children triggers)
     fire_hooks(&mut app, "pane-died");
-    
+
     // The undeniable proof: the user option was set by the hook
     let val = app.user_options.get("@hook-proof");
-    assert_eq!(val.map(|s| s.as_str()), Some("confirmed"),
-        "Hook command must have executed and set @hook-proof=confirmed");
+    assert_eq!(
+        val.map(|s| s.as_str()),
+        Some("confirmed"),
+        "Hook command must have executed and set @hook-proof=confirmed"
+    );
 }
 
 // ============================================================================
@@ -246,21 +315,25 @@ fn hook_set_user_option_proves_execution() {
 #[test]
 fn multiple_events_multiple_commands() {
     let mut app = mock_app_with_window();
-    app.hooks.insert("pane-died".to_string(), vec![
-        "set -g @d1 yes".to_string(),
-        "set -g @d2 yes".to_string(),
-    ]);
-    app.hooks.insert("pane-exited".to_string(), vec![
-        "set -g @e1 yes".to_string(),
-        "set -g @e2 yes".to_string(),
-    ]);
-    
+    app.hooks.insert(
+        "pane-died".to_string(),
+        vec!["set -g @d1 yes".to_string(), "set -g @d2 yes".to_string()],
+    );
+    app.hooks.insert(
+        "pane-exited".to_string(),
+        vec!["set -g @e1 yes".to_string(), "set -g @e2 yes".to_string()],
+    );
+
     fire_hooks(&mut app, "pane-died");
     fire_hooks(&mut app, "pane-exited");
-    
+
     for key in &["@d1", "@d2", "@e1", "@e2"] {
-        assert_eq!(app.user_options.get(*key).map(|s| s.as_str()), Some("yes"),
-            "User option {} should be set by hook", key);
+        assert_eq!(
+            app.user_options.get(*key).map(|s| s.as_str()),
+            Some("yes"),
+            "User option {} should be set by hook",
+            key
+        );
     }
 }
 
@@ -272,7 +345,11 @@ fn show_hooks_includes_pane_died() {
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, "set-hook pane-died \"display-message test\"").unwrap();
     let output = generate_show_hooks(&app);
-    assert!(output.contains("pane-died"), "show-hooks should list pane-died, got: {}", output);
+    assert!(
+        output.contains("pane-died"),
+        "show-hooks should list pane-died, got: {}",
+        output
+    );
 }
 
 // ============================================================================
@@ -283,10 +360,12 @@ fn set_hook_gu_removes_hook() {
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, "set-hook pane-exited \"set -g @exited yes\"").unwrap();
     assert!(app.hooks.contains_key("pane-exited"));
-    
+
     execute_command_string(&mut app, "set-hook -gu pane-exited").unwrap();
-    assert!(!app.hooks.contains_key("pane-exited"),
-        "-gu should remove pane-exited hook");
+    assert!(
+        !app.hooks.contains_key("pane-exited"),
+        "-gu should remove pane-exited hook"
+    );
 }
 
 // ============================================================================
@@ -297,11 +376,17 @@ fn set_hook_ga_appends_hook() {
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, "set-hook pane-died set -g @first yes").unwrap();
     execute_command_string(&mut app, "set-hook -ga pane-died set -g @second yes").unwrap();
-    
+
     let cmds = app.hooks.get("pane-died").unwrap();
     assert_eq!(cmds.len(), 2, "-ga should append, not replace");
-    
+
     fire_hooks(&mut app, "pane-died");
-    assert_eq!(app.user_options.get("@first").map(|s| s.as_str()), Some("yes"));
-    assert_eq!(app.user_options.get("@second").map(|s| s.as_str()), Some("yes"));
+    assert_eq!(
+        app.user_options.get("@first").map(|s| s.as_str()),
+        Some("yes")
+    );
+    assert_eq!(
+        app.user_options.get("@second").map(|s| s.as_str()),
+        Some("yes")
+    );
 }

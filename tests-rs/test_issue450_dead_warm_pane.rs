@@ -18,7 +18,12 @@ use super::*;
 fn test_app() -> AppState {
     let mut app = AppState::new("issue450_test".to_string());
     app.warm_enabled = true;
-    app.last_window_area = ratatui::prelude::Rect { x: 0, y: 0, width: 100, height: 30 };
+    app.last_window_area = ratatui::prelude::Rect {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 30,
+    };
     app
 }
 

@@ -50,13 +50,27 @@ fn build_lines_from_screen(screen: &vt100::Screen, rows: u16, cols: u16) -> Vec<
                 let fg = vt_to_color(cell.fgcolor());
                 let bg = vt_to_color(cell.bgcolor());
                 let mut style = Style::default().fg(fg).bg(bg);
-                if cell.dim() { style = style.add_modifier(Modifier::DIM); }
-                if cell.bold() { style = style.add_modifier(Modifier::BOLD); }
-                if cell.italic() { style = style.add_modifier(Modifier::ITALIC); }
-                if cell.underline() { style = style.add_modifier(Modifier::UNDERLINED); }
-                if cell.inverse() { style = style.add_modifier(Modifier::REVERSED); }
-                if cell.blink() { style = style.add_modifier(Modifier::SLOW_BLINK); }
-                if cell.strikethrough() { style = style.add_modifier(Modifier::CROSSED_OUT); }
+                if cell.dim() {
+                    style = style.add_modifier(Modifier::DIM);
+                }
+                if cell.bold() {
+                    style = style.add_modifier(Modifier::BOLD);
+                }
+                if cell.italic() {
+                    style = style.add_modifier(Modifier::ITALIC);
+                }
+                if cell.underline() {
+                    style = style.add_modifier(Modifier::UNDERLINED);
+                }
+                if cell.inverse() {
+                    style = style.add_modifier(Modifier::REVERSED);
+                }
+                if cell.blink() {
+                    style = style.add_modifier(Modifier::SLOW_BLINK);
+                }
+                if cell.strikethrough() {
+                    style = style.add_modifier(Modifier::CROSSED_OUT);
+                }
                 let text = if cell.hidden() {
                     " ".to_string()
                 } else {
@@ -104,11 +118,19 @@ fn main() {
     println!("=== Parser cell state ===");
     for col in 0..6 {
         let cell = screen.cell(0, col).unwrap();
-        println!("  cell(0,{col}): '{}' strikethrough={} hidden={}",
-            cell.contents(), cell.strikethrough(), cell.hidden());
+        println!(
+            "  cell(0,{col}): '{}' strikethrough={} hidden={}",
+            cell.contents(),
+            cell.strikethrough(),
+            cell.hidden()
+        );
     }
     let hcell = screen.cell(0, 15).unwrap();
-    println!("  cell(0,15): '{}' hidden={}", hcell.contents(), hcell.hidden());
+    println!(
+        "  cell(0,15): '{}' hidden={}",
+        hcell.contents(),
+        hcell.hidden()
+    );
 
     // Step 2: Build lines exactly as render_node does
     let lines = build_lines_from_screen(screen, rows, cols);
@@ -138,7 +160,9 @@ fn main() {
             self.0.borrow_mut().extend_from_slice(buf);
             Ok(buf.len())
         }
-        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
     {
         let backend = CrosstermBackend::new(SharedWriter(&output_bytes));
@@ -146,44 +170,65 @@ fn main() {
         terminal.resize(Rect::new(0, 0, cols, rows)).unwrap();
 
         // Frame 1: initial render
-        terminal.draw(|f| {
-            let area = f.area();
-            f.render_widget(Clear, area);
-            let para = Paragraph::new(Text::from(lines.clone()));
-            f.render_widget(para, area);
-        }).unwrap();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                f.render_widget(Clear, area);
+                let para = Paragraph::new(Text::from(lines.clone()));
+                f.render_widget(para, area);
+            })
+            .unwrap();
 
         let frame1_len = output_bytes.borrow().len();
         println!("\n=== Frame 1 output: {} bytes ===", frame1_len);
         let f1 = String::from_utf8_lossy(&output_bytes.borrow()).to_string();
-        let f1_esc: String = f1.chars().map(|c| {
-            if c == '\x1b' { "\\e".to_string() }
-            else if c.is_control() { format!("\\x{:02x}", c as u32) }
-            else { c.to_string() }
-        }).collect();
+        let f1_esc: String = f1
+            .chars()
+            .map(|c| {
+                if c == '\x1b' {
+                    "\\e".to_string()
+                } else if c.is_control() {
+                    format!("\\x{:02x}", c as u32)
+                } else {
+                    c.to_string()
+                }
+            })
+            .collect();
         println!("{}", &f1_esc[..f1_esc.len().min(400)]);
         println!("Frame 1 has \\e[9m: {}", f1.contains("\x1b[9m"));
 
         // Frame 2: same content (simulates steady-state redraw)
-        terminal.draw(|f| {
-            let area = f.area();
-            f.render_widget(Clear, area);
-            let para = Paragraph::new(Text::from(lines.clone()));
-            f.render_widget(para, area);
-        }).unwrap();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                f.render_widget(Clear, area);
+                let para = Paragraph::new(Text::from(lines.clone()));
+                f.render_widget(para, area);
+            })
+            .unwrap();
 
         let total_after_f2 = output_bytes.borrow().len();
         let frame2_bytes = total_after_f2 - frame1_len;
-        println!("\n=== Frame 2 output: {} more bytes (diff only) ===", frame2_bytes);
+        println!(
+            "\n=== Frame 2 output: {} more bytes (diff only) ===",
+            frame2_bytes
+        );
         if frame2_bytes > 0 {
             let all = output_bytes.borrow();
             let f2_slice = &all[frame1_len..];
             let f2 = String::from_utf8_lossy(f2_slice).to_string();
-            let f2_esc: String = f2.chars().map(|c| {
-                if c == '\x1b' { "\\e".to_string() }
-                else if c.is_control() { format!("\\x{:02x}", c as u32) }
-                else { c.to_string() }
-            }).collect();
+            let f2_esc: String = f2
+                .chars()
+                .map(|c| {
+                    if c == '\x1b' {
+                        "\\e".to_string()
+                    } else if c.is_control() {
+                        format!("\\x{:02x}", c as u32)
+                    } else {
+                        c.to_string()
+                    }
+                })
+                .collect();
             println!("{}", &f2_esc[..f2_esc.len().min(400)]);
             // Check if frame 2 has a stray \e[0m that resets everything
             if f2.contains("\x1b[0m") {
@@ -200,25 +245,37 @@ fn main() {
         parser2.process(b"line3");
         let lines2 = build_lines_from_screen(parser2.screen(), rows, cols);
 
-        terminal.draw(|f| {
-            let area = f.area();
-            f.render_widget(Clear, area);
-            let para = Paragraph::new(Text::from(lines2));
-            f.render_widget(para, area);
-        }).unwrap();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                f.render_widget(Clear, area);
+                let para = Paragraph::new(Text::from(lines2));
+                f.render_widget(para, area);
+            })
+            .unwrap();
 
         let total_after_f3 = output_bytes.borrow().len();
         let frame3_bytes = total_after_f3 - total_after_f2;
-        println!("\n=== Frame 3 output: {} more bytes (new content) ===", frame3_bytes);
+        println!(
+            "\n=== Frame 3 output: {} more bytes (new content) ===",
+            frame3_bytes
+        );
         if frame3_bytes > 0 {
             let all = output_bytes.borrow();
             let f3_slice = &all[total_after_f2..];
             let f3 = String::from_utf8_lossy(f3_slice).to_string();
-            let f3_esc: String = f3.chars().map(|c| {
-                if c == '\x1b' { "\\e".to_string() }
-                else if c.is_control() { format!("\\x{:02x}", c as u32) }
-                else { c.to_string() }
-            }).collect();
+            let f3_esc: String = f3
+                .chars()
+                .map(|c| {
+                    if c == '\x1b' {
+                        "\\e".to_string()
+                    } else if c.is_control() {
+                        format!("\\x{:02x}", c as u32)
+                    } else {
+                        c.to_string()
+                    }
+                })
+                .collect();
             println!("{}", &f3_esc[..f3_esc.len().min(400)]);
             println!("Frame 3 has \\e[9m: {}", f3.contains("\x1b[9m"));
         }
@@ -248,13 +305,23 @@ fn main() {
 
     // Dump the first 500 chars of escaped output
     println!("\n=== Raw output (escaped, first 800 chars) ===");
-    let escaped: String = out_str.chars().take(800).map(|c| {
-        if c == '\x1b' { "\\e".to_string() }
-        else if c == '\r' { "\\r".to_string() }
-        else if c == '\n' { "\\n".to_string() }
-        else if c.is_control() { format!("\\x{:02x}", c as u32) }
-        else { c.to_string() }
-    }).collect();
+    let escaped: String = out_str
+        .chars()
+        .take(800)
+        .map(|c| {
+            if c == '\x1b' {
+                "\\e".to_string()
+            } else if c == '\r' {
+                "\\r".to_string()
+            } else if c == '\n' {
+                "\\n".to_string()
+            } else if c.is_control() {
+                format!("\\x{:02x}", c as u32)
+            } else {
+                c.to_string()
+            }
+        })
+        .collect();
     println!("{escaped}");
 
     // Step 6: Check the ratatui buffer state directly
@@ -272,10 +339,17 @@ fn main() {
             let buf = f.buffer_mut();
             for col in 0..6u16 {
                 let bcell = &buf[(col, 0u16)];
-                println!("  buf[({col},0)]: '{}' modifier={:?}",
-                    bcell.symbol(), bcell.modifier);
+                println!(
+                    "  buf[({col},0)]: '{}' modifier={:?}",
+                    bcell.symbol(),
+                    bcell.modifier
+                );
             }
-            println!("  buf[(7,0)]: '{}' modifier={:?}", buf[(7u16, 0u16)].symbol(), buf[(7u16, 0u16)].modifier);
+            println!(
+                "  buf[(7,0)]: '{}' modifier={:?}",
+                buf[(7u16, 0u16)].symbol(),
+                buf[(7u16, 0u16)].modifier
+            );
         });
     }
 
@@ -293,4 +367,3 @@ fn main() {
         println!("FAIL: Hidden (\\e[8m) leaked into output");
     }
 }
-

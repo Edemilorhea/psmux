@@ -1,14 +1,14 @@
 use std::io;
-use std::sync::{Arc, Condvar, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 
-use crate::types::{AppState, Pane, Node, LayoutKind, Window};
-use crate::tree::{replace_leaf_with_split, active_pane_mut, kill_leaf};
 use crate::format::hostname_cached;
+use crate::tree::{active_pane_mut, kill_leaf, replace_leaf_with_split};
+use crate::types::{AppState, LayoutKind, Node, Pane, Window};
 
 /// Sentinel value for cursor_shape: means "no DECSCUSR received from child yet".
 /// When ConPTY passthrough mode is unavailable, DECSCUSR sequences from child
@@ -37,12 +37,15 @@ static CACHED_SHELL_PATH: std::sync::OnceLock<Option<String>> = std::sync::OnceL
 
 /// Get the cached shell path, resolving via `which` only on first call.
 pub fn cached_shell() -> Option<&'static str> {
-    CACHED_SHELL_PATH.get_or_init(|| {
-        which::which("pwsh").ok()
-            .or_else(|| which::which("powershell").ok())
-            .or_else(|| which::which("cmd").ok())
-            .map(|p| p.to_string_lossy().into_owned())
-    }).as_deref()
+    CACHED_SHELL_PATH
+        .get_or_init(|| {
+            which::which("pwsh")
+                .ok()
+                .or_else(|| which::which("powershell").ok())
+                .or_else(|| which::which("cmd").ok())
+                .map(|p| p.to_string_lossy().into_owned())
+        })
+        .as_deref()
 }
 
 /// Determine the default shell name for window naming (like tmux shows "bash", "zsh").
@@ -66,7 +69,11 @@ fn default_shell_name(command: Option<&str>, configured_shell: Option<&str>) -> 
     } else {
         // Default shell — use cached resolved path
         cached_shell()
-            .and_then(|p| std::path::Path::new(p).file_stem().map(|s| s.to_string_lossy().into_owned()))
+            .and_then(|p| {
+                std::path::Path::new(p)
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+            })
             .unwrap_or_else(|| "shell".into())
     }
 }
@@ -108,7 +115,13 @@ pub(crate) fn silent_rehome(pane: &mut Pane, dir: &str) {
     let _ = pane.writer.flush();
 }
 
-pub fn create_window(pty_system: &dyn portable_pty::PtySystem, app: &mut AppState, command: Option<&str>, start_dir: Option<&str>, empty: bool) -> io::Result<()> {
+pub fn create_window(
+    pty_system: &dyn portable_pty::PtySystem,
+    app: &mut AppState,
+    command: Option<&str>,
+    start_dir: Option<&str>,
+    empty: bool,
+) -> io::Result<()> {
     // ── Empty window (tmux new-window -E): a new window whose single pane has
     // no command/process. It renders blank until respawn-pane gives it one. ──
     if empty {
@@ -118,7 +131,24 @@ pub fn create_window(pty_system: &dyn portable_pty::PtySystem, app: &mut AppStat
         let pane_id = app.next_pane_id;
         if let Some(pane) = crate::popup::create_empty_pane(rows, cols, pane_id) {
             app.next_pane_id += 1;
-            app.windows.push(Window { root: Node::Leaf(pane), active_path: vec![], name: hostname_cached(), id: app.next_win_id, activity_flag: false, bell_flag: false, silence_flag: false, last_output_time: std::time::Instant::now(), last_seen_version: 0, manual_rename: false, layout_index: 0, pane_mru: vec![pane_id], zoom_saved: None, linked_from: None, floating: Vec::new(), floating_focus: None });
+            app.windows.push(Window {
+                root: Node::Leaf(pane),
+                active_path: vec![],
+                name: hostname_cached(),
+                id: app.next_win_id,
+                activity_flag: false,
+                bell_flag: false,
+                silence_flag: false,
+                last_output_time: std::time::Instant::now(),
+                last_seen_version: 0,
+                manual_rename: false,
+                layout_index: 0,
+                pane_mru: vec![pane_id],
+                zoom_saved: None,
+                linked_from: None,
+                floating: Vec::new(),
+                floating_focus: None,
+            });
             app.next_win_id += 1;
             app.active_idx = app.windows.len() - 1;
             app.on_window_appended();
@@ -146,7 +176,12 @@ pub fn create_window(pty_system: &dyn portable_pty::PtySystem, app: &mut AppStat
         // through to the synchronous cold-spawn path below.
         let mut live = warm_pane_is_live(&mut wp);
         if live && need_resize {
-            let size = PtySize { rows, cols, pixel_width: 0, pixel_height: 0 };
+            let size = PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            };
             live = wp.master.resize(size).is_ok();
         }
         if live {
@@ -161,15 +196,64 @@ pub fn create_window(pty_system: &dyn portable_pty::PtySystem, app: &mut AppStat
                 crate::warm_pane_sync::reconcile_consumed_parser(&mut parser, app);
             }
             let epoch = std::time::Instant::now() - Duration::from_secs(2);
-            let configured_shell = if app.default_shell.is_empty() { None } else { Some(app.default_shell.as_str()) };
-            let mut pane = Pane { master: wp.master, writer: wp.writer, child: wp.child, term: wp.term, last_rows: rows, last_cols: cols, id: wp.pane_id, title: hostname_cached(), title_locked: false, child_pid: wp.child_pid, data_version: wp.data_version, last_title_check: epoch, last_infer_title: epoch, dead: false, last_text_input: None, last_special_key: None, vt_bridge_cache: None, vti_mode_cache: None, mouse_input_cache: None, cursor_shape: wp.cursor_shape, bell_pending: wp.bell_pending, cpr_pending: wp.cpr_pending, copy_state: None, pane_style: None, squelch_until: None, output_ring: wp.output_ring, spawned_at: Some(std::time::Instant::now()) };
+            let configured_shell = if app.default_shell.is_empty() {
+                None
+            } else {
+                Some(app.default_shell.as_str())
+            };
+            let mut pane = Pane {
+                master: wp.master,
+                writer: wp.writer,
+                child: wp.child,
+                term: wp.term,
+                last_rows: rows,
+                last_cols: cols,
+                id: wp.pane_id,
+                title: hostname_cached(),
+                title_locked: false,
+                child_pid: wp.child_pid,
+                data_version: wp.data_version,
+                last_title_check: epoch,
+                last_infer_title: epoch,
+                dead: false,
+                last_text_input: None,
+                last_special_key: None,
+                vt_bridge_cache: None,
+                vti_mode_cache: None,
+                mouse_input_cache: None,
+                cursor_shape: wp.cursor_shape,
+                bell_pending: wp.bell_pending,
+                cpr_pending: wp.cpr_pending,
+                copy_state: None,
+                pane_style: None,
+                squelch_until: None,
+                output_ring: wp.output_ring,
+                spawned_at: Some(std::time::Instant::now()),
+            };
             // Honour `-c <dir>`: silently re-home the transplanted warm shell.
             if let Some(dir) = start_dir {
                 silent_rehome(&mut pane, dir);
             }
             let win_name = default_shell_name(None, configured_shell);
             let initial_pane_id = wp.pane_id;
-            app.windows.push(Window { root: Node::Leaf(pane), active_path: vec![], name: win_name, id: app.next_win_id, activity_flag: false, bell_flag: false, silence_flag: false, last_output_time: std::time::Instant::now(), last_seen_version: 0, manual_rename: false, layout_index: 0, pane_mru: vec![initial_pane_id], zoom_saved: None, linked_from: None, floating: Vec::new(), floating_focus: None });
+            app.windows.push(Window {
+                root: Node::Leaf(pane),
+                active_path: vec![],
+                name: win_name,
+                id: app.next_win_id,
+                activity_flag: false,
+                bell_flag: false,
+                silence_flag: false,
+                last_output_time: std::time::Instant::now(),
+                last_seen_version: 0,
+                manual_rename: false,
+                layout_index: 0,
+                pane_mru: vec![initial_pane_id],
+                zoom_saved: None,
+                linked_from: None,
+                floating: Vec::new(),
+                floating_focus: None,
+            });
             app.next_win_id += 1;
             app.active_idx = app.windows.len() - 1;
             app.on_window_appended();
@@ -183,7 +267,12 @@ pub fn create_window(pty_system: &dyn portable_pty::PtySystem, app: &mut AppStat
     let area = app.last_window_area;
     let rows = if area.height > 1 { area.height } else { 30 }.max(MIN_PANE_DIM);
     let cols = if area.width > 1 { area.width } else { 120 }.max(MIN_PANE_DIM);
-    let size = PtySize { rows, cols, pixel_width: 0, pixel_height: 0 };
+    let size = PtySize {
+        rows,
+        cols,
+        pixel_width: 0,
+        pixel_height: 0,
+    };
     let pair = pty_system
         .openpty(size)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("openpty error: {e}")))?;
@@ -203,7 +292,15 @@ pub fn create_window(pty_system: &dyn portable_pty::PtySystem, app: &mut AppStat
     if let Some(dir) = start_dir {
         shell_cmd.cwd(std::path::Path::new(dir));
     }
-    set_tmux_env(&mut shell_cmd, app.next_pane_id, app.control_port, app.socket_name.as_deref(), &app.session_name, app.claude_code_fix_tty, app.claude_code_force_interactive);
+    set_tmux_env(
+        &mut shell_cmd,
+        app.next_pane_id,
+        app.control_port,
+        app.socket_name.as_deref(),
+        &app.session_name,
+        app.claude_code_fix_tty,
+        app.claude_code_force_interactive,
+    );
     apply_user_environment(&mut shell_cmd, &app.environment);
     let child = pair
         .slave
@@ -216,7 +313,9 @@ pub fn create_window(pty_system: &dyn portable_pty::PtySystem, app: &mut AppStat
 
     let scrollback = app.history_limit as u32;
     let mut parser = vt100::Parser::new(size.rows, size.cols, scrollback as usize);
-    parser.screen_mut().set_allow_alternate_screen(app.allow_alternate_screen);
+    parser
+        .screen_mut()
+        .set_allow_alternate_screen(app.allow_alternate_screen);
     let term: Arc<Mutex<vt100::Parser>> = Arc::new(Mutex::new(parser));
     let term_reader = term.clone();
     let data_version = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -232,20 +331,84 @@ pub fn create_window(pty_system: &dyn portable_pty::PtySystem, app: &mut AppStat
         .try_clone_reader()
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("clone reader error: {e}")))?;
 
-    let output_ring = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::<u8>::new()));
-    spawn_reader_thread(reader, term_reader, dv_writer, cs_writer, bell_writer, cpr_writer, output_ring.clone(), app.next_pane_id);
+    let output_ring = std::sync::Arc::new(std::sync::Mutex::new(
+        std::collections::VecDeque::<u8>::new(),
+    ));
+    spawn_reader_thread(
+        reader,
+        term_reader,
+        dv_writer,
+        cs_writer,
+        bell_writer,
+        cpr_writer,
+        output_ring.clone(),
+        app.next_pane_id,
+    );
 
-    let configured_shell = if app.default_shell.is_empty() { None } else { Some(app.default_shell.as_str()) };
+    let configured_shell = if app.default_shell.is_empty() {
+        None
+    } else {
+        Some(app.default_shell.as_str())
+    };
     let child_pid = crate::platform::mouse_inject::get_child_pid(&*child);
-    let mut pty_writer = pair.master.take_writer()
+    let mut pty_writer = pair
+        .master
+        .take_writer()
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("take writer error: {e}")))?;
     conpty_preemptive_dsr_response(&mut *pty_writer);
     let epoch = std::time::Instant::now() - Duration::from_secs(2);
     let pane_id = app.next_pane_id;
-    let pane = Pane { master: pair.master, writer: pty_writer, child, term, last_rows: size.rows, last_cols: size.cols, id: pane_id, title: hostname_cached(), title_locked: false, child_pid, data_version, last_title_check: epoch, last_infer_title: epoch, dead: false, last_text_input: None, last_special_key: None, vt_bridge_cache: None, vti_mode_cache: None, mouse_input_cache: None, cursor_shape, bell_pending, cpr_pending, copy_state: None, pane_style: None, squelch_until: None, output_ring, spawned_at: Some(std::time::Instant::now()) };
+    let pane = Pane {
+        master: pair.master,
+        writer: pty_writer,
+        child,
+        term,
+        last_rows: size.rows,
+        last_cols: size.cols,
+        id: pane_id,
+        title: hostname_cached(),
+        title_locked: false,
+        child_pid,
+        data_version,
+        last_title_check: epoch,
+        last_infer_title: epoch,
+        dead: false,
+        last_text_input: None,
+        last_special_key: None,
+        vt_bridge_cache: None,
+        vti_mode_cache: None,
+        mouse_input_cache: None,
+        cursor_shape,
+        bell_pending,
+        cpr_pending,
+        copy_state: None,
+        pane_style: None,
+        squelch_until: None,
+        output_ring,
+        spawned_at: Some(std::time::Instant::now()),
+    };
     app.next_pane_id += 1;
-    let win_name = command.map(|c| default_shell_name(Some(c), None)).unwrap_or_else(|| default_shell_name(None, configured_shell));
-    app.windows.push(Window { root: Node::Leaf(pane), active_path: vec![], name: win_name, id: app.next_win_id, activity_flag: false, bell_flag: false, silence_flag: false, last_output_time: std::time::Instant::now(), last_seen_version: 0, manual_rename: false, layout_index: 0, pane_mru: vec![pane_id], zoom_saved: None, linked_from: None, floating: Vec::new(), floating_focus: None });
+    let win_name = command
+        .map(|c| default_shell_name(Some(c), None))
+        .unwrap_or_else(|| default_shell_name(None, configured_shell));
+    app.windows.push(Window {
+        root: Node::Leaf(pane),
+        active_path: vec![],
+        name: win_name,
+        id: app.next_win_id,
+        activity_flag: false,
+        bell_flag: false,
+        silence_flag: false,
+        last_output_time: std::time::Instant::now(),
+        last_seen_version: 0,
+        manual_rename: false,
+        layout_index: 0,
+        pane_mru: vec![pane_id],
+        zoom_saved: None,
+        linked_from: None,
+        floating: Vec::new(),
+        floating_focus: None,
+    });
     app.next_win_id += 1;
     app.active_idx = app.windows.len() - 1;
     app.on_window_appended();
@@ -266,14 +429,22 @@ pub fn warm_pane_is_live(wp: &mut crate::types::WarmPane) -> bool {
 /// its reader thread already running — by the time the user creates a new window
 /// (typically 500ms+), pwsh will have fully loaded its profile and the prompt
 /// is ready.
-pub fn spawn_warm_pane(pty_system: &dyn portable_pty::PtySystem, app: &mut AppState) -> io::Result<crate::types::WarmPane> {
+pub fn spawn_warm_pane(
+    pty_system: &dyn portable_pty::PtySystem,
+    app: &mut AppState,
+) -> io::Result<crate::types::WarmPane> {
     if !app.warm_enabled {
         return Err(io::Error::new(io::ErrorKind::Other, "warm panes disabled"));
     }
     let area = app.last_window_area;
     let rows = if area.height > 1 { area.height } else { 30 }.max(MIN_PANE_DIM);
     let cols = if area.width > 1 { area.width } else { 120 }.max(MIN_PANE_DIM);
-    let size = PtySize { rows, cols, pixel_width: 0, pixel_height: 0 };
+    let size = PtySize {
+        rows,
+        cols,
+        pixel_width: 0,
+        pixel_height: 0,
+    };
     let pair = pty_system
         .openpty(size)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("openpty error: {e}")))?;
@@ -286,15 +457,26 @@ pub fn spawn_warm_pane(pty_system: &dyn portable_pty::PtySystem, app: &mut AppSt
     };
     let pane_id = app.next_pane_id;
     app.next_pane_id += 1;
-    set_tmux_env(&mut shell_cmd, pane_id, app.control_port, app.socket_name.as_deref(), &app.session_name, app.claude_code_fix_tty, app.claude_code_force_interactive);
+    set_tmux_env(
+        &mut shell_cmd,
+        pane_id,
+        app.control_port,
+        app.socket_name.as_deref(),
+        &app.session_name,
+        app.claude_code_fix_tty,
+        app.claude_code_force_interactive,
+    );
     apply_user_environment(&mut shell_cmd, &app.environment);
-    let child = pair.slave
+    let child = pair
+        .slave
         .spawn_command(shell_cmd)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("spawn shell error: {e}")))?;
     drop(pair.slave);
     let scrollback = app.history_limit as u32;
     let mut parser = vt100::Parser::new(rows, cols, scrollback as usize);
-    parser.screen_mut().set_allow_alternate_screen(app.allow_alternate_screen);
+    parser
+        .screen_mut()
+        .set_allow_alternate_screen(app.allow_alternate_screen);
     let term: Arc<Mutex<vt100::Parser>> = Arc::new(Mutex::new(parser));
     let term_reader = term.clone();
     let data_version = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -305,16 +487,44 @@ pub fn spawn_warm_pane(pty_system: &dyn portable_pty::PtySystem, app: &mut AppSt
     let bell_writer = bell_pending.clone();
     let cpr_pending = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let cpr_writer = cpr_pending.clone();
-    let reader = pair.master
+    let reader = pair
+        .master
         .try_clone_reader()
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("clone reader error: {e}")))?;
-    let output_ring = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::<u8>::new()));
-    spawn_reader_thread(reader, term_reader, dv_writer, cs_writer, bell_writer, cpr_writer, output_ring.clone(), pane_id);
+    let output_ring = std::sync::Arc::new(std::sync::Mutex::new(
+        std::collections::VecDeque::<u8>::new(),
+    ));
+    spawn_reader_thread(
+        reader,
+        term_reader,
+        dv_writer,
+        cs_writer,
+        bell_writer,
+        cpr_writer,
+        output_ring.clone(),
+        pane_id,
+    );
     let child_pid = crate::platform::mouse_inject::get_child_pid(&*child);
-    let mut pty_writer = pair.master.take_writer()
+    let mut pty_writer = pair
+        .master
+        .take_writer()
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("take writer error: {e}")))?;
     conpty_preemptive_dsr_response(&mut *pty_writer);
-    Ok(crate::types::WarmPane { master: pair.master, writer: pty_writer, child, term, data_version, cursor_shape, bell_pending, cpr_pending, child_pid, pane_id, rows, cols, output_ring })
+    Ok(crate::types::WarmPane {
+        master: pair.master,
+        writer: pty_writer,
+        child,
+        term,
+        data_version,
+        cursor_shape,
+        bell_pending,
+        cpr_pending,
+        child_pid,
+        pane_id,
+        rows,
+        cols,
+        output_ring,
+    })
 }
 
 pub fn split_active(app: &mut AppState, kind: LayoutKind) -> io::Result<()> {
@@ -322,17 +532,34 @@ pub fn split_active(app: &mut AppState, kind: LayoutKind) -> io::Result<()> {
 }
 
 /// Create a new window with a raw command (program + args, no shell wrapping)
-pub fn create_window_raw(pty_system: &dyn portable_pty::PtySystem, app: &mut AppState, raw_args: &[String]) -> io::Result<()> {
+pub fn create_window_raw(
+    pty_system: &dyn portable_pty::PtySystem,
+    app: &mut AppState,
+    raw_args: &[String],
+) -> io::Result<()> {
     let area = app.last_window_area;
     let rows = if area.height > 1 { area.height } else { 30 };
     let cols = if area.width > 1 { area.width } else { 120 };
-    let size = PtySize { rows, cols, pixel_width: 0, pixel_height: 0 };
+    let size = PtySize {
+        rows,
+        cols,
+        pixel_width: 0,
+        pixel_height: 0,
+    };
     let pair = pty_system
         .openpty(size)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("openpty error: {e}")))?;
 
     let mut shell_cmd = build_raw_command(raw_args);
-    set_tmux_env(&mut shell_cmd, app.next_pane_id, app.control_port, app.socket_name.as_deref(), &app.session_name, app.claude_code_fix_tty, app.claude_code_force_interactive);
+    set_tmux_env(
+        &mut shell_cmd,
+        app.next_pane_id,
+        app.control_port,
+        app.socket_name.as_deref(),
+        &app.session_name,
+        app.claude_code_fix_tty,
+        app.claude_code_force_interactive,
+    );
     apply_user_environment(&mut shell_cmd, &app.environment);
     let child = pair
         .slave
@@ -343,7 +570,9 @@ pub fn create_window_raw(pty_system: &dyn portable_pty::PtySystem, app: &mut App
 
     let scrollback = app.history_limit;
     let mut parser = vt100::Parser::new(size.rows, size.cols, scrollback);
-    parser.screen_mut().set_allow_alternate_screen(app.allow_alternate_screen);
+    parser
+        .screen_mut()
+        .set_allow_alternate_screen(app.allow_alternate_screen);
     let term: Arc<Mutex<vt100::Parser>> = Arc::new(Mutex::new(parser));
     let term_reader = term.clone();
     let data_version = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -359,19 +588,81 @@ pub fn create_window_raw(pty_system: &dyn portable_pty::PtySystem, app: &mut App
         .try_clone_reader()
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("clone reader error: {e}")))?;
 
-    let output_ring = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::<u8>::new()));
-    spawn_reader_thread(reader, term_reader, dv_writer, cs_writer, bell_writer, cpr_writer, output_ring.clone(), app.next_pane_id);
+    let output_ring = std::sync::Arc::new(std::sync::Mutex::new(
+        std::collections::VecDeque::<u8>::new(),
+    ));
+    spawn_reader_thread(
+        reader,
+        term_reader,
+        dv_writer,
+        cs_writer,
+        bell_writer,
+        cpr_writer,
+        output_ring.clone(),
+        app.next_pane_id,
+    );
 
     let child_pid = crate::platform::mouse_inject::get_child_pid(&*child);
-    let mut pty_writer = pair.master.take_writer()
+    let mut pty_writer = pair
+        .master
+        .take_writer()
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("take writer error: {e}")))?;
     conpty_preemptive_dsr_response(&mut *pty_writer);
     let epoch = std::time::Instant::now() - Duration::from_secs(2);
     let raw_pane_id = app.next_pane_id;
-    let pane = Pane { master: pair.master, writer: pty_writer, child, term, last_rows: size.rows, last_cols: size.cols, id: raw_pane_id, title: hostname_cached(), title_locked: false, child_pid, data_version, last_title_check: epoch, last_infer_title: epoch, dead: false, last_text_input: None, last_special_key: None, vt_bridge_cache: None, vti_mode_cache: None, mouse_input_cache: None, cursor_shape, bell_pending, cpr_pending, copy_state: None, pane_style: None, squelch_until: None, output_ring, spawned_at: Some(std::time::Instant::now()) };
+    let pane = Pane {
+        master: pair.master,
+        writer: pty_writer,
+        child,
+        term,
+        last_rows: size.rows,
+        last_cols: size.cols,
+        id: raw_pane_id,
+        title: hostname_cached(),
+        title_locked: false,
+        child_pid,
+        data_version,
+        last_title_check: epoch,
+        last_infer_title: epoch,
+        dead: false,
+        last_text_input: None,
+        last_special_key: None,
+        vt_bridge_cache: None,
+        vti_mode_cache: None,
+        mouse_input_cache: None,
+        cursor_shape,
+        bell_pending,
+        cpr_pending,
+        copy_state: None,
+        pane_style: None,
+        squelch_until: None,
+        output_ring,
+        spawned_at: Some(std::time::Instant::now()),
+    };
     app.next_pane_id += 1;
-    let win_name = std::path::Path::new(&raw_args[0]).file_stem().and_then(|s| s.to_str()).unwrap_or(&raw_args[0]).to_string();
-    app.windows.push(Window { root: Node::Leaf(pane), active_path: vec![], name: win_name, id: app.next_win_id, activity_flag: false, bell_flag: false, silence_flag: false, last_output_time: std::time::Instant::now(), last_seen_version: 0, manual_rename: false, layout_index: 0, pane_mru: vec![raw_pane_id], zoom_saved: None, linked_from: None, floating: Vec::new(), floating_focus: None });
+    let win_name = std::path::Path::new(&raw_args[0])
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(&raw_args[0])
+        .to_string();
+    app.windows.push(Window {
+        root: Node::Leaf(pane),
+        active_path: vec![],
+        name: win_name,
+        id: app.next_win_id,
+        activity_flag: false,
+        bell_flag: false,
+        silence_flag: false,
+        last_output_time: std::time::Instant::now(),
+        last_seen_version: 0,
+        manual_rename: false,
+        layout_index: 0,
+        pane_mru: vec![raw_pane_id],
+        zoom_saved: None,
+        linked_from: None,
+        floating: Vec::new(),
+        floating_focus: None,
+    });
     app.next_win_id += 1;
     app.active_idx = app.windows.len() - 1;
     app.on_window_appended();
@@ -388,7 +679,13 @@ const MIN_SPLIT_ROWS: u16 = 2;
 /// Minimum cols for a split to be allowed.
 const MIN_SPLIT_COLS: u16 = 10;
 
-pub fn split_active_with_command(app: &mut AppState, kind: LayoutKind, command: Option<&str>, pty_system_ref: Option<&dyn portable_pty::PtySystem>, start_dir: Option<&str>) -> io::Result<()> {
+pub fn split_active_with_command(
+    app: &mut AppState,
+    kind: LayoutKind,
+    command: Option<&str>,
+    pty_system_ref: Option<&dyn portable_pty::PtySystem>,
+    start_dir: Option<&str>,
+) -> io::Result<()> {
     // ── Guard: refuse split if the active pane is too small ──────────
     // After splitting, each half gets roughly (dim / 2) - 1 (for the divider).
     // If that would be below MIN_PANE_DIM, deny the split to avoid crashing
@@ -401,15 +698,25 @@ pub fn split_active_with_command(app: &mut AppState, kind: LayoutKind, command: 
                 LayoutKind::Vertical => {
                     // Splitting vertically divides height; need room for 2 panes + 1 divider
                     if cur_rows < MIN_SPLIT_ROWS * 2 + 1 {
-                        return Err(io::Error::new(io::ErrorKind::Other,
-                            format!("pane too small to split vertically ({cur_rows} rows, need {})", MIN_SPLIT_ROWS * 2 + 1)));
+                        return Err(io::Error::new(
+                            io::ErrorKind::Other,
+                            format!(
+                                "pane too small to split vertically ({cur_rows} rows, need {})",
+                                MIN_SPLIT_ROWS * 2 + 1
+                            ),
+                        ));
                     }
                 }
                 LayoutKind::Horizontal => {
                     // Splitting horizontally divides width; need room for 2 panes + 1 divider
                     if cur_cols < MIN_SPLIT_COLS * 2 + 1 {
-                        return Err(io::Error::new(io::ErrorKind::Other,
-                            format!("pane too small to split horizontally ({cur_cols} cols, need {})", MIN_SPLIT_COLS * 2 + 1)));
+                        return Err(io::Error::new(
+                            io::ErrorKind::Other,
+                            format!(
+                                "pane too small to split horizontally ({cur_cols} cols, need {})",
+                                MIN_SPLIT_COLS * 2 + 1
+                            ),
+                        ));
                     }
                 }
             }
@@ -433,7 +740,10 @@ pub fn split_active_with_command(app: &mut AppState, kind: LayoutKind, command: 
             (p.last_rows, p.last_cols)
         } else {
             let area = app.last_window_area;
-            (if area.height > 1 { area.height } else { 30 }, if area.width > 1 { area.width } else { 120 })
+            (
+                if area.height > 1 { area.height } else { 30 },
+                if area.width > 1 { area.width } else { 120 },
+            )
         }
     };
     let (rows, cols) = match kind {
@@ -446,7 +756,12 @@ pub fn split_active_with_command(app: &mut AppState, kind: LayoutKind, command: 
             (pane_rows.max(MIN_PANE_DIM), half.max(MIN_PANE_DIM))
         }
     };
-    let size = PtySize { rows, cols, pixel_width: 0, pixel_height: 0 };
+    let size = PtySize {
+        rows,
+        cols,
+        pixel_width: 0,
+        pixel_height: 0,
+    };
 
     // ── Fast path: transplant warm pane for default-shell splits ─────
     // The warm pane has its shell already loaded (~470ms for pwsh).  Even
@@ -463,7 +778,12 @@ pub fn split_active_with_command(app: &mut AppState, kind: LayoutKind, command: 
         // cold-spawn path below instead.
         let mut live = warm_pane_is_live(&mut wp);
         if live && need_resize {
-            let sz = PtySize { rows, cols, pixel_width: 0, pixel_height: 0 };
+            let sz = PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            };
             live = wp.master.resize(sz).is_ok();
         }
         if live {
@@ -477,7 +797,35 @@ pub fn split_active_with_command(app: &mut AppState, kind: LayoutKind, command: 
             }
             let epoch = std::time::Instant::now() - Duration::from_secs(2);
             let new_pane_id = wp.pane_id;
-            let mut new_pane = Pane { master: wp.master, writer: wp.writer, child: wp.child, term: wp.term, last_rows: rows, last_cols: cols, id: new_pane_id, title: hostname_cached(), title_locked: false, child_pid: wp.child_pid, data_version: wp.data_version, last_title_check: epoch, last_infer_title: epoch, dead: false, last_text_input: None, last_special_key: None, vt_bridge_cache: None, vti_mode_cache: None, mouse_input_cache: None, cursor_shape: wp.cursor_shape, bell_pending: wp.bell_pending, cpr_pending: wp.cpr_pending, copy_state: None, pane_style: None, squelch_until: None, output_ring: wp.output_ring, spawned_at: Some(std::time::Instant::now()) };
+            let mut new_pane = Pane {
+                master: wp.master,
+                writer: wp.writer,
+                child: wp.child,
+                term: wp.term,
+                last_rows: rows,
+                last_cols: cols,
+                id: new_pane_id,
+                title: hostname_cached(),
+                title_locked: false,
+                child_pid: wp.child_pid,
+                data_version: wp.data_version,
+                last_title_check: epoch,
+                last_infer_title: epoch,
+                dead: false,
+                last_text_input: None,
+                last_special_key: None,
+                vt_bridge_cache: None,
+                vti_mode_cache: None,
+                mouse_input_cache: None,
+                cursor_shape: wp.cursor_shape,
+                bell_pending: wp.bell_pending,
+                cpr_pending: wp.cpr_pending,
+                copy_state: None,
+                pane_style: None,
+                squelch_until: None,
+                output_ring: wp.output_ring,
+                spawned_at: Some(std::time::Instant::now()),
+            };
             // Honour `-c <dir>`: silently re-home the transplanted warm shell.
             if let Some(dir) = start_dir {
                 silent_rehome(&mut new_pane, dir);
@@ -497,7 +845,9 @@ pub fn split_active_with_command(app: &mut AppState, kind: LayoutKind, command: 
     }
 
     // ── Normal path: cold-spawn a new ConPTY + shell ────────────────
-    let pair = pty_system.openpty(size).map_err(|e| io::Error::new(io::ErrorKind::Other, format!("openpty error: {e}")))?;
+    let pair = pty_system
+        .openpty(size)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("openpty error: {e}")))?;
     // When no explicit command is given, use the configured default-shell.
     // Expand format variables like #{pane_current_path} at spawn time (#111).
     let expanded_shell = crate::format::expand_format(&app.default_shell, app);
@@ -512,16 +862,32 @@ pub fn split_active_with_command(app: &mut AppState, kind: LayoutKind, command: 
     if let Some(dir) = start_dir {
         shell_cmd.cwd(std::path::Path::new(dir));
     }
-    set_tmux_env(&mut shell_cmd, app.next_pane_id, app.control_port, app.socket_name.as_deref(), &app.session_name, app.claude_code_fix_tty, app.claude_code_force_interactive);
+    set_tmux_env(
+        &mut shell_cmd,
+        app.next_pane_id,
+        app.control_port,
+        app.socket_name.as_deref(),
+        &app.session_name,
+        app.claude_code_fix_tty,
+        app.claude_code_force_interactive,
+    );
     apply_user_environment(&mut shell_cmd, &app.environment);
-    let child = pair.slave.spawn_command(shell_cmd).map_err(|e| io::Error::new(io::ErrorKind::Other, format!("spawn shell error: {e}")))?;
+    let child = pair
+        .slave
+        .spawn_command(shell_cmd)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("spawn shell error: {e}")))?;
     // Close the slave handle immediately – see create_window() comment.
     drop(pair.slave);
     let mut parser = vt100::Parser::new(size.rows, size.cols, app.history_limit);
-    parser.screen_mut().set_allow_alternate_screen(app.allow_alternate_screen);
+    parser
+        .screen_mut()
+        .set_allow_alternate_screen(app.allow_alternate_screen);
     let term: Arc<Mutex<vt100::Parser>> = Arc::new(Mutex::new(parser));
     let term_reader = term.clone();
-    let reader = pair.master.try_clone_reader().map_err(|e| io::Error::new(io::ErrorKind::Other, format!("clone reader error: {e}")))?;
+    let reader = pair
+        .master
+        .try_clone_reader()
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("clone reader error: {e}")))?;
     let data_version = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let dv_writer = data_version.clone();
     let cursor_shape = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(CURSOR_SHAPE_UNSET));
@@ -530,15 +896,56 @@ pub fn split_active_with_command(app: &mut AppState, kind: LayoutKind, command: 
     let bell_writer = bell_pending.clone();
     let cpr_pending = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let cpr_writer = cpr_pending.clone();
-    let output_ring = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::<u8>::new()));
-    spawn_reader_thread(reader, term_reader, dv_writer, cs_writer, bell_writer, cpr_writer, output_ring.clone(), app.next_pane_id);
+    let output_ring = std::sync::Arc::new(std::sync::Mutex::new(
+        std::collections::VecDeque::<u8>::new(),
+    ));
+    spawn_reader_thread(
+        reader,
+        term_reader,
+        dv_writer,
+        cs_writer,
+        bell_writer,
+        cpr_writer,
+        output_ring.clone(),
+        app.next_pane_id,
+    );
     let child_pid = crate::platform::mouse_inject::get_child_pid(&*child);
-    let mut pty_writer = pair.master.take_writer()
+    let mut pty_writer = pair
+        .master
+        .take_writer()
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("take writer error: {e}")))?;
     conpty_preemptive_dsr_response(&mut *pty_writer);
     let epoch = std::time::Instant::now() - Duration::from_secs(2);
     let split_pane_id = app.next_pane_id;
-    let new_leaf = Node::Leaf(Pane { master: pair.master, writer: pty_writer, child, term, last_rows: size.rows, last_cols: size.cols, id: split_pane_id, title: hostname_cached(), title_locked: false, child_pid, data_version, last_title_check: epoch, last_infer_title: epoch, dead: false, last_text_input: None, last_special_key: None, vt_bridge_cache: None, vti_mode_cache: None, mouse_input_cache: None, cursor_shape, bell_pending, cpr_pending, copy_state: None, pane_style: None, squelch_until: None, output_ring, spawned_at: Some(std::time::Instant::now()) });
+    let new_leaf = Node::Leaf(Pane {
+        master: pair.master,
+        writer: pty_writer,
+        child,
+        term,
+        last_rows: size.rows,
+        last_cols: size.cols,
+        id: split_pane_id,
+        title: hostname_cached(),
+        title_locked: false,
+        child_pid,
+        data_version,
+        last_title_check: epoch,
+        last_infer_title: epoch,
+        dead: false,
+        last_text_input: None,
+        last_special_key: None,
+        vt_bridge_cache: None,
+        vti_mode_cache: None,
+        mouse_input_cache: None,
+        cursor_shape,
+        bell_pending,
+        cpr_pending,
+        copy_state: None,
+        pane_style: None,
+        squelch_until: None,
+        output_ring,
+        spawned_at: Some(std::time::Instant::now()),
+    });
     app.next_pane_id += 1;
     let win = &mut app.windows[app.active_idx];
     replace_leaf_with_split(&mut win.root, &win.active_path, kind, new_leaf);
@@ -568,7 +975,9 @@ fn kill_pane_at_path(win: &mut Window, path: &Vec<usize>) {
     }
     // Focus the most recently used remaining pane (tmux parity #71).
     // Walk the MRU list and pick the first pane that still exists.
-    let mru_target = win.pane_mru.iter()
+    let mru_target = win
+        .pane_mru
+        .iter()
         .find_map(|&id| crate::tree::find_path_by_id(&win.root, id));
     // Fallback when MRU is empty (all remaining panes unvisited):
     // tmux picks previous pane by pane_index, or next if no previous.
@@ -577,7 +986,11 @@ fn kill_pane_at_path(win: &mut Window, path: &Vec<usize>) {
             let pos = ordered_ids_before.iter().position(|&id| id == kid);
             if let Some(pos) = pos {
                 // Try previous by index first, then next
-                let prev_id = if pos > 0 { Some(ordered_ids_before[pos - 1]) } else { None };
+                let prev_id = if pos > 0 {
+                    Some(ordered_ids_before[pos - 1])
+                } else {
+                    None
+                };
                 let next_id = ordered_ids_before.get(pos + 1).copied();
                 let candidate = prev_id.or(next_id);
                 if let Some(cid) = candidate {
@@ -602,7 +1015,8 @@ pub fn kill_active_pane(app: &mut AppState) -> io::Result<()> {
 pub fn kill_pane_by_id(app: &mut AppState, pane_id: usize) -> io::Result<()> {
     let restore_idx = app.active_idx;
     let restore_path = app.windows[restore_idx].active_path.clone();
-    let restore_pane_id = crate::tree::get_active_pane_id(&app.windows[restore_idx].root, &restore_path);
+    let restore_pane_id =
+        crate::tree::get_active_pane_id(&app.windows[restore_idx].root, &restore_path);
 
     let target = app.windows.iter().enumerate().find_map(|(wi, win)| {
         crate::tree::find_path_by_id(&win.root, pane_id).map(|path| (wi, path))
@@ -661,10 +1075,19 @@ pub fn apply_bare_env_if_set(builder: &mut CommandBuilder) -> bool {
     // setting PSMUX_BARE_ENV — psmux itself will fill in TERM/COLORTERM/
     // PSMUX_SESSION/TMUX afterwards via build_command + set_tmux_env.
     for key in [
-        "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR",
-        "USERPROFILE", "USERNAME", "HOMEDRIVE", "HOMEPATH",
-        "COMPUTERNAME", "COMSPEC", "PATH", "PATHEXT",
-        "TEMP", "TMP",
+        "SYSTEMROOT",
+        "SYSTEMDRIVE",
+        "WINDIR",
+        "USERPROFILE",
+        "USERNAME",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "COMPUTERNAME",
+        "COMSPEC",
+        "PATH",
+        "PATHEXT",
+        "TEMP",
+        "TMP",
         "PROCESSOR_ARCHITECTURE",
     ] {
         if let Ok(v) = std::env::var(key) {
@@ -679,13 +1102,24 @@ pub fn apply_bare_env_if_set(builder: &mut CommandBuilder) -> bool {
 /// TMUX_PANE format: %{pane_id}
 /// PSMUX_SESSION: actual session name (for Claude Code / tool detection)
 /// The socket_name component encodes the -L namespace for child process resolution.
-pub fn set_tmux_env(builder: &mut CommandBuilder, pane_id: usize, control_port: Option<u16>, socket_name: Option<&str>, session_name: &str, fix_tty: bool, _force_interactive: bool) {
+pub fn set_tmux_env(
+    builder: &mut CommandBuilder,
+    pane_id: usize,
+    control_port: Option<u16>,
+    socket_name: Option<&str>,
+    session_name: &str,
+    fix_tty: bool,
+    _force_interactive: bool,
+) {
     let server_pid = std::process::id();
     let port = control_port.unwrap_or(0);
     let sn = socket_name.unwrap_or("default");
     // Format compatible with tmux: <socket_path>,<pid>,<session_idx>
     // We encode the socket name in the path component for -L namespace resolution
-    builder.env("TMUX", format!("/tmp/psmux-{}/{},{},0", server_pid, sn, port));
+    builder.env(
+        "TMUX",
+        format!("/tmp/psmux-{}/{},{},0", server_pid, sn, port),
+    );
     builder.env("TMUX_PANE", format!("%{}", pane_id));
     // Override the placeholder "1" from build_command/build_default_shell with the
     // real session name.  Tools like Claude Code can use PSMUX_SESSION for explicit
@@ -712,13 +1146,15 @@ pub fn set_tmux_env(builder: &mut CommandBuilder, pane_id: usize, control_port: 
     if fix_tty {
         builder.env("PSMUX_CLAUDE_TEAMMATE_MODE", "tmux");
     }
-
 }
 
 /// Apply user-defined environment variables (from set-environment -g) to a CommandBuilder.
 /// This ensures variables set via config or runtime `set-environment` are explicitly
 /// passed to every child pane, in addition to process inheritance.
-pub fn apply_user_environment(builder: &mut CommandBuilder, environment: &std::collections::HashMap<String, String>) {
+pub fn apply_user_environment(
+    builder: &mut CommandBuilder,
+    environment: &std::collections::HashMap<String, String>,
+) {
     for (key, value) in environment {
         builder.env(key, value);
     }
@@ -881,7 +1317,10 @@ fn build_psrl_init(env_shim: bool, allow_predictions: bool) -> String {
     } else {
         (PSRL_FIX, PSRL_FIX)
     };
-    let mut s = format!("{}; {}; {}; {}", pre_profile, PROFILE_SOURCE, post_profile, CWD_SYNC);
+    let mut s = format!(
+        "{}; {}; {}; {}",
+        pre_profile, PROFILE_SOURCE, post_profile, CWD_SYNC
+    );
     if env_shim {
         s.push_str("; ");
         s.push_str(ENV_SHIM_PS);
@@ -972,7 +1411,9 @@ fn parse_bash_env_script(script: &str) -> (Vec<String>, Vec<(String, String)>, S
     let segments: Vec<&str> = script.split("&&").collect();
     for seg in &segments {
         let seg = seg.trim();
-        if seg.is_empty() { continue; }
+        if seg.is_empty() {
+            continue;
+        }
 
         if seg.starts_with("unset ") {
             let vars: Vec<&str> = seg["unset ".len()..].split_whitespace().collect();
@@ -993,12 +1434,13 @@ fn parse_bash_env_script(script: &str) -> (Vec<String>, Vec<(String, String)>, S
                 // Resolve $PATH / ${PATH} references to the actual current PATH value.
                 // Also fix Unix `:` separator to Windows `;`.
                 if let Ok(current_path) = std::env::var("PATH") {
-                    val = val.replace(":$PATH", &format!(";{}", current_path))
-                             .replace(":${PATH}", &format!(";{}", current_path))
-                             .replace("$PATH:", &format!("{};", current_path))
-                             .replace("${PATH}:", &format!("{};", current_path))
-                             .replace("$PATH", &current_path)
-                             .replace("${PATH}", &current_path);
+                    val = val
+                        .replace(":$PATH", &format!(";{}", current_path))
+                        .replace(":${PATH}", &format!(";{}", current_path))
+                        .replace("$PATH:", &format!("{};", current_path))
+                        .replace("${PATH}:", &format!("{};", current_path))
+                        .replace("$PATH", &current_path)
+                        .replace("${PATH}", &current_path);
                 }
                 sets.push((var, val));
             }
@@ -1059,7 +1501,9 @@ fn detect_env_prefix_command(cmd: &str) -> Option<(Option<String>, Vec<(String, 
     let mut env_sets: Vec<(String, String)> = Vec::new();
     let mut remainder = after_env.trim_start();
     loop {
-        let token_end = remainder.find(char::is_whitespace).unwrap_or(remainder.len());
+        let token_end = remainder
+            .find(char::is_whitespace)
+            .unwrap_or(remainder.len());
         let token = &remainder[..token_end];
         if let Some(eq) = token.find('=') {
             let key = &token[..eq];
@@ -1079,7 +1523,11 @@ fn detect_env_prefix_command(cmd: &str) -> Option<(Option<String>, Vec<(String, 
     Some((cwd_override, env_sets, remainder.to_string()))
 }
 
-pub fn build_command(command: Option<&str>, env_shim: bool, allow_predictions: bool) -> CommandBuilder {
+pub fn build_command(
+    command: Option<&str>,
+    env_shim: bool,
+    allow_predictions: bool,
+) -> CommandBuilder {
     // Capture CWD early — portable_pty on Windows defaults to USERPROFILE
     // (home dir) when no cwd is set on CommandBuilder, so we must set it
     // explicitly to honour the caller's working directory.
@@ -1116,33 +1564,48 @@ pub fn build_command(command: Option<&str>, env_shim: bool, allow_predictions: b
             }
         };
         #[cfg(not(windows))]
-        let (env_removes, env_sets, cmd, cwd_override) = (Vec::<String>::new(), Vec::<(String, String)>::new(), cmd.to_string(), None::<String>);
+        let (env_removes, env_sets, cmd, cwd_override) = (
+            Vec::<String>::new(),
+            Vec::<(String, String)>::new(),
+            cmd.to_string(),
+            None::<String>,
+        );
 
         // An explicit `cd <dir>` from the launch idiom overrides the inherited CWD.
-        let cwd = cwd_override
-            .map(std::path::PathBuf::from)
-            .or(cwd);
+        let cwd = cwd_override.map(std::path::PathBuf::from).or(cwd);
 
         let shell = cached_shell().map(|s| s.to_string());
 
         match shell {
             Some(path) => {
                 let mut builder = CommandBuilder::new(&path);
-                if let Some(ref dir) = cwd { builder.cwd(dir); }
+                if let Some(ref dir) = cwd {
+                    builder.cwd(dir);
+                }
                 // Apply PSMUX_BARE_ENV BEFORE adding our own envs, so the
                 // overrides we add below survive env_clear (#167).
                 apply_bare_env_if_set(&mut builder);
                 builder.env("TERM", "xterm-256color");
                 builder.env("COLORTERM", "truecolor");
                 builder.env("PSMUX_SESSION", "1");
-                for var in &env_removes { builder.env_remove(var); }
-                for (k, v) in &env_sets { builder.env(k, v); }
+                for var in &env_removes {
+                    builder.env_remove(var);
+                }
+                for (k, v) in &env_sets {
+                    builder.env(k, v);
+                }
 
-                let stem = std::path::Path::new(&path).file_stem()
-                    .and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
+                let stem = std::path::Path::new(&path)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_lowercase();
                 if stem == "pwsh" || stem == "powershell" {
                     builder.args(["-NoLogo", "-Command", &cmd]);
-                } else if matches!(stem.as_str(), "bash" | "sh" | "zsh" | "fish" | "dash" | "ash") {
+                } else if matches!(
+                    stem.as_str(),
+                    "bash" | "sh" | "zsh" | "fish" | "dash" | "ash"
+                ) {
                     builder.args(["-c", &cmd]);
                 } else {
                     builder.args(["/C", &cmd]);
@@ -1151,13 +1614,19 @@ pub fn build_command(command: Option<&str>, env_shim: bool, allow_predictions: b
             }
             None => {
                 let mut builder = CommandBuilder::new("pwsh.exe");
-                if let Some(ref dir) = cwd { builder.cwd(dir); }
+                if let Some(ref dir) = cwd {
+                    builder.cwd(dir);
+                }
                 apply_bare_env_if_set(&mut builder);
                 builder.env("TERM", "xterm-256color");
                 builder.env("COLORTERM", "truecolor");
                 builder.env("PSMUX_SESSION", "1");
-                for var in &env_removes { builder.env_remove(var); }
-                for (k, v) in &env_sets { builder.env(k, v); }
+                for var in &env_removes {
+                    builder.env_remove(var);
+                }
+                for (k, v) in &env_sets {
+                    builder.env(k, v);
+                }
                 builder.args(["-NoLogo", "-Command", &cmd]);
                 builder
             }
@@ -1175,7 +1644,9 @@ pub fn build_command(command: Option<&str>, env_shim: bool, allow_predictions: b
         match shell {
             Some(path) => {
                 let mut builder = CommandBuilder::new(&path);
-                if let Some(ref dir) = cwd { builder.cwd(dir); }
+                if let Some(ref dir) = cwd {
+                    builder.cwd(dir);
+                }
                 apply_bare_env_if_set(&mut builder);
                 builder.env("TERM", "xterm-256color");
                 builder.env("COLORTERM", "truecolor");
@@ -1187,7 +1658,9 @@ pub fn build_command(command: Option<&str>, env_shim: bool, allow_predictions: b
             }
             None => {
                 let mut builder = CommandBuilder::new("pwsh.exe");
-                if let Some(ref dir) = cwd { builder.cwd(dir); }
+                if let Some(ref dir) = cwd {
+                    builder.cwd(dir);
+                }
                 apply_bare_env_if_set(&mut builder);
                 builder.env("TERM", "xterm-256color");
                 builder.env("COLORTERM", "truecolor");
@@ -1202,19 +1675,25 @@ pub fn build_command(command: Option<&str>, env_shim: bool, allow_predictions: b
 }
 
 /// Cached resolved default-shell path to avoid repeated `which::which()` scans.
-static CACHED_DEFAULT_SHELL: std::sync::OnceLock<std::collections::HashMap<String, String>> = std::sync::OnceLock::new();
-static CACHED_DEFAULT_SHELL_MAP: std::sync::Mutex<Option<std::collections::HashMap<String, String>>> = std::sync::Mutex::new(None);
+static CACHED_DEFAULT_SHELL: std::sync::OnceLock<std::collections::HashMap<String, String>> =
+    std::sync::OnceLock::new();
+static CACHED_DEFAULT_SHELL_MAP: std::sync::Mutex<
+    Option<std::collections::HashMap<String, String>>,
+> = std::sync::Mutex::new(None);
 
 /// Resolve a program name via `which`, caching the result.
 fn cached_which(program: &str) -> String {
     // Fast path: check if already cached in the global OnceLock for the default
     // (most common case is always the same shell)
-    let mut map = CACHED_DEFAULT_SHELL_MAP.lock().unwrap_or_else(|e| e.into_inner());
+    let mut map = CACHED_DEFAULT_SHELL_MAP
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let map = map.get_or_insert_with(std::collections::HashMap::new);
     if let Some(cached) = map.get(program) {
         return cached.clone();
     }
-    let resolved = which::which(program).ok()
+    let resolved = which::which(program)
+        .ok()
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|| program.to_string());
     map.insert(program.to_string(), resolved.clone());
@@ -1230,9 +1709,7 @@ fn cached_which(program: &str) -> String {
 ///    `"C:/Program Files/Git/bin/bash.exe" --login` with quotes.
 fn resolve_shell_program(shell_path: &str) -> (String, Vec<String>) {
     // Fast path: whole string is the program (possibly with spaces in path).
-    if std::path::Path::new(shell_path).is_file()
-        || which::which(shell_path).is_ok()
-    {
+    if std::path::Path::new(shell_path).is_file() || which::which(shell_path).is_ok() {
         return (shell_path.to_string(), vec![]);
     }
 
@@ -1249,7 +1726,11 @@ fn resolve_shell_program(shell_path: &str) -> (String, Vec<String>) {
 /// Build a CommandBuilder that launches the given shell path interactively.
 /// Used when `default-shell` / `default-command` is configured.
 /// Supports pwsh, powershell, cmd, and any arbitrary executable.
-pub fn build_default_shell(shell_path: &str, env_shim: bool, allow_predictions: bool) -> CommandBuilder {
+pub fn build_default_shell(
+    shell_path: &str,
+    env_shim: bool,
+    allow_predictions: bool,
+) -> CommandBuilder {
     let (program, extra_args) = resolve_shell_program(shell_path);
 
     // Resolve bare names via cached `which` — avoids repeated PATH scans.
@@ -1259,7 +1740,9 @@ pub fn build_default_shell(shell_path: &str, env_shim: bool, allow_predictions: 
     let mut builder = CommandBuilder::new(&resolved);
     // Set CWD explicitly — portable_pty on Windows defaults to USERPROFILE
     // (home dir) when no cwd is set on CommandBuilder.
-    if let Ok(dir) = std::env::current_dir() { builder.cwd(dir); }
+    if let Ok(dir) = std::env::current_dir() {
+        builder.cwd(dir);
+    }
     // PSMUX_BARE_ENV escape hatch (issue #167): clear inherited env before
     // adding our own.
     apply_bare_env_if_set(&mut builder);
@@ -1279,7 +1762,8 @@ pub fn build_default_shell(shell_path: &str, env_shim: bool, allow_predictions: 
         // If the user already passed -NoProfile in extra_args, we still
         // add ours (PowerShell accepts duplicates harmlessly) and skip
         // profile sourcing only if they explicitly opted out.
-        let has_noprofile = extra_args.iter()
+        let has_noprofile = extra_args
+            .iter()
             .any(|a| a.eq_ignore_ascii_case("-NoProfile"));
         let psrl_init = if has_noprofile {
             // User explicitly wants no profile — just apply PSRL fix + shim.
@@ -1312,7 +1796,9 @@ pub fn build_raw_command(raw_args: &[String]) -> CommandBuilder {
     let mut builder = CommandBuilder::new(program);
     // Set CWD explicitly — portable_pty on Windows defaults to USERPROFILE
     // (home dir) when no cwd is set on CommandBuilder.
-    if let Ok(dir) = std::env::current_dir() { builder.cwd(dir); }
+    if let Ok(dir) = std::env::current_dir() {
+        builder.cwd(dir);
+    }
     builder.env("TERM", "xterm-256color");
     builder.env("COLORTERM", "truecolor");
     builder.env("PSMUX_SESSION", "1");
@@ -1413,7 +1899,8 @@ impl CprScanner {
         }
         if batch.len() >= Self::KEEP {
             self.tail.clear();
-            self.tail.extend_from_slice(&batch[batch.len() - Self::KEEP..]);
+            self.tail
+                .extend_from_slice(&batch[batch.len() - Self::KEEP..]);
         } else {
             self.tail.extend_from_slice(batch);
             let excess = self.tail.len().saturating_sub(Self::KEEP);
@@ -1464,7 +1951,8 @@ pub fn spawn_reader_thread(
     const COALESCE_TICK_MS: u64 = 1;
     const COALESCE_MAX_MS: u128 = 8;
 
-    let staging: Arc<(Mutex<Vec<u8>>, Condvar)> = Arc::new((Mutex::new(Vec::with_capacity(131072)), Condvar::new()));
+    let staging: Arc<(Mutex<Vec<u8>>, Condvar)> =
+        Arc::new((Mutex::new(Vec::with_capacity(131072)), Condvar::new()));
     let reader_done: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
 
     // ── Reader thread: pure I/O, no parser lock ──
@@ -1488,7 +1976,9 @@ pub fn spawn_reader_thread(
         {
             if let Ok(ms) = std::env::var("PSMUX_TEST_READER_DELAY_MS") {
                 if let Ok(ms) = ms.parse::<u64>() {
-                    if ms > 0 { thread::sleep(Duration::from_millis(ms)); }
+                    if ms > 0 {
+                        thread::sleep(Duration::from_millis(ms));
+                    }
                 }
             }
         }
@@ -1532,7 +2022,8 @@ pub fn spawn_reader_thread(
                                     let w = &mut writers[i].1;
                                     if w.write_all(&local[..n]).is_err() || w.flush().is_err() {
                                         writers.remove(i);
-                                        crate::types::PIPE_PANE_COUNT.fetch_sub(1, Ordering::Relaxed);
+                                        crate::types::PIPE_PANE_COUNT
+                                            .fetch_sub(1, Ordering::Relaxed);
                                         continue;
                                     }
                                 }
@@ -1543,7 +2034,9 @@ pub fn spawn_reader_thread(
                 }
                 Ok(_) => {
                     zero_reads += 1;
-                    if zero_reads > 10 { break; }
+                    if zero_reads > 10 {
+                        break;
+                    }
                     thread::sleep(Duration::from_millis(1));
                 }
                 Err(_) => break,
@@ -1615,7 +2108,9 @@ pub fn spawn_reader_thread(
                 lock.lock().map(|b| b.len()).unwrap_or(0)
             };
             loop {
-                if coalesce_start.elapsed().as_millis() >= COALESCE_MAX_MS { break; }
+                if coalesce_start.elapsed().as_millis() >= COALESCE_MAX_MS {
+                    break;
+                }
                 thread::sleep(Duration::from_millis(COALESCE_TICK_MS));
                 let cur_len = {
                     let (lock, _) = &*staging;
@@ -1636,7 +2131,9 @@ pub fn spawn_reader_thread(
                     Err(_) => break,
                 }
             };
-            if bytes.is_empty() { continue; }
+            if bytes.is_empty() {
+                continue;
+            }
 
             // Scan for cursor shape and RMCUP on the raw batch BEFORE
             // handing to vt100 parser (preserves prior ordering semantics).

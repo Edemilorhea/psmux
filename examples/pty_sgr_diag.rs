@@ -1,13 +1,18 @@
 /// Diagnostic: verify which SGR attributes survive ConPTY passthrough mode.
 /// Run with: cargo run --example pty_sgr_diag
-use portable_pty::{native_pty_system, PtySize, CommandBuilder};
+use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::io::Read;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 fn main() {
     let pty_system = native_pty_system();
-    let size = PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 };
+    let size = PtySize {
+        rows: 24,
+        cols: 80,
+        pixel_width: 0,
+        pixel_height: 0,
+    };
     let pair = pty_system.openpty(size).expect("openpty failed");
 
     let mut cmd = CommandBuilder::new("pwsh.exe");
@@ -93,11 +98,30 @@ fn analyze_output(all_data: &[u8]) {
     let has_rgb = text.contains("38;2;");
     let has_indexed_1 = text.contains("38;5;1");
 
-    println!("SGR 9  (strikethrough): {}", if has_sgr9 { "FOUND" } else { "MISSING" });
-    println!("SGR 8  (hidden):        {}", if has_sgr8 { "FOUND" } else { "MISSING" });
-    println!("SGR 1;31 (bold red):    {}", if has_sgr1_31 { "FOUND" } else { "MISSING" });
-    println!("RGB color (38;2;):      {}", if has_rgb { "FOUND" } else { "MISSING" });
-    println!("Indexed (38;5;1):       {}", if has_indexed_1 { "FOUND (ConPTY re-encoded)" } else { "not present" });
+    println!(
+        "SGR 9  (strikethrough): {}",
+        if has_sgr9 { "FOUND" } else { "MISSING" }
+    );
+    println!(
+        "SGR 8  (hidden):        {}",
+        if has_sgr8 { "FOUND" } else { "MISSING" }
+    );
+    println!(
+        "SGR 1;31 (bold red):    {}",
+        if has_sgr1_31 { "FOUND" } else { "MISSING" }
+    );
+    println!(
+        "RGB color (38;2;):      {}",
+        if has_rgb { "FOUND" } else { "MISSING" }
+    );
+    println!(
+        "Indexed (38;5;1):       {}",
+        if has_indexed_1 {
+            "FOUND (ConPTY re-encoded)"
+        } else {
+            "not present"
+        }
+    );
 
     println!("\n=== vt100 Parser Check ===");
     let mut parser = vt100::Parser::new(24, 80, 0);
@@ -120,9 +144,16 @@ fn analyze_output(all_data: &[u8]) {
                         if cell.strikethrough() { "S" } else { "." },
                     );
                     let fg = format!("{:?}", cell.fgcolor());
-                    print!("  r={} c={:2} ch='{}' attrs=[{}] fg={}", row, col, ch, attrs, fg);
-                    if cell.strikethrough() { print!(" <<< STRIKETHROUGH"); }
-                    if cell.hidden() { print!(" <<< HIDDEN"); }
+                    print!(
+                        "  r={} c={:2} ch='{}' attrs=[{}] fg={}",
+                        row, col, ch, attrs, fg
+                    );
+                    if cell.strikethrough() {
+                        print!(" <<< STRIKETHROUGH");
+                    }
+                    if cell.hidden() {
+                        print!(" <<< HIDDEN");
+                    }
                     println!();
                 }
             }

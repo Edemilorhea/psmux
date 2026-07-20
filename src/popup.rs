@@ -14,17 +14,32 @@
 use std::sync::{Arc, Mutex};
 
 use crate::layout::serialize_screen_rows;
-use crate::types::{Pane, AppState, Mode};
+use crate::types::{AppState, Mode, Pane};
 
 /// Diagnostic-only popup logging, gated by PSMUX_POPUP_DEBUG=1 (no-op otherwise).
 /// Writes to %TEMP%\psmux_popup_debug.log (never inside the repo).
 fn popup_debug(msg: &str) {
-    if std::env::var("PSMUX_POPUP_DEBUG").map(|v| v == "1").unwrap_or(false) {
-        let tmp = std::env::var("TEMP").or_else(|_| std::env::var("TMP")).unwrap_or_else(|_| ".".to_string());
+    if std::env::var("PSMUX_POPUP_DEBUG")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+    {
+        let tmp = std::env::var("TEMP")
+            .or_else(|_| std::env::var("TMP"))
+            .unwrap_or_else(|_| ".".to_string());
         let path = format!("{}\\psmux_popup_debug.log", tmp);
-        let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-            let _ = std::io::Write::write_all(&mut f, format!("[{} pid={}] {}\n", ts, std::process::id(), msg).as_bytes());
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            let _ = std::io::Write::write_all(
+                &mut f,
+                format!("[{} pid={}] {}\n", ts, std::process::id(), msg).as_bytes(),
+            );
         }
     }
 }
@@ -57,9 +72,8 @@ pub fn create_popup_pane(
     let mut cmd_builder = if command.trim().is_empty() {
         crate::pane::build_command(None, true, false)
     } else {
-        let mut builder = portable_pty::CommandBuilder::new(
-            if cfg!(windows) { "pwsh" } else { "sh" },
-        );
+        let mut builder =
+            portable_pty::CommandBuilder::new(if cfg!(windows) { "pwsh" } else { "sh" });
         if cfg!(windows) {
             builder.args(["-NoProfile", "-Command", command]);
         } else {
@@ -84,11 +98,13 @@ pub fn create_popup_pane(
     // is the shared spawn_reader_thread + cpr_pending wiring below.
 
     let child = pair.slave.spawn_command(cmd_builder).ok()?;
-    popup_debug(&format!("create_popup_pane: spawned child for command=[{}] rows={} cols={}", command, rows, cols));
+    popup_debug(&format!(
+        "create_popup_pane: spawned child for command=[{}] rows={} cols={}",
+        command, rows, cols
+    ));
     drop(pair.slave); // required for ConPTY
 
-    let term: Arc<Mutex<vt100::Parser>> =
-        Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 0)));
+    let term: Arc<Mutex<vt100::Parser>> = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 0)));
     let term_reader = term.clone();
 
     // Shared signal Arcs. Using the SAME reader thread as regular panes is what
@@ -127,11 +143,18 @@ pub fn create_popup_pane(
     // Brief delay so the reader thread processes initial output before the
     // first frame is serialized to clients.
     std::thread::sleep(std::time::Duration::from_millis(50));
-    if std::env::var("PSMUX_POPUP_DEBUG").map(|v| v == "1").unwrap_or(false) {
+    if std::env::var("PSMUX_POPUP_DEBUG")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+    {
         if let Ok(p) = term.lock() {
             let contents = p.screen().contents();
             let preview: String = contents.chars().take(120).collect();
-            popup_debug(&format!("post-50ms screen contents len={} preview=[{}]", contents.len(), preview.replace('\n', "\\n")));
+            popup_debug(&format!(
+                "post-50ms screen contents len={} preview=[{}]",
+                contents.len(),
+                preview.replace('\n', "\\n")
+            ));
         }
     }
 
@@ -182,16 +205,28 @@ pub fn create_popup_pane(
 pub struct NullChild;
 
 impl portable_pty::ChildKiller for NullChild {
-    fn kill(&mut self) -> std::io::Result<()> { Ok(()) }
-    fn clone_killer(&self) -> Box<dyn portable_pty::ChildKiller + Send + Sync> { Box::new(NullChild) }
+    fn kill(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn clone_killer(&self) -> Box<dyn portable_pty::ChildKiller + Send + Sync> {
+        Box::new(NullChild)
+    }
 }
 
 impl portable_pty::Child for NullChild {
-    fn try_wait(&mut self) -> std::io::Result<Option<portable_pty::ExitStatus>> { Ok(None) }
-    fn wait(&mut self) -> std::io::Result<portable_pty::ExitStatus> { Ok(portable_pty::ExitStatus::with_exit_code(0)) }
-    fn process_id(&self) -> Option<u32> { None }
+    fn try_wait(&mut self) -> std::io::Result<Option<portable_pty::ExitStatus>> {
+        Ok(None)
+    }
+    fn wait(&mut self) -> std::io::Result<portable_pty::ExitStatus> {
+        Ok(portable_pty::ExitStatus::with_exit_code(0))
+    }
+    fn process_id(&self) -> Option<u32> {
+        None
+    }
     #[cfg(windows)]
-    fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle> { None }
+    fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle> {
+        None
+    }
 }
 
 /// Create an EMPTY pane (tmux `-E`): a PTY-backed `Pane` with NO child process.
@@ -199,7 +234,12 @@ impl portable_pty::Child for NullChild {
 /// No reader thread is spawned since there is never any output.
 pub fn create_empty_pane(rows: u16, cols: u16, pane_id: usize) -> Option<Pane> {
     let pty_sys = portable_pty::native_pty_system();
-    let pty_size = portable_pty::PtySize { rows, cols, pixel_width: 0, pixel_height: 0 };
+    let pty_size = portable_pty::PtySize {
+        rows,
+        cols,
+        pixel_width: 0,
+        pixel_height: 0,
+    };
     let pair = pty_sys.openpty(pty_size).ok()?;
     let pty_writer = pair.master.take_writer().ok()?;
     // Drop the slave: with no child attached the pty stays inert; we never read.
@@ -226,7 +266,9 @@ pub fn create_empty_pane(rows: u16, cols: u16, pane_id: usize) -> Option<Pane> {
         vt_bridge_cache: None,
         vti_mode_cache: None,
         mouse_input_cache: None,
-        cursor_shape: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(crate::pane::CURSOR_SHAPE_UNSET)),
+        cursor_shape: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
+            crate::pane::CURSOR_SHAPE_UNSET,
+        )),
         bell_pending: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         cpr_pending: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         copy_state: None,
@@ -294,7 +336,10 @@ pub fn serialize_popup_overlay(app: &AppState) -> String {
                             out.push_str(&run.bg);
                             let _ = std::fmt::Write::write_fmt(
                                 &mut out,
-                                format_args!("\",\"flags\":{},\"width\":{}}}", run.flags, run.width),
+                                format_args!(
+                                    "\",\"flags\":{},\"width\":{}}}",
+                                    run.flags, run.width
+                                ),
                             );
                         }
                         out.push_str("]}");
@@ -354,20 +399,34 @@ pub fn serialize_popup_overlay(app: &AppState) -> String {
         }
         Mode::ConfirmMode { prompt, .. } => {
             out.push_str(",\"popup_active\":false,\"popup_rows\":[],\"popup_lines\":[],\"popup_has_pty\":false");
-            out.push_str(",\"menu_active\":false,\"menu_title\":\"\",\"menu_selected\":0,\"menu_items\":[]");
+            out.push_str(
+                ",\"menu_active\":false,\"menu_title\":\"\",\"menu_selected\":0,\"menu_items\":[]",
+            );
             out.push_str(",\"confirm_active\":true,\"confirm_prompt\":\"");
             out.push_str(&json_escape_string(prompt));
             out.push('"');
         }
         Mode::PaneChooser { .. } => {
             out.push_str(",\"popup_active\":false,\"popup_rows\":[],\"popup_lines\":[],\"popup_has_pty\":false");
-            out.push_str(",\"menu_active\":false,\"menu_title\":\"\",\"menu_selected\":0,\"menu_items\":[]");
+            out.push_str(
+                ",\"menu_active\":false,\"menu_title\":\"\",\"menu_selected\":0,\"menu_items\":[]",
+            );
             out.push_str(",\"confirm_active\":false,\"confirm_prompt\":\"\"");
             out.push_str(",\"display_panes\":true");
         }
-        Mode::CustomizeMode { ref options, selected, scroll_offset, editing, ref edit_buffer, edit_cursor, ref filter } => {
+        Mode::CustomizeMode {
+            ref options,
+            selected,
+            scroll_offset,
+            editing,
+            ref edit_buffer,
+            edit_cursor,
+            ref filter,
+        } => {
             out.push_str(",\"popup_active\":false,\"popup_rows\":[],\"popup_lines\":[],\"popup_has_pty\":false");
-            out.push_str(",\"menu_active\":false,\"menu_title\":\"\",\"menu_selected\":0,\"menu_items\":[]");
+            out.push_str(
+                ",\"menu_active\":false,\"menu_title\":\"\",\"menu_selected\":0,\"menu_items\":[]",
+            );
             out.push_str(",\"confirm_active\":false,\"confirm_prompt\":\"\"");
             out.push_str(",\"display_panes\":false");
             out.push_str(",\"customize_active\":true");
@@ -390,7 +449,9 @@ pub fn serialize_popup_overlay(app: &AppState) -> String {
                 if !filter.is_empty() && !name.to_lowercase().contains(&filter_lower) {
                     continue;
                 }
-                if !first { out.push(','); }
+                if !first {
+                    out.push(',');
+                }
                 first = false;
                 out.push_str("{\"i\":");
                 let _ = std::fmt::Write::write_fmt(&mut out, format_args!("{}", i));
@@ -406,7 +467,9 @@ pub fn serialize_popup_overlay(app: &AppState) -> String {
         }
         _ => {
             out.push_str(",\"popup_active\":false,\"popup_rows\":[],\"popup_lines\":[],\"popup_has_pty\":false");
-            out.push_str(",\"menu_active\":false,\"menu_title\":\"\",\"menu_selected\":0,\"menu_items\":[]");
+            out.push_str(
+                ",\"menu_active\":false,\"menu_title\":\"\",\"menu_selected\":0,\"menu_items\":[]",
+            );
             out.push_str(",\"confirm_active\":false,\"confirm_prompt\":\"\"");
             out.push_str(",\"display_panes\":false");
         }
@@ -497,11 +560,7 @@ fn json_esc_inline(s: &str, out: &mut String) {
 /// Used by the in-process (non-server) rendering path in `app.rs`.
 /// Reads the popup pane's vt100 screen directly and renders with full
 /// color/style support.
-pub fn render_popup_overlay(
-    f: &mut ratatui::Frame,
-    area: ratatui::prelude::Rect,
-    app: &AppState,
-) {
+pub fn render_popup_overlay(f: &mut ratatui::Frame, area: ratatui::prelude::Rect, app: &AppState) {
     use ratatui::prelude::*;
     use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
@@ -524,17 +583,17 @@ pub fn render_popup_overlay(
             height: h,
         };
 
-        let title = if command.is_empty() {
-            "Popup"
-        } else {
-            command
-        };
+        let title = if command.is_empty() { "Popup" } else { command };
         let border_style = if let Some(style_str) = app.user_options.get("popup-border-style") {
             crate::style::parse_tmux_style(style_str)
         } else {
             Style::default().fg(Color::Yellow)
         };
-        let border_type = match app.user_options.get("popup-border-lines").map(|s| s.as_str()) {
+        let border_type = match app
+            .user_options
+            .get("popup-border-lines")
+            .map(|s| s.as_str())
+        {
             Some("double") => ratatui::widgets::BorderType::Double,
             Some("heavy") => ratatui::widgets::BorderType::Thick,
             Some("rounded") => ratatui::widgets::BorderType::Rounded,

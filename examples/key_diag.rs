@@ -51,11 +51,7 @@ fn main() {
                     .filter(|(m, _)| k.modifiers.contains(*m))
                     .map(|(_, n)| *n)
                     .collect();
-                    let line = format!(
-                        "KEY code={} mods=[{}]",
-                        code_str,
-                        mods.join("|")
-                    );
+                    let line = format!("KEY code={} mods=[{}]", code_str, mods.join("|"));
                     println!("{}", line);
                     append(&line);
                     if matches!(k.code, KeyCode::Char('q')) && k.modifiers.is_empty() {

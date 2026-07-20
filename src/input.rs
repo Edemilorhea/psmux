@@ -5,17 +5,21 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 use portable_pty::native_pty_system;
 use ratatui::prelude::*;
 
-use crate::types::{AppState, Mode, FocusDir, LayoutKind, DragState, Node, Pane};
-use crate::tree::{active_pane, active_pane_mut, compute_rects, compute_split_borders,
-    split_sizes_at, adjust_split_sizes, path_exists, resize_all_panes};
-use crate::pane::{create_window, split_active};
 use crate::commands::{execute_action, execute_command_prompt, execute_command_string};
 use crate::config::normalize_key_for_binding;
-use crate::copy_mode::{enter_copy_mode, exit_copy_mode, switch_with_copy_save, move_copy_cursor,
-    scroll_copy_up, scroll_copy_down, scroll_pane_scrollback, paste_latest, yank_selection,
-    search_copy_mode, search_next, search_prev, scroll_to_top, scroll_to_bottom};
-use crate::layout::{cycle_top_layout, apply_layout};
-use crate::window_ops::{toggle_zoom, swap_pane, break_pane_to_window};
+use crate::copy_mode::{
+    enter_copy_mode, exit_copy_mode, move_copy_cursor, paste_latest, scroll_copy_down,
+    scroll_copy_up, scroll_pane_scrollback, scroll_to_bottom, scroll_to_top, search_copy_mode,
+    search_next, search_prev, switch_with_copy_save, yank_selection,
+};
+use crate::layout::{apply_layout, cycle_top_layout};
+use crate::pane::{create_window, split_active};
+use crate::tree::{
+    active_pane, active_pane_mut, adjust_split_sizes, compute_rects, compute_split_borders,
+    path_exists, resize_all_panes, split_sizes_at,
+};
+use crate::types::{AppState, DragState, FocusDir, LayoutKind, Mode, Node, Pane};
+use crate::window_ops::{break_pane_to_window, swap_pane, toggle_zoom};
 
 /// Refresh the status-bar prompt shown while the user is typing in copy-mode
 /// search (#335). Without this the screen looks frozen because the search
@@ -30,7 +34,14 @@ fn refresh_search_prompt(app: &mut AppState) {
 }
 
 /// Write a mouse event to the child PTY using the encoding the child requested.
-fn write_mouse_event(master: &mut dyn std::io::Write, button: u8, col: u16, row: u16, press: bool, enc: vt100::MouseProtocolEncoding) {
+fn write_mouse_event(
+    master: &mut dyn std::io::Write,
+    button: u8,
+    col: u16,
+    row: u16,
+    press: bool,
+    enc: vt100::MouseProtocolEncoding,
+) {
     match enc {
         vt100::MouseProtocolEncoding::Sgr => {
             let ch = if press { 'M' } else { 'm' };
@@ -57,7 +68,9 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
             // Check switch-client -T key table first
             if let Some(table_name) = app.current_key_table.take() {
                 let key_tuple = normalize_key_for_binding((key.code, key.modifiers));
-                if let Some(bind) = app.key_tables.get(&table_name)
+                if let Some(bind) = app
+                    .key_tables
+                    .get(&table_name)
                     .and_then(|t| t.iter().find(|b| b.key == key_tuple))
                     .cloned()
                 {
@@ -67,15 +80,24 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
             }
             let is_prefix = (key.code, key.modifiers) == app.prefix_key
                 || matches!(key.code, KeyCode::Char(c) if c == '\u{0002}')
-                || app.prefix2_key.map_or(false, |p2| (key.code, key.modifiers) == p2);
+                || app
+                    .prefix2_key
+                    .map_or(false, |p2| (key.code, key.modifiers) == p2);
             if is_prefix {
-                app.mode = Mode::Prefix { armed_at: Instant::now() };
+                app.mode = Mode::Prefix {
+                    armed_at: Instant::now(),
+                };
                 app.prefix_repeating = false;
                 return Ok(false);
             }
             // Check root key table for bindings (bind-key -n / bind-key -T root)
             let key_tuple = normalize_key_for_binding((key.code, key.modifiers));
-            if let Some(bind) = app.key_tables.get("root").and_then(|t| t.iter().find(|b| b.key == key_tuple)).cloned() {
+            if let Some(bind) = app
+                .key_tables
+                .get("root")
+                .and_then(|t| t.iter().find(|b| b.key == key_tuple))
+                .cloned()
+            {
                 // Skip scroll-triggered copy mode entry when the option is
                 // off so the key (PageUp) reaches the PTY instead (#284).
                 let is_scroll_copy = matches!(&bind.action, crate::types::Action::Command(cmd) if cmd.starts_with("copy-mode") && cmd.contains("-u"));
@@ -99,12 +121,19 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                 forward_key_to_active(app, key)?;
                 return Ok(false);
             }
-            
+
             let key_tuple = normalize_key_for_binding((key.code, key.modifiers));
-            if let Some(bind) = app.key_tables.get("prefix").and_then(|t| t.iter().find(|b| b.key == key_tuple)).cloned() {
+            if let Some(bind) = app
+                .key_tables
+                .get("prefix")
+                .and_then(|t| t.iter().find(|b| b.key == key_tuple))
+                .cloned()
+            {
                 if bind.repeat {
                     // Stay in prefix mode for repeat-time window
-                    app.mode = Mode::Prefix { armed_at: Instant::now() };
+                    app.mode = Mode::Prefix {
+                        armed_at: Instant::now(),
+                    };
                     app.prefix_repeating = true;
                 } else {
                     app.mode = Mode::Passthrough;
@@ -112,38 +141,58 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                 }
                 return execute_action(app, &bind.action);
             }
-            
+
             let handled = match key.code {
                 // Alt+Arrow: resize pane by 5 (must be before plain arrows)
                 KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => {
-                    crate::window_ops::resize_pane_vertical(app, -5); true
+                    crate::window_ops::resize_pane_vertical(app, -5);
+                    true
                 }
                 KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) => {
-                    crate::window_ops::resize_pane_vertical(app, 5); true
+                    crate::window_ops::resize_pane_vertical(app, 5);
+                    true
                 }
                 KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => {
-                    crate::window_ops::resize_pane_horizontal(app, -5); true
+                    crate::window_ops::resize_pane_horizontal(app, -5);
+                    true
                 }
                 KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => {
-                    crate::window_ops::resize_pane_horizontal(app, 5); true
+                    crate::window_ops::resize_pane_horizontal(app, 5);
+                    true
                 }
                 // Ctrl+Arrow: resize pane by 1 (must be before plain arrows)
                 KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    crate::window_ops::resize_pane_vertical(app, -1); true
+                    crate::window_ops::resize_pane_vertical(app, -1);
+                    true
                 }
                 KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    crate::window_ops::resize_pane_vertical(app, 1); true
+                    crate::window_ops::resize_pane_vertical(app, 1);
+                    true
                 }
                 KeyCode::Left if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    crate::window_ops::resize_pane_horizontal(app, -1); true
+                    crate::window_ops::resize_pane_horizontal(app, -1);
+                    true
                 }
                 KeyCode::Right if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    crate::window_ops::resize_pane_horizontal(app, 1); true
+                    crate::window_ops::resize_pane_horizontal(app, 1);
+                    true
                 }
-                KeyCode::Left => { switch_with_copy_save(app, |app| move_focus(app, FocusDir::Left)); true }
-                KeyCode::Right => { switch_with_copy_save(app, |app| move_focus(app, FocusDir::Right)); true }
-                KeyCode::Up => { switch_with_copy_save(app, |app| move_focus(app, FocusDir::Up)); true }
-                KeyCode::Down => { switch_with_copy_save(app, |app| move_focus(app, FocusDir::Down)); true }
+                KeyCode::Left => {
+                    switch_with_copy_save(app, |app| move_focus(app, FocusDir::Left));
+                    true
+                }
+                KeyCode::Right => {
+                    switch_with_copy_save(app, |app| move_focus(app, FocusDir::Right));
+                    true
+                }
+                KeyCode::Up => {
+                    switch_with_copy_save(app, |app| move_focus(app, FocusDir::Up));
+                    true
+                }
+                KeyCode::Down => {
+                    switch_with_copy_save(app, |app| move_focus(app, FocusDir::Down));
+                    true
+                }
                 KeyCode::Char(d) if d.is_ascii_digit() => {
                     let idx = d.to_digit(10).unwrap() as usize;
                     if let Some(internal_idx) = app.win_pos(idx) {
@@ -172,7 +221,8 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                     if !app.windows.is_empty() {
                         switch_with_copy_save(app, |app| {
                             app.last_window_idx = app.active_idx;
-                            app.active_idx = (app.active_idx + app.windows.len() - 1) % app.windows.len();
+                            app.active_idx =
+                                (app.active_idx + app.windows.len() - 1) % app.windows.len();
                         });
                     }
                     true
@@ -198,18 +248,46 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                 }
                 KeyCode::Char('w') => {
                     let tree = crate::commands::build_choose_tree(app);
-                    let selected = tree.iter().position(|e| e.is_current_session && e.is_active_window && !e.is_session_header).unwrap_or(0);
+                    let selected = tree
+                        .iter()
+                        .position(|e| {
+                            e.is_current_session && e.is_active_window && !e.is_session_header
+                        })
+                        .unwrap_or(0);
                     app.mode = Mode::WindowChooser { selected, tree };
                     true
                 }
-                KeyCode::Char(',') => { app.mode = Mode::RenamePrompt { input: String::new() }; true }
-                KeyCode::Char('\'') => { app.mode = Mode::WindowIndexPrompt { input: String::new() }; true }
-                KeyCode::Char(' ') => { cycle_top_layout(app); true }
-                KeyCode::Char('[') => { enter_copy_mode(app); true }
-                KeyCode::Char(']') => { paste_latest(app)?; app.mode = Mode::Passthrough; true }
+                KeyCode::Char(',') => {
+                    app.mode = Mode::RenamePrompt {
+                        input: String::new(),
+                    };
+                    true
+                }
+                KeyCode::Char('\'') => {
+                    app.mode = Mode::WindowIndexPrompt {
+                        input: String::new(),
+                    };
+                    true
+                }
+                KeyCode::Char(' ') => {
+                    cycle_top_layout(app);
+                    true
+                }
+                KeyCode::Char('[') => {
+                    enter_copy_mode(app);
+                    true
+                }
+                KeyCode::Char(']') => {
+                    paste_latest(app)?;
+                    app.mode = Mode::Passthrough;
+                    true
+                }
                 KeyCode::Char(':') => {
                     app.command_vi_normal = false;
-                    app.mode = Mode::CommandPrompt { input: String::new(), cursor: 0 };
+                    app.mode = Mode::CommandPrompt {
+                        input: String::new(),
+                        cursor: 0,
+                    };
                     true
                 }
                 KeyCode::Char('q') => {
@@ -218,15 +296,22 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                     compute_rects(&win.root, app.last_window_area, &mut rects);
                     app.display_map.clear();
                     for (i, (path, _)) in rects.into_iter().enumerate() {
-                        if i >= 10 { break; }
+                        if i >= 10 {
+                            break;
+                        }
                         let digit = (i + app.pane_base_index) % 10;
                         app.display_map.push((digit, path));
                     }
-                    app.mode = Mode::PaneChooser { opened_at: Instant::now() };
+                    app.mode = Mode::PaneChooser {
+                        opened_at: Instant::now(),
+                    };
                     true
                 }
                 // --- zoom pane (z) ---
-                KeyCode::Char('z') => { toggle_zoom(app); true }
+                KeyCode::Char('z') => {
+                    toggle_zoom(app);
+                    true
+                }
                 // --- next pane (o) ---
                 KeyCode::Char('o') => {
                     switch_with_copy_save(app, |app| {
@@ -240,7 +325,9 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                             app.last_pane_path = win.active_path.clone();
                             win.active_path = new_path;
                             // Update MRU
-                            if let Some(pid) = crate::tree::get_active_pane_id(&win.root, &win.active_path) {
+                            if let Some(pid) =
+                                crate::tree::get_active_pane_id(&win.root, &win.active_path)
+                            {
                                 crate::tree::touch_mru(&mut win.pane_mru, pid);
                             }
                         }
@@ -251,12 +338,16 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                 KeyCode::Char(';') => {
                     switch_with_copy_save(app, |app| {
                         let win = &mut app.windows[app.active_idx];
-                        if !app.last_pane_path.is_empty() && path_exists(&win.root, &app.last_pane_path) {
+                        if !app.last_pane_path.is_empty()
+                            && path_exists(&win.root, &app.last_pane_path)
+                        {
                             let tmp = win.active_path.clone();
                             win.active_path = app.last_pane_path.clone();
                             app.last_pane_path = tmp;
                             // Update MRU
-                            if let Some(pid) = crate::tree::get_active_pane_id(&win.root, &win.active_path) {
+                            if let Some(pid) =
+                                crate::tree::get_active_pane_id(&win.root, &win.active_path)
+                            {
                                 crate::tree::touch_mru(&mut win.pane_mru, pid);
                             }
                         }
@@ -275,11 +366,20 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                     true
                 }
                 // --- swap pane up/left ({) ---
-                KeyCode::Char('{') => { swap_pane(app, FocusDir::Up); true }
+                KeyCode::Char('{') => {
+                    swap_pane(app, FocusDir::Up);
+                    true
+                }
                 // --- swap pane down/right (}) ---
-                KeyCode::Char('}') => { swap_pane(app, FocusDir::Down); true }
+                KeyCode::Char('}') => {
+                    swap_pane(app, FocusDir::Down);
+                    true
+                }
                 // --- break pane to new window (!) ---
-                KeyCode::Char('!') => { break_pane_to_window(app); true }
+                KeyCode::Char('!') => {
+                    break_pane_to_window(app);
+                    true
+                }
                 // --- kill window (&) with confirmation ---
                 KeyCode::Char('&') => {
                     app.mode = Mode::ConfirmMode {
@@ -291,24 +391,31 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                 }
                 // --- rename session ($) ---
                 KeyCode::Char('$') => {
-                    app.mode = Mode::RenameSessionPrompt { input: String::new() };
+                    app.mode = Mode::RenameSessionPrompt {
+                        input: String::new(),
+                    };
                     true
                 }
                 // --- Meta+1..5 preset layouts (like tmux) ---
                 KeyCode::Char('1') if key.modifiers.contains(KeyModifiers::ALT) => {
-                    apply_layout(app, "even-horizontal"); true
+                    apply_layout(app, "even-horizontal");
+                    true
                 }
                 KeyCode::Char('2') if key.modifiers.contains(KeyModifiers::ALT) => {
-                    apply_layout(app, "even-vertical"); true
+                    apply_layout(app, "even-vertical");
+                    true
                 }
                 KeyCode::Char('3') if key.modifiers.contains(KeyModifiers::ALT) => {
-                    apply_layout(app, "main-horizontal"); true
+                    apply_layout(app, "main-horizontal");
+                    true
                 }
                 KeyCode::Char('4') if key.modifiers.contains(KeyModifiers::ALT) => {
-                    apply_layout(app, "main-vertical"); true
+                    apply_layout(app, "main-vertical");
+                    true
                 }
                 KeyCode::Char('5') if key.modifiers.contains(KeyModifiers::ALT) => {
-                    apply_layout(app, "tiled"); true
+                    apply_layout(app, "tiled");
+                    true
                 }
                 // --- display pane info (i) ---
                 KeyCode::Char('i') => {
@@ -316,9 +423,11 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                     let win = &app.windows[app.active_idx];
                     let pane_count = crate::tree::count_panes(&win.root);
                     app.status_right = format!(
-                        "#{} ({}) [{}x{}] panes:{}", 
-                        app.active_idx, win.name,
-                        app.last_window_area.width, app.last_window_area.height,
+                        "#{} ({}) [{}x{}] panes:{}",
+                        app.active_idx,
+                        win.name,
+                        app.last_window_area.width,
+                        app.last_window_area.height,
                         pane_count
                     );
                     true
@@ -338,12 +447,15 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
 
             if matches!(app.mode, Mode::Prefix { .. }) {
                 // Arrow keys are repeatable by default (tmux binds them with -r)
-                let is_repeatable = matches!(key.code,
+                let is_repeatable = matches!(
+                    key.code,
                     KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right
                 );
                 if handled && is_repeatable {
                     // Stay in prefix mode for repeat-time window
-                    app.mode = Mode::Prefix { armed_at: Instant::now() };
+                    app.mode = Mode::Prefix {
+                        armed_at: Instant::now(),
+                    };
                     app.prefix_repeating = true;
                 } else if !handled && elapsed < app.escape_time_ms {
                     return Ok(false);
@@ -360,13 +472,18 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
             // Vi normal mode handling
             if vi_mode && app.command_vi_normal {
                 match key.code {
-                    KeyCode::Esc => { app.command_vi_normal = false; app.mode = Mode::Passthrough; }
+                    KeyCode::Esc => {
+                        app.command_vi_normal = false;
+                        app.mode = Mode::Passthrough;
+                    }
                     KeyCode::Enter => {
                         if let Mode::CommandPrompt { input, .. } = &app.mode {
                             if !input.is_empty() {
                                 let cmd = input.clone();
                                 app.command_history.push(cmd);
-                                if app.command_history.len() > 100 { app.command_history.remove(0); }
+                                if app.command_history.len() > 100 {
+                                    app.command_history.remove(0);
+                                }
                                 app.command_history_idx = app.command_history.len();
                             }
                         }
@@ -375,12 +492,16 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                     }
                     KeyCode::Char('h') | KeyCode::Left => {
                         if let Mode::CommandPrompt { cursor, .. } = &mut app.mode {
-                            if *cursor > 0 { *cursor -= 1; }
+                            if *cursor > 0 {
+                                *cursor -= 1;
+                            }
                         }
                     }
                     KeyCode::Char('l') | KeyCode::Right => {
                         if let Mode::CommandPrompt { input, cursor } = &mut app.mode {
-                            if *cursor < input.len() { *cursor += 1; }
+                            if *cursor < input.len() {
+                                *cursor += 1;
+                            }
                         }
                     }
                     KeyCode::Char('0') | KeyCode::Home => {
@@ -396,8 +517,12 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                     KeyCode::Char('b') => {
                         if let Mode::CommandPrompt { input, cursor } = &mut app.mode {
                             let mut pos = *cursor;
-                            while pos > 0 && input.as_bytes().get(pos - 1) == Some(&b' ') { pos -= 1; }
-                            while pos > 0 && input.as_bytes().get(pos - 1) != Some(&b' ') { pos -= 1; }
+                            while pos > 0 && input.as_bytes().get(pos - 1) == Some(&b' ') {
+                                pos -= 1;
+                            }
+                            while pos > 0 && input.as_bytes().get(pos - 1) != Some(&b' ') {
+                                pos -= 1;
+                            }
                             *cursor = pos;
                         }
                     }
@@ -405,20 +530,30 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                         if let Mode::CommandPrompt { input, cursor } = &mut app.mode {
                             let len = input.len();
                             let mut pos = *cursor;
-                            while pos < len && input.as_bytes().get(pos) != Some(&b' ') { pos += 1; }
-                            while pos < len && input.as_bytes().get(pos) == Some(&b' ') { pos += 1; }
+                            while pos < len && input.as_bytes().get(pos) != Some(&b' ') {
+                                pos += 1;
+                            }
+                            while pos < len && input.as_bytes().get(pos) == Some(&b' ') {
+                                pos += 1;
+                            }
                             *cursor = pos;
                         }
                     }
                     KeyCode::Char('x') | KeyCode::Delete => {
                         if let Mode::CommandPrompt { input, cursor } = &mut app.mode {
-                            if *cursor < input.len() { input.remove(*cursor); }
+                            if *cursor < input.len() {
+                                input.remove(*cursor);
+                            }
                         }
                     }
-                    KeyCode::Char('i') => { app.command_vi_normal = false; }
+                    KeyCode::Char('i') => {
+                        app.command_vi_normal = false;
+                    }
                     KeyCode::Char('a') => {
                         if let Mode::CommandPrompt { input, cursor } = &mut app.mode {
-                            if *cursor < input.len() { *cursor += 1; }
+                            if *cursor < input.len() {
+                                *cursor += 1;
+                            }
                         }
                         app.command_vi_normal = false;
                     }
@@ -480,7 +615,9 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                         if !input.is_empty() {
                             let cmd = input.clone();
                             app.command_history.push(cmd);
-                            if app.command_history.len() > 100 { app.command_history.remove(0); }
+                            if app.command_history.len() > 100 {
+                                app.command_history.remove(0);
+                            }
                             app.command_history_idx = app.command_history.len();
                         }
                     }
@@ -503,12 +640,16 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                 }
                 KeyCode::Left => {
                     if let Mode::CommandPrompt { cursor, .. } = &mut app.mode {
-                        if *cursor > 0 { *cursor -= 1; }
+                        if *cursor > 0 {
+                            *cursor -= 1;
+                        }
                     }
                 }
                 KeyCode::Right => {
                     if let Mode::CommandPrompt { input, cursor } = &mut app.mode {
-                        if *cursor < input.len() { *cursor += 1; }
+                        if *cursor < input.len() {
+                            *cursor += 1;
+                        }
                     }
                 }
                 KeyCode::Home => {
@@ -578,8 +719,12 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                     // Ctrl+W: delete word backwards
                     if let Mode::CommandPrompt { input, cursor } = &mut app.mode {
                         let mut pos = *cursor;
-                        while pos > 0 && input.as_bytes().get(pos - 1) == Some(&b' ') { pos -= 1; }
-                        while pos > 0 && input.as_bytes().get(pos - 1) != Some(&b' ') { pos -= 1; }
+                        while pos > 0 && input.as_bytes().get(pos - 1) == Some(&b' ') {
+                            pos -= 1;
+                        }
+                        while pos > 0 && input.as_bytes().get(pos - 1) != Some(&b' ') {
+                            pos -= 1;
+                        }
                         input.drain(pos..*cursor);
                         *cursor = pos;
                     }
@@ -597,15 +742,29 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
         Mode::WindowChooser { selected, ref tree } => {
             let tree_len = tree.len();
             match key.code {
-                KeyCode::Esc | KeyCode::Char('q') => { app.mode = Mode::Passthrough; }
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    app.mode = Mode::Passthrough;
+                }
                 KeyCode::Up | KeyCode::Char('k') => {
-                    if selected > 0 { if let Mode::WindowChooser { selected: s, .. } = &mut app.mode { *s -= 1; } }
+                    if selected > 0 {
+                        if let Mode::WindowChooser { selected: s, .. } = &mut app.mode {
+                            *s -= 1;
+                        }
+                    }
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
-                    if selected + 1 < tree_len { if let Mode::WindowChooser { selected: s, .. } = &mut app.mode { *s += 1; } }
+                    if selected + 1 < tree_len {
+                        if let Mode::WindowChooser { selected: s, .. } = &mut app.mode {
+                            *s += 1;
+                        }
+                    }
                 }
                 KeyCode::Enter => {
-                    if let Mode::WindowChooser { selected: s, ref tree } = &app.mode {
+                    if let Mode::WindowChooser {
+                        selected: s,
+                        ref tree,
+                    } = &app.mode
+                    {
                         let entry = &tree[*s];
                         if entry.is_current_session {
                             // Same session: switch window directly. window_index is a
@@ -626,8 +785,12 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                 KeyCode::Char(c) if c.is_ascii_digit() => {
                     // Quick-select by window number
                     let n = c.to_digit(10).unwrap_or(0) as usize;
-                    if let Some(idx) = tree.iter().position(|e| !e.is_session_header && e.window_index == Some(n) && e.is_current_session) {
-                        if let Mode::WindowChooser { selected: s, .. } = &mut app.mode { *s = idx; }
+                    if let Some(idx) = tree.iter().position(|e| {
+                        !e.is_session_header && e.window_index == Some(n) && e.is_current_session
+                    }) {
+                        if let Mode::WindowChooser { selected: s, .. } = &mut app.mode {
+                            *s = idx;
+                        }
                     }
                 }
                 _ => {}
@@ -636,7 +799,9 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
         }
         Mode::WindowIndexPrompt { .. } => {
             match key.code {
-                KeyCode::Esc => { app.mode = Mode::Passthrough; }
+                KeyCode::Esc => {
+                    app.mode = Mode::Passthrough;
+                }
                 KeyCode::Enter => {
                     if let Mode::WindowIndexPrompt { input } = &app.mode {
                         if let Ok(idx) = input.parse::<usize>() {
@@ -650,15 +815,25 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                     }
                     app.mode = Mode::Passthrough;
                 }
-                KeyCode::Backspace => { if let Mode::WindowIndexPrompt { input } = &mut app.mode { let _ = input.pop(); } }
-                KeyCode::Char(c) if c.is_ascii_digit() => { if let Mode::WindowIndexPrompt { input } = &mut app.mode { input.push(c); } }
+                KeyCode::Backspace => {
+                    if let Mode::WindowIndexPrompt { input } = &mut app.mode {
+                        let _ = input.pop();
+                    }
+                }
+                KeyCode::Char(c) if c.is_ascii_digit() => {
+                    if let Mode::WindowIndexPrompt { input } = &mut app.mode {
+                        input.push(c);
+                    }
+                }
                 _ => {}
             }
             Ok(false)
         }
         Mode::RenamePrompt { .. } => {
             match key.code {
-                KeyCode::Esc => { app.mode = Mode::Passthrough; }
+                KeyCode::Esc => {
+                    app.mode = Mode::Passthrough;
+                }
                 KeyCode::Enter => {
                     if let Mode::RenamePrompt { input } = &mut app.mode {
                         let name = input.clone();
@@ -670,19 +845,33 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                         }
                         // Forward to server so external queries see the new name
                         if let Some(port) = app.control_port {
-                            let _ = crate::session::send_control_to_port(port, &format!("rename-window {}\n", crate::util::quote_arg(&name)), &app.session_key);
+                            let _ = crate::session::send_control_to_port(
+                                port,
+                                &format!("rename-window {}\n", crate::util::quote_arg(&name)),
+                                &app.session_key,
+                            );
                         }
                     }
                 }
-                KeyCode::Backspace => { if let Mode::RenamePrompt { input } = &mut app.mode { let _ = input.pop(); } }
-                KeyCode::Char(c) => { if let Mode::RenamePrompt { input } = &mut app.mode { input.push(c); } }
+                KeyCode::Backspace => {
+                    if let Mode::RenamePrompt { input } = &mut app.mode {
+                        let _ = input.pop();
+                    }
+                }
+                KeyCode::Char(c) => {
+                    if let Mode::RenamePrompt { input } = &mut app.mode {
+                        input.push(c);
+                    }
+                }
                 _ => {}
             }
             Ok(false)
         }
         Mode::RenameSessionPrompt { .. } => {
             match key.code {
-                KeyCode::Esc => { app.mode = Mode::Passthrough; }
+                KeyCode::Esc => {
+                    app.mode = Mode::Passthrough;
+                }
                 KeyCode::Enter => {
                     if let Mode::RenameSessionPrompt { input } = &mut app.mode {
                         let name = input.clone();
@@ -691,21 +880,39 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                         app.session_name = name.clone();
                         // Forward to server so external queries see the new name
                         if let Some(port) = app.control_port {
-                            let _ = crate::session::send_control_to_port(port, &format!("rename-session {}\n", crate::util::quote_arg(&name)), &app.session_key);
+                            let _ = crate::session::send_control_to_port(
+                                port,
+                                &format!("rename-session {}\n", crate::util::quote_arg(&name)),
+                                &app.session_key,
+                            );
                         }
                     }
                 }
-                KeyCode::Backspace => { if let Mode::RenameSessionPrompt { input } = &mut app.mode { let _ = input.pop(); } }
-                KeyCode::Char(c) => { if let Mode::RenameSessionPrompt { input } = &mut app.mode { input.push(c); } }
+                KeyCode::Backspace => {
+                    if let Mode::RenameSessionPrompt { input } = &mut app.mode {
+                        let _ = input.pop();
+                    }
+                }
+                KeyCode::Char(c) => {
+                    if let Mode::RenameSessionPrompt { input } = &mut app.mode {
+                        input.push(c);
+                    }
+                }
                 _ => {}
             }
             Ok(false)
         }
         Mode::CopyMode => {
             // Check copy-mode key table for user bindings first (used by plugins like tmux-yank)
-            let table_name = if app.mode_keys == "vi" { "copy-mode-vi" } else { "copy-mode" };
+            let table_name = if app.mode_keys == "vi" {
+                "copy-mode-vi"
+            } else {
+                "copy-mode"
+            };
             let key_tuple = normalize_key_for_binding((key.code, key.modifiers));
-            if let Some(bind) = app.key_tables.get(table_name)
+            if let Some(bind) = app
+                .key_tables
+                .get(table_name)
                 .and_then(|t| t.iter().find(|b| b.key == key_tuple))
                 .cloned()
             {
@@ -725,10 +932,18 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
             if let Some(prefix) = app.copy_text_object_pending.take() {
                 if let KeyCode::Char(ch) = key.code {
                     match (prefix, ch) {
-                        (0, 'w') => { crate::copy_mode::select_a_word(app); }
-                        (1, 'w') => { crate::copy_mode::select_inner_word(app); }
-                        (0, 'W') => { crate::copy_mode::select_a_word_big(app); }
-                        (1, 'W') => { crate::copy_mode::select_inner_word_big(app); }
+                        (0, 'w') => {
+                            crate::copy_mode::select_a_word(app);
+                        }
+                        (1, 'w') => {
+                            crate::copy_mode::select_inner_word(app);
+                        }
+                        (0, 'W') => {
+                            crate::copy_mode::select_a_word_big(app);
+                        }
+                        (1, 'W') => {
+                            crate::copy_mode::select_inner_word_big(app);
+                        }
                         _ => {}
                     }
                 }
@@ -739,10 +954,26 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                 let n = app.copy_count.take().unwrap_or(1);
                 if let KeyCode::Char(ch) = key.code {
                     match pending {
-                        0 => { for _ in 0..n { crate::copy_mode::find_char_forward(app, ch); } }
-                        1 => { for _ in 0..n { crate::copy_mode::find_char_backward(app, ch); } }
-                        2 => { for _ in 0..n { crate::copy_mode::find_char_to_forward(app, ch); } }
-                        3 => { for _ in 0..n { crate::copy_mode::find_char_to_backward(app, ch); } }
+                        0 => {
+                            for _ in 0..n {
+                                crate::copy_mode::find_char_forward(app, ch);
+                            }
+                        }
+                        1 => {
+                            for _ in 0..n {
+                                crate::copy_mode::find_char_backward(app, ch);
+                            }
+                        }
+                        2 => {
+                            for _ in 0..n {
+                                crate::copy_mode::find_char_to_forward(app, ch);
+                            }
+                        }
+                        3 => {
+                            for _ in 0..n {
+                                crate::copy_mode::find_char_to_backward(app, ch);
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -750,7 +981,10 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
             }
             // Handle numeric prefix accumulation for copy-mode motions (vi-style)
             if let KeyCode::Char(d) = key.code {
-                if d.is_ascii_digit() && !key.modifiers.contains(KeyModifiers::CONTROL) && !key.modifiers.contains(KeyModifiers::ALT) {
+                if d.is_ascii_digit()
+                    && !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT)
+                {
                     let digit = d.to_digit(10).unwrap() as usize;
                     if let Some(count) = app.copy_count {
                         // Accumulate: multiply by 10 and add digit (cap at 9999)
@@ -766,93 +1000,217 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
             }
             let copy_repeat = app.copy_count.take().unwrap_or(1);
             match key.code {
-                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char(']') => { 
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char(']') => {
                     exit_copy_mode(app);
                 }
                 // Ctrl+C exits copy mode (tmux parity, fixes #25)
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     exit_copy_mode(app);
                 }
-                KeyCode::Left | KeyCode::Char('h') => { for _ in 0..copy_repeat { move_copy_cursor(app, -1, 0); } }
-                KeyCode::Right | KeyCode::Char('l') => { for _ in 0..copy_repeat { move_copy_cursor(app, 1, 0); } }
-                KeyCode::Up | KeyCode::Char('k') => { for _ in 0..copy_repeat { move_copy_cursor(app, 0, -1); } }
-                KeyCode::Down | KeyCode::Char('j') => { for _ in 0..copy_repeat { move_copy_cursor(app, 0, 1); } }
+                KeyCode::Left | KeyCode::Char('h') => {
+                    for _ in 0..copy_repeat {
+                        move_copy_cursor(app, -1, 0);
+                    }
+                }
+                KeyCode::Right | KeyCode::Char('l') => {
+                    for _ in 0..copy_repeat {
+                        move_copy_cursor(app, 1, 0);
+                    }
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    for _ in 0..copy_repeat {
+                        move_copy_cursor(app, 0, -1);
+                    }
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    for _ in 0..copy_repeat {
+                        move_copy_cursor(app, 0, 1);
+                    }
+                }
                 // Page scroll: C-b / PageUp = page up, C-f / PageDown = page down
-                KeyCode::PageUp => { scroll_copy_up(app, 10); }
-                KeyCode::PageDown => { scroll_copy_down(app, 10); }
+                KeyCode::PageUp => {
+                    scroll_copy_up(app, 10);
+                }
+                KeyCode::PageDown => {
+                    scroll_copy_down(app, 10);
+                }
                 KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    if app.mode_keys == "emacs" { move_copy_cursor(app, -1, 0); }
-                    else { scroll_copy_up(app, 10); }
+                    if app.mode_keys == "emacs" {
+                        move_copy_cursor(app, -1, 0);
+                    } else {
+                        scroll_copy_up(app, 10);
+                    }
                 }
                 KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    if app.mode_keys == "emacs" { move_copy_cursor(app, 1, 0); }
-                    else { scroll_copy_down(app, 10); }
+                    if app.mode_keys == "emacs" {
+                        move_copy_cursor(app, 1, 0);
+                    } else {
+                        scroll_copy_down(app, 10);
+                    }
                 }
                 // Half-page scroll: C-u / C-d
                 KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    let half = app.windows.get(app.active_idx)
+                    let half = app
+                        .windows
+                        .get(app.active_idx)
                         .and_then(|w| active_pane(&w.root, &w.active_path))
-                        .map(|p| (p.last_rows / 2) as usize).unwrap_or(10);
+                        .map(|p| (p.last_rows / 2) as usize)
+                        .unwrap_or(10);
                     scroll_copy_up(app, half);
                 }
                 KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    let half = app.windows.get(app.active_idx)
+                    let half = app
+                        .windows
+                        .get(app.active_idx)
                         .and_then(|w| active_pane(&w.root, &w.active_path))
-                        .map(|p| (p.last_rows / 2) as usize).unwrap_or(10);
+                        .map(|p| (p.last_rows / 2) as usize)
+                        .unwrap_or(10);
                     scroll_copy_down(app, half);
                 }
                 // Emacs copy-mode keys (must be before unqualified char matches)
-                KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => { scroll_copy_down(app, 1); }
-                KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => { scroll_copy_up(app, 1); }
-                KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => { crate::copy_mode::move_to_line_start(app); }
-                KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => { crate::copy_mode::move_to_line_end(app); }
-                KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::ALT) => { scroll_copy_up(app, 10); }
-                KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::ALT) => { crate::copy_mode::move_word_forward(app); }
-                KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::ALT) => { crate::copy_mode::move_word_backward(app); }
-                KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::ALT) => { yank_selection(app)?; exit_copy_mode(app); }
+                KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    scroll_copy_down(app, 1);
+                }
+                KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    scroll_copy_up(app, 1);
+                }
+                KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    crate::copy_mode::move_to_line_start(app);
+                }
+                KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    crate::copy_mode::move_to_line_end(app);
+                }
+                KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::ALT) => {
+                    scroll_copy_up(app, 10);
+                }
+                KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::ALT) => {
+                    crate::copy_mode::move_word_forward(app);
+                }
+                KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::ALT) => {
+                    crate::copy_mode::move_word_backward(app);
+                }
+                KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::ALT) => {
+                    yank_selection(app)?;
+                    exit_copy_mode(app);
+                }
                 KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    app.mode = Mode::CopySearch { input: String::new(), forward: true };
+                    app.mode = Mode::CopySearch {
+                        input: String::new(),
+                        forward: true,
+                    };
                     refresh_search_prompt(app);
                 }
                 KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    app.mode = Mode::CopySearch { input: String::new(), forward: false };
+                    app.mode = Mode::CopySearch {
+                        input: String::new(),
+                        forward: false,
+                    };
                     refresh_search_prompt(app);
                 }
                 KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     exit_copy_mode(app);
                 }
-                KeyCode::Char('g') => { scroll_to_top(app); }
-                KeyCode::Char('G') => { scroll_to_bottom(app); }
+                KeyCode::Char('g') => {
+                    scroll_to_top(app);
+                }
+                KeyCode::Char('G') => {
+                    scroll_to_bottom(app);
+                }
                 // Word motions: w = next word, b = prev word, e = end of word
-                KeyCode::Char('w') => { for _ in 0..copy_repeat { crate::copy_mode::move_word_forward(app); } }
-                KeyCode::Char('b') => { for _ in 0..copy_repeat { crate::copy_mode::move_word_backward(app); } }
-                KeyCode::Char('e') => { for _ in 0..copy_repeat { crate::copy_mode::move_word_end(app); } }
+                KeyCode::Char('w') => {
+                    for _ in 0..copy_repeat {
+                        crate::copy_mode::move_word_forward(app);
+                    }
+                }
+                KeyCode::Char('b') => {
+                    for _ in 0..copy_repeat {
+                        crate::copy_mode::move_word_backward(app);
+                    }
+                }
+                KeyCode::Char('e') => {
+                    for _ in 0..copy_repeat {
+                        crate::copy_mode::move_word_end(app);
+                    }
+                }
                 // WORD motions: W = next WORD, B = prev WORD, E = end WORD
-                KeyCode::Char('W') => { for _ in 0..copy_repeat { crate::copy_mode::move_word_forward_big(app); } }
-                KeyCode::Char('B') => { for _ in 0..copy_repeat { crate::copy_mode::move_word_backward_big(app); } }
-                KeyCode::Char('E') => { for _ in 0..copy_repeat { crate::copy_mode::move_word_end_big(app); } }
+                KeyCode::Char('W') => {
+                    for _ in 0..copy_repeat {
+                        crate::copy_mode::move_word_forward_big(app);
+                    }
+                }
+                KeyCode::Char('B') => {
+                    for _ in 0..copy_repeat {
+                        crate::copy_mode::move_word_backward_big(app);
+                    }
+                }
+                KeyCode::Char('E') => {
+                    for _ in 0..copy_repeat {
+                        crate::copy_mode::move_word_end_big(app);
+                    }
+                }
                 // Screen position: H = top, M = middle, L = bottom
-                KeyCode::Char('H') => { crate::copy_mode::move_to_screen_top(app); }
-                KeyCode::Char('M') => { crate::copy_mode::move_to_screen_middle(app); }
-                KeyCode::Char('L') => { crate::copy_mode::move_to_screen_bottom(app); }
+                KeyCode::Char('H') => {
+                    crate::copy_mode::move_to_screen_top(app);
+                }
+                KeyCode::Char('M') => {
+                    crate::copy_mode::move_to_screen_middle(app);
+                }
+                KeyCode::Char('L') => {
+                    crate::copy_mode::move_to_screen_bottom(app);
+                }
                 // Find char: f/F/t/T — sets pending state for next char
-                KeyCode::Char('f') => { app.copy_find_char_pending = Some(0); app.copy_count = Some(copy_repeat); }
-                KeyCode::Char('F') => { app.copy_find_char_pending = Some(1); app.copy_count = Some(copy_repeat); }
-                KeyCode::Char('t') => { app.copy_find_char_pending = Some(2); app.copy_count = Some(copy_repeat); }
-                KeyCode::Char('T') => { app.copy_find_char_pending = Some(3); app.copy_count = Some(copy_repeat); }
+                KeyCode::Char('f') => {
+                    app.copy_find_char_pending = Some(0);
+                    app.copy_count = Some(copy_repeat);
+                }
+                KeyCode::Char('F') => {
+                    app.copy_find_char_pending = Some(1);
+                    app.copy_count = Some(copy_repeat);
+                }
+                KeyCode::Char('t') => {
+                    app.copy_find_char_pending = Some(2);
+                    app.copy_count = Some(copy_repeat);
+                }
+                KeyCode::Char('T') => {
+                    app.copy_find_char_pending = Some(3);
+                    app.copy_count = Some(copy_repeat);
+                }
                 // D = copy from cursor to end of line
-                KeyCode::Char('D') => { crate::copy_mode::copy_end_of_line(app)?; exit_copy_mode(app); }
+                KeyCode::Char('D') => {
+                    crate::copy_mode::copy_end_of_line(app)?;
+                    exit_copy_mode(app);
+                }
                 // Bracket matching: % = jump to matching bracket/paren/brace
-                KeyCode::Char('%') => { crate::copy_mode::move_matching_bracket(app); }
+                KeyCode::Char('%') => {
+                    crate::copy_mode::move_matching_bracket(app);
+                }
                 // Paragraph jump: { = previous paragraph, } = next paragraph
-                KeyCode::Char('{') => { for _ in 0..copy_repeat { crate::copy_mode::move_prev_paragraph(app); } }
-                KeyCode::Char('}') => { for _ in 0..copy_repeat { crate::copy_mode::move_next_paragraph(app); } }
+                KeyCode::Char('{') => {
+                    for _ in 0..copy_repeat {
+                        crate::copy_mode::move_prev_paragraph(app);
+                    }
+                }
+                KeyCode::Char('}') => {
+                    for _ in 0..copy_repeat {
+                        crate::copy_mode::move_next_paragraph(app);
+                    }
+                }
                 // Line motions: 0 = start, $ = end, ^ = first non-blank
-                KeyCode::Char('0') => { crate::copy_mode::move_to_line_start(app); }
-                KeyCode::Char('$') => { crate::copy_mode::move_to_line_end(app); }
-                KeyCode::Char('^') => { crate::copy_mode::move_to_first_nonblank(app); }
-                KeyCode::Home => { crate::copy_mode::move_to_line_start(app); }
-                KeyCode::End => { crate::copy_mode::move_to_line_end(app); }
+                KeyCode::Char('0') => {
+                    crate::copy_mode::move_to_line_start(app);
+                }
+                KeyCode::Char('$') => {
+                    crate::copy_mode::move_to_line_end(app);
+                }
+                KeyCode::Char('^') => {
+                    crate::copy_mode::move_to_first_nonblank(app);
+                }
+                KeyCode::Home => {
+                    crate::copy_mode::move_to_line_start(app);
+                }
+                KeyCode::End => {
+                    crate::copy_mode::move_to_line_end(app);
+                }
                 KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     // vi: toggle rectangle selection, emacs: page down
                     if app.mode_keys == "emacs" {
@@ -870,10 +1228,10 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                 }
                 KeyCode::Char('V') => {
                     // Start line-wise selection (vi visual-line mode)
-                    if let Some((r,c)) = crate::copy_mode::get_copy_pos(app) {
-                        app.copy_anchor = Some((r,c));
+                    if let Some((r, c)) = crate::copy_mode::get_copy_pos(app) {
+                        app.copy_anchor = Some((r, c));
                         app.copy_anchor_scroll_offset = app.copy_scroll_offset;
-                        app.copy_pos = Some((r,c));
+                        app.copy_pos = Some((r, c));
                         app.copy_selection_mode = crate::types::SelectionMode::Line;
                     }
                 }
@@ -901,10 +1259,10 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                 }
                 // Space = begin selection (vi mode), Enter = copy-selection-and-cancel
                 KeyCode::Char(' ') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    if let Some((r,c)) = crate::copy_mode::get_copy_pos(app) {
-                        app.copy_anchor = Some((r,c));
+                    if let Some((r, c)) = crate::copy_mode::get_copy_pos(app) {
+                        app.copy_anchor = Some((r, c));
                         app.copy_anchor_scroll_offset = app.copy_scroll_offset;
-                        app.copy_pos = Some((r,c));
+                        app.copy_pos = Some((r, c));
                         app.copy_selection_mode = crate::types::SelectionMode::Char;
                     }
                 }
@@ -915,18 +1273,31 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                     }
                     exit_copy_mode(app);
                 }
-                KeyCode::Char('y') => { yank_selection(app)?; exit_copy_mode(app); }
+                KeyCode::Char('y') => {
+                    yank_selection(app)?;
+                    exit_copy_mode(app);
+                }
                 // --- copy-mode search ---
                 KeyCode::Char('/') => {
-                    app.mode = Mode::CopySearch { input: String::new(), forward: true };
+                    app.mode = Mode::CopySearch {
+                        input: String::new(),
+                        forward: true,
+                    };
                     refresh_search_prompt(app);
                 }
                 KeyCode::Char('?') => {
-                    app.mode = Mode::CopySearch { input: String::new(), forward: false };
+                    app.mode = Mode::CopySearch {
+                        input: String::new(),
+                        forward: false,
+                    };
                     refresh_search_prompt(app);
                 }
-                KeyCode::Char('n') => { search_next(app); }
-                KeyCode::Char('N') => { search_prev(app); }
+                KeyCode::Char('n') => {
+                    search_next(app);
+                }
+                KeyCode::Char('N') => {
+                    search_prev(app);
+                }
                 KeyCode::Char(' ') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     // Set mark (anchor)
                     if let Some((r, c)) = crate::copy_mode::get_copy_pos(app) {
@@ -936,12 +1307,20 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                     }
                 }
                 // Named register prefix: " then a-z
-                KeyCode::Char('"') => { app.copy_register_pending = true; }
+                KeyCode::Char('"') => {
+                    app.copy_register_pending = true;
+                }
                 // Text-object prefixes: a/i then w/W
-                KeyCode::Char('a') if !key.modifiers.contains(KeyModifiers::CONTROL) && !key.modifiers.contains(KeyModifiers::ALT) => {
+                KeyCode::Char('a')
+                    if !key.modifiers.contains(KeyModifiers::CONTROL)
+                        && !key.modifiers.contains(KeyModifiers::ALT) =>
+                {
                     app.copy_text_object_pending = Some(0);
                 }
-                KeyCode::Char('i') if !key.modifiers.contains(KeyModifiers::CONTROL) && !key.modifiers.contains(KeyModifiers::ALT) => {
+                KeyCode::Char('i')
+                    if !key.modifiers.contains(KeyModifiers::CONTROL)
+                        && !key.modifiers.contains(KeyModifiers::ALT) =>
+                {
                     app.copy_text_object_pending = Some(1);
                 }
                 _ => {}
@@ -973,11 +1352,15 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                     app.status_message = None;
                 }
                 KeyCode::Backspace => {
-                    if let Mode::CopySearch { ref mut input, .. } = app.mode { let _ = input.pop(); }
+                    if let Mode::CopySearch { ref mut input, .. } = app.mode {
+                        let _ = input.pop();
+                    }
                     refresh_search_prompt(app);
                 }
                 KeyCode::Char(c) => {
-                    if let Mode::CopySearch { ref mut input, .. } = app.mode { input.push(c); }
+                    if let Mode::CopySearch { ref mut input, .. } = app.mode {
+                        input.push(c);
+                    }
                     refresh_search_prompt(app);
                 }
                 _ => {}
@@ -986,7 +1369,9 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
         }
         Mode::PaneChooser { .. } => {
             match key.code {
-                KeyCode::Esc | KeyCode::Char('q') => { app.mode = Mode::Passthrough; }
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    app.mode = Mode::Passthrough;
+                }
                 KeyCode::Char(d) if d.is_ascii_digit() => {
                     let choice = d.to_digit(10).unwrap() as usize;
                     if let Some((_, path)) = app.display_map.iter().find(|(n, _)| *n == choice) {
@@ -995,19 +1380,27 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                     }
                     app.mode = Mode::Passthrough;
                 }
-                _ => { app.mode = Mode::Passthrough; }
+                _ => {
+                    app.mode = Mode::Passthrough;
+                }
             }
             Ok(false)
         }
         Mode::MenuMode { ref mut menu } => {
             match key.code {
-                KeyCode::Esc | KeyCode::Char('q') => { 
-                    app.mode = Mode::Passthrough; 
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    app.mode = Mode::Passthrough;
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
                     if menu.selected > 0 {
                         menu.selected -= 1;
-                        while menu.selected > 0 && menu.items.get(menu.selected).map(|i| i.is_separator).unwrap_or(false) {
+                        while menu.selected > 0
+                            && menu
+                                .items
+                                .get(menu.selected)
+                                .map(|i| i.is_separator)
+                                .unwrap_or(false)
+                        {
                             menu.selected -= 1;
                         }
                     }
@@ -1015,7 +1408,13 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                 KeyCode::Down | KeyCode::Char('j') => {
                     if menu.selected + 1 < menu.items.len() {
                         menu.selected += 1;
-                        while menu.selected + 1 < menu.items.len() && menu.items.get(menu.selected).map(|i| i.is_separator).unwrap_or(false) {
+                        while menu.selected + 1 < menu.items.len()
+                            && menu
+                                .items
+                                .get(menu.selected)
+                                .map(|i| i.is_separator)
+                                .unwrap_or(false)
+                        {
                             menu.selected += 1;
                         }
                     }
@@ -1034,7 +1433,12 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                     }
                 }
                 KeyCode::Char(c) => {
-                    if let Some((_idx, item)) = menu.items.iter().enumerate().find(|(_, i)| i.key == Some(c)) {
+                    if let Some((_idx, item)) = menu
+                        .items
+                        .iter()
+                        .enumerate()
+                        .find(|(_, i)| i.key == Some(c))
+                    {
                         if !item.is_separator && !item.command.is_empty() {
                             let cmd = item.command.clone();
                             app.mode = Mode::Passthrough;
@@ -1048,10 +1452,17 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
             }
             Ok(false)
         }
-        Mode::PopupMode { ref mut output, ref mut process, close_on_exit, ref mut popup_pane, ref mut scroll_offset, .. } => {
+        Mode::PopupMode {
+            ref mut output,
+            ref mut process,
+            close_on_exit,
+            ref mut popup_pane,
+            ref mut scroll_offset,
+            ..
+        } => {
             let mut should_close = false;
             let mut exit_status: Option<std::process::ExitStatus> = None;
-            
+
             // If we have a PTY popup, forward keys to it
             if let Some(ref mut pty) = popup_pane {
                 match key.code {
@@ -1065,7 +1476,10 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                         }
                     }
                     KeyCode::Char(c) => {
-                        if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
+                        if key
+                            .modifiers
+                            .contains(crossterm::event::KeyModifiers::CONTROL)
+                        {
                             let ctrl = (c as u8) & 0x1F;
                             let _ = pty.writer.write_all(&[ctrl]);
                         } else {
@@ -1074,19 +1488,45 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                             let _ = pty.writer.write_all(s.as_bytes());
                         }
                     }
-                    KeyCode::Enter => { let _ = pty.writer.write_all(b"\r"); }
-                    KeyCode::Backspace => { let _ = pty.writer.write_all(b"\x7f"); }
-                    KeyCode::Tab => { let _ = pty.writer.write_all(b"\t"); }
-                    KeyCode::BackTab => { let _ = pty.writer.write_all(b"\x1b[Z"); }
-                    KeyCode::Up => { let _ = pty.writer.write_all(b"\x1b[A"); }
-                    KeyCode::Down => { let _ = pty.writer.write_all(b"\x1b[B"); }
-                    KeyCode::Right => { let _ = pty.writer.write_all(b"\x1b[C"); }
-                    KeyCode::Left => { let _ = pty.writer.write_all(b"\x1b[D"); }
-                    KeyCode::Home => { let _ = pty.writer.write_all(b"\x1b[H"); }
-                    KeyCode::End => { let _ = pty.writer.write_all(b"\x1b[F"); }
-                    KeyCode::PageUp => { let _ = pty.writer.write_all(b"\x1b[5~"); }
-                    KeyCode::PageDown => { let _ = pty.writer.write_all(b"\x1b[6~"); }
-                    KeyCode::Delete => { let _ = pty.writer.write_all(b"\x1b[3~"); }
+                    KeyCode::Enter => {
+                        let _ = pty.writer.write_all(b"\r");
+                    }
+                    KeyCode::Backspace => {
+                        let _ = pty.writer.write_all(b"\x7f");
+                    }
+                    KeyCode::Tab => {
+                        let _ = pty.writer.write_all(b"\t");
+                    }
+                    KeyCode::BackTab => {
+                        let _ = pty.writer.write_all(b"\x1b[Z");
+                    }
+                    KeyCode::Up => {
+                        let _ = pty.writer.write_all(b"\x1b[A");
+                    }
+                    KeyCode::Down => {
+                        let _ = pty.writer.write_all(b"\x1b[B");
+                    }
+                    KeyCode::Right => {
+                        let _ = pty.writer.write_all(b"\x1b[C");
+                    }
+                    KeyCode::Left => {
+                        let _ = pty.writer.write_all(b"\x1b[D");
+                    }
+                    KeyCode::Home => {
+                        let _ = pty.writer.write_all(b"\x1b[H");
+                    }
+                    KeyCode::End => {
+                        let _ = pty.writer.write_all(b"\x1b[F");
+                    }
+                    KeyCode::PageUp => {
+                        let _ = pty.writer.write_all(b"\x1b[5~");
+                    }
+                    KeyCode::PageDown => {
+                        let _ = pty.writer.write_all(b"\x1b[6~");
+                    }
+                    KeyCode::Delete => {
+                        let _ = pty.writer.write_all(b"\x1b[3~");
+                    }
                     _ => {}
                 }
                 // Check if child exited
@@ -1127,7 +1567,7 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                     }
                     _ => {}
                 }
-                
+
                 if let Some(ref mut proc) = process {
                     if let Ok(Some(status)) = proc.try_wait() {
                         exit_status = Some(status);
@@ -1136,21 +1576,25 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                         }
                     }
                 }
-                
+
                 if let Some(status) = exit_status {
                     if !close_on_exit {
                         output.push_str(&format!("\n[Process exited with status: {}]", status));
                     }
                 }
             }
-            
+
             if should_close {
                 app.mode = Mode::Passthrough;
             }
-            
+
             Ok(false)
         }
-        Mode::ConfirmMode { prompt: _, ref command, ref mut input } => {
+        Mode::ConfirmMode {
+            prompt: _,
+            ref command,
+            ref mut input,
+        } => {
             match key.code {
                 KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => {
                     app.mode = Mode::Passthrough;
@@ -1175,28 +1619,56 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
             app.mode = Mode::Passthrough;
             Ok(false)
         }
-        Mode::CustomizeMode { ref options, selected: _, ref filter, editing, .. } => {
+        Mode::CustomizeMode {
+            ref options,
+            selected: _,
+            ref filter,
+            editing,
+            ..
+        } => {
             if editing {
                 match key.code {
                     KeyCode::Esc => {
-                        if let Mode::CustomizeMode { editing: ref mut e, edit_buffer: ref mut eb, .. } = app.mode {
+                        if let Mode::CustomizeMode {
+                            editing: ref mut e,
+                            edit_buffer: ref mut eb,
+                            ..
+                        } = app.mode
+                        {
                             *e = false;
                             *eb = String::new();
                         }
                     }
                     KeyCode::Enter => {
-                        if let Mode::CustomizeMode { ref mut editing, ref options, selected, ref edit_buffer, .. } = app.mode {
+                        if let Mode::CustomizeMode {
+                            ref mut editing,
+                            ref options,
+                            selected,
+                            ref edit_buffer,
+                            ..
+                        } = app.mode
+                        {
                             let name = options[selected].0.clone();
                             let value = edit_buffer.clone();
                             *editing = false;
                             crate::server::options::apply_set_option(app, &name, &value, true);
-                            if let Mode::CustomizeMode { ref mut options, selected, .. } = app.mode {
+                            if let Mode::CustomizeMode {
+                                ref mut options,
+                                selected,
+                                ..
+                            } = app.mode
+                            {
                                 options[selected].1 = value;
                             }
                         }
                     }
                     KeyCode::Backspace => {
-                        if let Mode::CustomizeMode { ref mut edit_buffer, ref mut edit_cursor, .. } = app.mode {
+                        if let Mode::CustomizeMode {
+                            ref mut edit_buffer,
+                            ref mut edit_cursor,
+                            ..
+                        } = app.mode
+                        {
                             if *edit_cursor > 0 {
                                 edit_buffer.remove(*edit_cursor - 1);
                                 *edit_cursor -= 1;
@@ -1204,17 +1676,33 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                         }
                     }
                     KeyCode::Left => {
-                        if let Mode::CustomizeMode { ref mut edit_cursor, .. } = app.mode {
+                        if let Mode::CustomizeMode {
+                            ref mut edit_cursor,
+                            ..
+                        } = app.mode
+                        {
                             *edit_cursor = edit_cursor.saturating_sub(1);
                         }
                     }
                     KeyCode::Right => {
-                        if let Mode::CustomizeMode { ref mut edit_cursor, ref edit_buffer, .. } = app.mode {
-                            if *edit_cursor < edit_buffer.len() { *edit_cursor += 1; }
+                        if let Mode::CustomizeMode {
+                            ref mut edit_cursor,
+                            ref edit_buffer,
+                            ..
+                        } = app.mode
+                        {
+                            if *edit_cursor < edit_buffer.len() {
+                                *edit_cursor += 1;
+                            }
                         }
                     }
                     KeyCode::Char(c) => {
-                        if let Mode::CustomizeMode { ref mut edit_buffer, ref mut edit_cursor, .. } = app.mode {
+                        if let Mode::CustomizeMode {
+                            ref mut edit_buffer,
+                            ref mut edit_cursor,
+                            ..
+                        } = app.mode
+                        {
                             edit_buffer.insert(*edit_cursor, c);
                             *edit_cursor += 1;
                         }
@@ -1222,15 +1710,29 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                     _ => {}
                 }
             } else {
-                let _visible_count = options.iter()
+                let _visible_count = options
+                    .iter()
                     .filter(|(name, _, _)| filter.is_empty() || name.contains(filter.as_str()))
                     .count();
                 match key.code {
-                    KeyCode::Esc | KeyCode::Char('q') => { app.mode = Mode::Passthrough; }
+                    KeyCode::Esc | KeyCode::Char('q') => {
+                        app.mode = Mode::Passthrough;
+                    }
                     KeyCode::Up | KeyCode::Char('k') => {
-                        if let Mode::CustomizeMode { ref options, ref mut selected, ref filter, ref mut scroll_offset, .. } = app.mode {
-                            let visible: Vec<usize> = options.iter().enumerate()
-                                .filter(|(_, (name, _, _))| filter.is_empty() || name.contains(filter.as_str()))
+                        if let Mode::CustomizeMode {
+                            ref options,
+                            ref mut selected,
+                            ref filter,
+                            ref mut scroll_offset,
+                            ..
+                        } = app.mode
+                        {
+                            let visible: Vec<usize> = options
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, (name, _, _))| {
+                                    filter.is_empty() || name.contains(filter.as_str())
+                                })
                                 .map(|(i, _)| i)
                                 .collect();
                             if let Some(cur_pos) = visible.iter().position(|&i| i == *selected) {
@@ -1244,9 +1746,20 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                         }
                     }
                     KeyCode::Down | KeyCode::Char('j') => {
-                        if let Mode::CustomizeMode { ref options, ref mut selected, ref filter, ref mut scroll_offset, .. } = app.mode {
-                            let visible: Vec<usize> = options.iter().enumerate()
-                                .filter(|(_, (name, _, _))| filter.is_empty() || name.contains(filter.as_str()))
+                        if let Mode::CustomizeMode {
+                            ref options,
+                            ref mut selected,
+                            ref filter,
+                            ref mut scroll_offset,
+                            ..
+                        } = app.mode
+                        {
+                            let visible: Vec<usize> = options
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, (name, _, _))| {
+                                    filter.is_empty() || name.contains(filter.as_str())
+                                })
                                 .map(|(i, _)| i)
                                 .collect();
                             if let Some(cur_pos) = visible.iter().position(|&i| i == *selected) {
@@ -1260,7 +1773,15 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                         }
                     }
                     KeyCode::Enter => {
-                        if let Mode::CustomizeMode { ref options, selected, ref mut editing, ref mut edit_buffer, ref mut edit_cursor, .. } = app.mode {
+                        if let Mode::CustomizeMode {
+                            ref options,
+                            selected,
+                            ref mut editing,
+                            ref mut edit_buffer,
+                            ref mut edit_cursor,
+                            ..
+                        } = app.mode
+                        {
                             if let Some((_, value, _)) = options.get(selected) {
                                 *edit_buffer = value.clone();
                                 *edit_cursor = edit_buffer.len();
@@ -1269,8 +1790,15 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                         }
                     }
                     KeyCode::Char('d') => {
-                        if let Mode::CustomizeMode { ref mut options, selected, .. } = app.mode {
-                            if let Some(def) = crate::server::option_catalog::default_for(&options[selected].0) {
+                        if let Mode::CustomizeMode {
+                            ref mut options,
+                            selected,
+                            ..
+                        } = app.mode
+                        {
+                            if let Some(def) =
+                                crate::server::option_catalog::default_for(&options[selected].0)
+                            {
                                 let name = options[selected].0.clone();
                                 let value = def.to_string();
                                 options[selected].1 = value.clone();
@@ -1280,7 +1808,13 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                     }
                     KeyCode::Char('/') => {
                         // Enter filter mode via command prompt (simplified: clear filter or apply)
-                        if let Mode::CustomizeMode { ref mut filter, ref mut scroll_offset, ref mut selected, .. } = app.mode {
+                        if let Mode::CustomizeMode {
+                            ref mut filter,
+                            ref mut scroll_offset,
+                            ref mut selected,
+                            ..
+                        } = app.mode
+                        {
                             if !filter.is_empty() {
                                 // Toggle filter off
                                 *filter = String::new();
@@ -1292,10 +1826,22 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                         }
                     }
                     KeyCode::PageUp => {
-                        if let Mode::CustomizeMode { ref options, ref mut selected, ref filter, ref mut scroll_offset, .. } = app.mode {
-                            let visible: Vec<usize> = options.iter().enumerate()
-                                .filter(|(_, (name, _, _))| filter.is_empty() || name.contains(filter.as_str()))
-                                .map(|(i, _)| i).collect();
+                        if let Mode::CustomizeMode {
+                            ref options,
+                            ref mut selected,
+                            ref filter,
+                            ref mut scroll_offset,
+                            ..
+                        } = app.mode
+                        {
+                            let visible: Vec<usize> = options
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, (name, _, _))| {
+                                    filter.is_empty() || name.contains(filter.as_str())
+                                })
+                                .map(|(i, _)| i)
+                                .collect();
                             if let Some(cur_pos) = visible.iter().position(|&i| i == *selected) {
                                 let new_pos = cur_pos.saturating_sub(20);
                                 *selected = visible[new_pos];
@@ -1304,10 +1850,22 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                         }
                     }
                     KeyCode::PageDown => {
-                        if let Mode::CustomizeMode { ref options, ref mut selected, ref filter, ref mut scroll_offset, .. } = app.mode {
-                            let visible: Vec<usize> = options.iter().enumerate()
-                                .filter(|(_, (name, _, _))| filter.is_empty() || name.contains(filter.as_str()))
-                                .map(|(i, _)| i).collect();
+                        if let Mode::CustomizeMode {
+                            ref options,
+                            ref mut selected,
+                            ref filter,
+                            ref mut scroll_offset,
+                            ..
+                        } = app.mode
+                        {
+                            let visible: Vec<usize> = options
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, (name, _, _))| {
+                                    filter.is_empty() || name.contains(filter.as_str())
+                                })
+                                .map(|(i, _)| i)
+                                .collect();
                             if let Some(cur_pos) = visible.iter().position(|&i| i == *selected) {
                                 let new_pos = (cur_pos + 20).min(visible.len().saturating_sub(1));
                                 *selected = visible[new_pos];
@@ -1318,22 +1876,51 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                         }
                     }
                     KeyCode::Home | KeyCode::Char('g') => {
-                        if let Mode::CustomizeMode { ref options, ref mut selected, ref filter, ref mut scroll_offset, .. } = app.mode {
-                            let first = options.iter().enumerate()
-                                .find(|(_, (name, _, _))| filter.is_empty() || name.contains(filter.as_str()))
+                        if let Mode::CustomizeMode {
+                            ref options,
+                            ref mut selected,
+                            ref filter,
+                            ref mut scroll_offset,
+                            ..
+                        } = app.mode
+                        {
+                            let first = options
+                                .iter()
+                                .enumerate()
+                                .find(|(_, (name, _, _))| {
+                                    filter.is_empty() || name.contains(filter.as_str())
+                                })
                                 .map(|(i, _)| i);
-                            if let Some(idx) = first { *selected = idx; *scroll_offset = 0; }
+                            if let Some(idx) = first {
+                                *selected = idx;
+                                *scroll_offset = 0;
+                            }
                         }
                     }
                     KeyCode::End | KeyCode::Char('G') => {
-                        if let Mode::CustomizeMode { ref options, ref mut selected, ref filter, ref mut scroll_offset, .. } = app.mode {
-                            let last = options.iter().enumerate()
-                                .filter(|(_, (name, _, _))| filter.is_empty() || name.contains(filter.as_str()))
-                                .map(|(i, _)| i).last();
+                        if let Mode::CustomizeMode {
+                            ref options,
+                            ref mut selected,
+                            ref filter,
+                            ref mut scroll_offset,
+                            ..
+                        } = app.mode
+                        {
+                            let last = options
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, (name, _, _))| {
+                                    filter.is_empty() || name.contains(filter.as_str())
+                                })
+                                .map(|(i, _)| i)
+                                .last();
                             if let Some(idx) = last {
                                 *selected = idx;
-                                let visible_len = options.iter()
-                                    .filter(|(name, _, _)| filter.is_empty() || name.contains(filter.as_str()))
+                                let visible_len = options
+                                    .iter()
+                                    .filter(|(name, _, _)| {
+                                        filter.is_empty() || name.contains(filter.as_str())
+                                    })
                                     .count();
                                 *scroll_offset = visible_len.saturating_sub(20);
                             }
@@ -1346,16 +1933,22 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
         }
         Mode::BufferChooser { selected } => {
             match key.code {
-                KeyCode::Esc | KeyCode::Char('q') => { app.mode = Mode::Passthrough; }
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    app.mode = Mode::Passthrough;
+                }
                 KeyCode::Up | KeyCode::Char('k') => {
                     if selected > 0 {
-                        if let Mode::BufferChooser { selected: s } = &mut app.mode { *s -= 1; }
+                        if let Mode::BufferChooser { selected: s } = &mut app.mode {
+                            *s -= 1;
+                        }
                     }
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
                     let max = app.paste_buffers.len().saturating_sub(1);
                     if selected < max {
-                        if let Mode::BufferChooser { selected: s } = &mut app.mode { *s += 1; }
+                        if let Mode::BufferChooser { selected: s } = &mut app.mode {
+                            *s += 1;
+                        }
                     }
                 }
                 KeyCode::Enter => {
@@ -1376,9 +1969,13 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                     if selected < app.paste_buffers.len() {
                         app.paste_buffers.remove(selected);
                         if let Mode::BufferChooser { selected: s } = &mut app.mode {
-                            if *s >= app.paste_buffers.len() && *s > 0 { *s -= 1; }
+                            if *s >= app.paste_buffers.len() && *s > 0 {
+                                *s -= 1;
+                            }
                         }
-                        if app.paste_buffers.is_empty() { app.mode = Mode::Passthrough; }
+                        if app.paste_buffers.is_empty() {
+                            app.mode = Mode::Passthrough;
+                        }
                     }
                 }
                 _ => {}
@@ -1393,13 +1990,21 @@ pub fn move_focus(app: &mut AppState, dir: FocusDir) {
     let mut rects: Vec<(Vec<usize>, Rect)> = Vec::new();
     compute_rects(&win.root, app.last_window_area, &mut rects);
     let mut active_idx = None;
-    for (i, (path, _)) in rects.iter().enumerate() { if *path == win.active_path { active_idx = Some(i); break; } }
-    let Some(ai) = active_idx else { return; };
+    for (i, (path, _)) in rects.iter().enumerate() {
+        if *path == win.active_path {
+            active_idx = Some(i);
+            break;
+        }
+    }
+    let Some(ai) = active_idx else {
+        return;
+    };
     let (_, arect) = &rects[ai];
     // Collect pane IDs for MRU-based tie-breaking (issue #70)
-    let pane_ids: Vec<usize> = rects.iter().map(|(path, _)| {
-        crate::tree::get_active_pane_id(&win.root, path).unwrap_or(usize::MAX)
-    }).collect();
+    let pane_ids: Vec<usize> = rects
+        .iter()
+        .map(|(path, _)| crate::tree::get_active_pane_id(&win.root, path).unwrap_or(usize::MAX))
+        .collect();
     // Try direct neighbour first, then wrap to opposite edge (tmux parity #61)
     let target = find_best_pane_in_direction(&rects, ai, arect, dir, &pane_ids, &win.pane_mru)
         .or_else(|| find_wrap_target(&rects, ai, arect, dir, &pane_ids, &win.pane_mru));
@@ -1413,7 +2018,11 @@ pub fn move_focus(app: &mut AppState, dir: FocusDir) {
 }
 
 pub fn move_focus_preserving_zoom(app: &mut AppState, dir: FocusDir) {
-    if app.windows.get(app.active_idx).map_or(false, |w| w.zoom_saved.is_some()) {
+    if app
+        .windows
+        .get(app.active_idx)
+        .map_or(false, |w| w.zoom_saved.is_some())
+    {
         let old_path = app.windows[app.active_idx].active_path.clone();
         toggle_zoom(app);
         move_focus(app, dir);
@@ -1453,29 +2062,39 @@ pub fn find_best_pane_in_direction(
     let mut best: Option<(usize, u32, i32, bool, usize)> = None;
 
     for (i, (_, r)) in rects.iter().enumerate() {
-        if i == ai { continue; }
+        if i == ai {
+            continue;
+        }
         // Primary-axis gap: the pane must be in the correct direction
         let (primary_gap, perp_overlap) = match dir {
             FocusDir::Left => {
-                if r.x + r.width > arect.x { continue; }
+                if r.x + r.width > arect.x {
+                    continue;
+                }
                 let gap = (arect.x - (r.x + r.width)) as u32;
                 let overlap = ranges_overlap(r.y, r.height, arect.y, arect.height);
                 (gap, overlap)
             }
             FocusDir::Right => {
-                if r.x < arect.x + arect.width { continue; }
+                if r.x < arect.x + arect.width {
+                    continue;
+                }
                 let gap = (r.x - (arect.x + arect.width)) as u32;
                 let overlap = ranges_overlap(r.y, r.height, arect.y, arect.height);
                 (gap, overlap)
             }
             FocusDir::Up => {
-                if r.y + r.height > arect.y { continue; }
+                if r.y + r.height > arect.y {
+                    continue;
+                }
                 let gap = (arect.y - (r.y + r.height)) as u32;
                 let overlap = ranges_overlap(r.x, r.width, arect.x, arect.width);
                 (gap, overlap)
             }
             FocusDir::Down => {
-                if r.y < arect.y + arect.height { continue; }
+                if r.y < arect.y + arect.height {
+                    continue;
+                }
                 let gap = (r.y - (arect.y + arect.height)) as u32;
                 let overlap = ranges_overlap(r.x, r.width, arect.x, arect.width);
                 (gap, overlap)
@@ -1491,7 +2110,8 @@ pub fn find_best_pane_in_direction(
         };
 
         // MRU rank: lower = more recently used (tmux parity #70)
-        let rank = pane_ids.get(i)
+        let rank = pane_ids
+            .get(i)
             .map(|id| crate::tree::mru_rank(pane_mru, *id))
             .unwrap_or(usize::MAX);
 
@@ -1502,13 +2122,13 @@ pub fn find_best_pane_in_direction(
             //         (4) among non-overlapping candidates → perpendicular center distance,
             //         (5) final fallback → MRU rank
             if perp_overlap && !bo {
-                false  // new candidate has overlap, current best doesn't → new wins
+                false // new candidate has overlap, current best doesn't → new wins
             } else if !perp_overlap && bo {
-                true   // current best has overlap, new doesn't → new loses
+                true // current best has overlap, new doesn't → new loses
             } else if primary_gap < bg {
-                false  // closer on primary axis
+                false // closer on primary axis
             } else if primary_gap > bg {
-                true   // farther on primary axis
+                true // farther on primary axis
             } else if perp_overlap && bo {
                 // Both candidates overlap the active pane's perpendicular
                 // range with the same primary gap — use MRU directly.
@@ -1516,14 +2136,14 @@ pub fn find_best_pane_in_direction(
                 // candidates; it picks the most recently focused one.
                 rank >= br
             } else if perp_dist < bd {
-                false  // neither overlaps → closer perpendicular center
+                false // neither overlaps → closer perpendicular center
             } else if perp_dist > bd {
-                true   // farther perpendicular center
+                true // farther perpendicular center
             } else {
-                rank >= br  // same geometry → MRU tie-break
+                rank >= br // same geometry → MRU tie-break
             }
         } else {
-            false  // no best yet
+            false // no best yet
         };
 
         if !dominated {
@@ -1560,25 +2180,31 @@ pub fn find_wrap_target(
     let mut best: Option<(usize, i32, i32, bool, usize)> = None;
 
     for (i, (_, r)) in rects.iter().enumerate() {
-        if i == ai { continue; }
+        if i == ai {
+            continue;
+        }
 
         let (edge_score, perp_overlap) = match dir {
             // Going right, wrap to leftmost → prefer smallest x
-            FocusDir::Right => {
-                (r.x as i32, ranges_overlap(r.y, r.height, arect.y, arect.height))
-            }
+            FocusDir::Right => (
+                r.x as i32,
+                ranges_overlap(r.y, r.height, arect.y, arect.height),
+            ),
             // Going left, wrap to rightmost → prefer largest x+width (negate)
-            FocusDir::Left => {
-                (-((r.x + r.width) as i32), ranges_overlap(r.y, r.height, arect.y, arect.height))
-            }
+            FocusDir::Left => (
+                -((r.x + r.width) as i32),
+                ranges_overlap(r.y, r.height, arect.y, arect.height),
+            ),
             // Going down, wrap to topmost → prefer smallest y
-            FocusDir::Down => {
-                (r.y as i32, ranges_overlap(r.x, r.width, arect.x, arect.width))
-            }
+            FocusDir::Down => (
+                r.y as i32,
+                ranges_overlap(r.x, r.width, arect.x, arect.width),
+            ),
             // Going up, wrap to bottommost → prefer largest y+height (negate)
-            FocusDir::Up => {
-                (-((r.y + r.height) as i32), ranges_overlap(r.x, r.width, arect.x, arect.width))
-            }
+            FocusDir::Up => (
+                -((r.y + r.height) as i32),
+                ranges_overlap(r.x, r.width, arect.x, arect.width),
+            ),
         };
 
         let rcx = r.x as i32 * 2 + r.width as i32;
@@ -1588,7 +2214,8 @@ pub fn find_wrap_target(
             FocusDir::Up | FocusDir::Down => (rcx - acx).abs(),
         };
 
-        let rank = pane_ids.get(i)
+        let rank = pane_ids
+            .get(i)
             .map(|id| crate::tree::mru_rank(pane_mru, *id))
             .unwrap_or(usize::MAX);
 
@@ -1609,7 +2236,7 @@ pub fn find_wrap_target(
             } else if perp_dist > bd {
                 true
             } else {
-                rank >= br  // same geometry → MRU tie-break
+                rank >= br // same geometry → MRU tie-break
             }
         } else {
             false
@@ -1638,9 +2265,15 @@ pub fn find_wrap_target(
 /// emit the extended `;mod` form).
 fn modifier_param(mods: KeyModifiers) -> u8 {
     let mut m: u8 = 1;
-    if mods.contains(KeyModifiers::SHIFT) { m += 1; }
-    if mods.contains(KeyModifiers::ALT) { m += 2; }
-    if mods.contains(KeyModifiers::CONTROL) { m += 4; }
+    if mods.contains(KeyModifiers::SHIFT) {
+        m += 1;
+    }
+    if mods.contains(KeyModifiers::ALT) {
+        m += 2;
+    }
+    if mods.contains(KeyModifiers::CONTROL) {
+        m += 4;
+    }
     m
 }
 
@@ -1653,14 +2286,24 @@ pub fn parse_modified_special_key(s: &str) -> Option<String> {
     let mut rest = upper.as_str();
     let mut bits: u8 = 0;
     loop {
-        if rest.starts_with("C-") { bits |= 4; rest = &rest[2..]; }
-        else if rest.starts_with("M-") { bits |= 2; rest = &rest[2..]; }
-        else if rest.starts_with("S-") { bits |= 1; rest = &rest[2..]; }
-        else { break; }
+        if rest.starts_with("C-") {
+            bits |= 4;
+            rest = &rest[2..];
+        } else if rest.starts_with("M-") {
+            bits |= 2;
+            rest = &rest[2..];
+        } else if rest.starts_with("S-") {
+            bits |= 1;
+            rest = &rest[2..];
+        } else {
+            break;
+        }
     }
-    if bits == 0 { return None; } // no modifiers found
+    if bits == 0 {
+        return None;
+    } // no modifiers found
     let m = bits + 1; // xterm modifier param = 1 + modifier bits
-    // Match the base key name
+                      // Match the base key name
     match rest {
         "ENTER" | "RETURN" | "CR" => Some(format!("\x1b[13;{}~", m)),
         "TAB" => Some(format!("\x1b[9;{}~", m)),
@@ -1682,8 +2325,14 @@ pub fn parse_modified_special_key(s: &str) -> Option<String> {
         s if s.starts_with('F') && s.len() >= 2 => {
             if let Ok(n) = s[1..].parse::<u8>() {
                 let seq = encode_fkey(n, m);
-                if seq.is_empty() { None } else { Some(String::from_utf8_lossy(&seq).into_owned()) }
-            } else { None }
+                if seq.is_empty() {
+                    None
+                } else {
+                    Some(String::from_utf8_lossy(&seq).into_owned())
+                }
+            } else {
+                None
+            }
         }
         _ => None,
     }
@@ -1693,10 +2342,34 @@ pub fn parse_modified_special_key(s: &str) -> Option<String> {
 fn encode_fkey(n: u8, m: u8) -> Vec<u8> {
     // F1-F4 use SS3 when unmodified, CSI with modifier when modified.
     let (prefix, num) = match n {
-        1 => if m > 1 { ("", Some((11, 'P'))) } else { return b"\x1bOP".to_vec() },
-        2 => if m > 1 { ("", Some((12, 'Q'))) } else { return b"\x1bOQ".to_vec() },
-        3 => if m > 1 { ("", Some((13, 'R'))) } else { return b"\x1bOR".to_vec() },
-        4 => if m > 1 { ("", Some((14, 'S'))) } else { return b"\x1bOS".to_vec() },
+        1 => {
+            if m > 1 {
+                ("", Some((11, 'P')))
+            } else {
+                return b"\x1bOP".to_vec();
+            }
+        }
+        2 => {
+            if m > 1 {
+                ("", Some((12, 'Q')))
+            } else {
+                return b"\x1bOQ".to_vec();
+            }
+        }
+        3 => {
+            if m > 1 {
+                ("", Some((13, 'R')))
+            } else {
+                return b"\x1bOR".to_vec();
+            }
+        }
+        4 => {
+            if m > 1 {
+                ("", Some((14, 'S')))
+            } else {
+                return b"\x1bOS".to_vec();
+            }
+        }
         5 => ("", Some((15, '~'))),
         6 => ("", Some((17, '~'))),
         7 => ("", Some((18, '~'))),
@@ -1710,8 +2383,11 @@ fn encode_fkey(n: u8, m: u8) -> Vec<u8> {
     let _ = prefix;
     if let Some((code, suffix)) = num {
         if suffix == '~' {
-            if m > 1 { format!("\x1b[{};{}~", code, m).into_bytes() }
-            else { format!("\x1b[{}~", code).into_bytes() }
+            if m > 1 {
+                format!("\x1b[{};{}~", code, m).into_bytes()
+            } else {
+                format!("\x1b[{}~", code).into_bytes()
+            }
         } else {
             // F1-F4 modified: \x1b[1;{mod}P/Q/R/S
             format!("\x1b[1;{}{}", m, suffix).into_bytes()
@@ -1736,23 +2412,36 @@ fn encode_fkey(n: u8, m: u8) -> Vec<u8> {
 /// Returns `None` for keys that have no defined Ctrl encoding (tmux rejects
 /// these by returning -1 from `input_key_vt10x`).
 pub fn ctrl_char_send_keys_byte(c: char) -> Option<u8> {
-    if !c.is_ascii() { return None; }
+    if !c.is_ascii() {
+        return None;
+    }
     let b = c as u8;
     // tmux input-keys.c standard_map: special punctuation/digit remaps.
     // Pairs: input char -> output byte. Some remaps are to printable ASCII
     // (e.g. C-! -> '1'); others to control bytes (e.g. C-/ -> 0x1f).
     let remap: &[(u8, u8)] = &[
-        (b'1', b'1'), (b'!', b'1'),
-        (b'9', b'9'), (b'(', b'9'),
-        (b'0', b'0'), (b')', b'0'),
-        (b'=', b'='), (b'+', b'+'),
-        (b';', b';'), (b':', b';'),
-        (b'\'', b'\''), (b'"', b'\''),
-        (b',', b','), (b'<', b','),
-        (b'.', b'.'), (b'>', b'.'),
-        (b'/', 0x1f), (b'-', 0x1f),
-        (b'8', 0x7f), (b'?', 0x7f),
-        (b' ', 0x00), (b'2', 0x00),
+        (b'1', b'1'),
+        (b'!', b'1'),
+        (b'9', b'9'),
+        (b'(', b'9'),
+        (b'0', b'0'),
+        (b')', b'0'),
+        (b'=', b'='),
+        (b'+', b'+'),
+        (b';', b';'),
+        (b':', b';'),
+        (b'\'', b'\''),
+        (b'"', b'\''),
+        (b',', b','),
+        (b'<', b','),
+        (b'.', b'.'),
+        (b'>', b'.'),
+        (b'/', 0x1f),
+        (b'-', 0x1f),
+        (b'8', 0x7f),
+        (b'?', 0x7f),
+        (b' ', 0x00),
+        (b'2', 0x00),
     ];
     if let Some(&(_, v)) = remap.iter().find(|(k, _)| *k == b) {
         return Some(v);
@@ -1777,15 +2466,20 @@ pub fn encode_key_event(key: &KeyEvent) -> Option<Vec<u8>> {
         // with CONTROL|ALT modifiers.  The produced character is NOT an ASCII
         // letter (a-z), so we can distinguish AltGr from genuine Ctrl+Alt
         // combos and forward the character as-is.
-        KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::CONTROL)
-            && key.modifiers.contains(KeyModifiers::ALT)
-            && !c.is_ascii_lowercase() => {
+        KeyCode::Char(c)
+            if key.modifiers.contains(KeyModifiers::CONTROL)
+                && key.modifiers.contains(KeyModifiers::ALT)
+                && !c.is_ascii_lowercase() =>
+        {
             // AltGr-produced character — forward it verbatim (UTF-8).
             let mut buf = [0u8; 4];
             c.encode_utf8(&mut buf);
             buf[..c.len_utf8()].to_vec()
         }
-        KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::CONTROL) && key.modifiers.contains(KeyModifiers::ALT) => {
+        KeyCode::Char(c)
+            if key.modifiers.contains(KeyModifiers::CONTROL)
+                && key.modifiers.contains(KeyModifiers::ALT) =>
+        {
             // Genuine Ctrl+Alt+letter — encode as ESC + ctrl-char.
             let ctrl_char = (c as u8) & 0x1F;
             vec![0x1b, ctrl_char]
@@ -1805,9 +2499,7 @@ pub fn encode_key_event(key: &KeyEvent) -> Option<Vec<u8>> {
         KeyCode::Char(c) if (c as u32) >= 0x01 && (c as u32) <= 0x1A => {
             vec![c as u8]
         }
-        KeyCode::Char(c) => {
-            format!("{}", c).into_bytes()
-        }
+        KeyCode::Char(c) => format!("{}", c).into_bytes(),
         KeyCode::Enter => {
             let m = modifier_param(key.modifiers);
             if m > 1 {
@@ -1861,12 +2553,19 @@ pub fn encode_key_event(key: &KeyEvent) -> Option<Vec<u8>> {
         KeyCode::Esc => b"\x1b".to_vec(),
         // Arrow keys and special keys with xterm modifier encoding.
         // Format: \x1b[1;{mod}{letter} where mod = 1 + Shift*1 + Alt*2 + Ctrl*4
-        KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down |
-        KeyCode::Home | KeyCode::End => {
+        KeyCode::Left
+        | KeyCode::Right
+        | KeyCode::Up
+        | KeyCode::Down
+        | KeyCode::Home
+        | KeyCode::End => {
             let letter = match key.code {
-                KeyCode::Up => 'A', KeyCode::Down => 'B',
-                KeyCode::Right => 'C', KeyCode::Left => 'D',
-                KeyCode::Home => 'H', KeyCode::End => 'F',
+                KeyCode::Up => 'A',
+                KeyCode::Down => 'B',
+                KeyCode::Right => 'C',
+                KeyCode::Left => 'D',
+                KeyCode::Home => 'H',
+                KeyCode::End => 'F',
                 _ => unreachable!(),
             };
             let m = modifier_param(key.modifiers);
@@ -1879,8 +2578,10 @@ pub fn encode_key_event(key: &KeyEvent) -> Option<Vec<u8>> {
         // Tilde-style keys: \x1b[{N};{mod}~ when modifiers present
         KeyCode::Insert | KeyCode::Delete | KeyCode::PageUp | KeyCode::PageDown => {
             let n = match key.code {
-                KeyCode::Insert => 2, KeyCode::Delete => 3,
-                KeyCode::PageUp => 5, KeyCode::PageDown => 6,
+                KeyCode::Insert => 2,
+                KeyCode::Delete => 3,
+                KeyCode::PageUp => 5,
+                KeyCode::PageDown => 6,
                 _ => unreachable!(),
             };
             let m = modifier_param(key.modifiers);
@@ -1921,19 +2622,40 @@ pub(crate) fn csi_cursor_to_ss3(seq: &[u8], app_cursor: bool) -> Option<[u8; 3]>
     }
 }
 
+/// Write input bytes and flush them to the pane's PTY.
+///
+/// A failed ConPTY write means the pane can no longer receive input. Keep the
+/// error observable instead of treating a dropped key as successful delivery.
+pub(crate) fn write_input(writer: &mut dyn Write, bytes: &[u8]) -> io::Result<()> {
+    writer.write_all(bytes)?;
+    writer.flush()
+}
+
 /// Write a key's byte sequence to a pane, upgrading a CSI cursor key to its SS3
 /// form when the pane is in DECCKM application-cursor mode (see csi_cursor_to_ss3).
 /// The transform no-ops on every other sequence, so all named keys route through
-/// this uniformly. Does not flush; callers flush once after the write.
+/// this uniformly.
 pub(crate) fn write_key_seq(p: &mut crate::types::Pane, seq: &[u8]) {
-    use std::io::Write as _;
-    let app_cursor = p.term.lock()
+    let app_cursor = p
+        .term
+        .lock()
         .map(|t| t.screen().application_cursor())
         .unwrap_or(false);
     let _ = match csi_cursor_to_ss3(seq, app_cursor) {
-        Some(ss3) => p.writer.write_all(&ss3),
-        None => p.writer.write_all(seq),
+        Some(ss3) => write_input(&mut *p.writer, &ss3),
+        None => write_input(&mut *p.writer, seq),
     };
+}
+
+fn report_input_delivery_error(
+    app: &mut AppState,
+    pane_id: usize,
+    route: &str,
+    error: &io::Error,
+) {
+    let message = format!("pane #{} input unavailable ({}): {}", pane_id, route, error);
+    crate::debug_log::input_log("delivery-error", &message);
+    app.status_message = Some((message, Instant::now(), Some(10_000)));
 }
 
 /// A printable text keystroke on the INTERACTIVE input route (drives
@@ -1975,7 +2697,11 @@ fn for_each_receiving_pane<F: FnMut(&mut Pane)>(app: &mut AppState, mut f: F) {
             match node {
                 Node::Leaf(p) if !p.dead => f(p),
                 Node::Leaf(_) => {}
-                Node::Split { children, .. } => { for c in children { walk(c, f); } }
+                Node::Split { children, .. } => {
+                    for c in children {
+                        walk(c, f);
+                    }
+                }
             }
         }
         walk(&mut win.root, &mut f);
@@ -2031,7 +2757,9 @@ pub fn forward_key_to_active(app: &mut AppState, key: KeyEvent) -> io::Result<()
                         // modifier flags and (for plain Ctrl+Enter) an LF character
                         // payload, matching Windows Terminal so VT/raw readers see LF
                         // instead of CR (#409).
-                        crate::platform::mouse_inject::send_modified_enter_event(pid, ctrl, alt, shift)
+                        crate::platform::mouse_inject::send_modified_enter_event(
+                            pid, ctrl, alt, shift,
+                        )
                     } else {
                         false
                     }
@@ -2043,10 +2771,17 @@ pub fn forward_key_to_active(app: &mut AppState, key: KeyEvent) -> io::Result<()
                         match node {
                             Node::Leaf(p) if !p.dead => {
                                 if let Some(pid) = p.child_pid {
-                                    if !crate::platform::mouse_inject::send_modified_enter_event(pid, ctrl, alt, shift) {
+                                    if !crate::platform::mouse_inject::send_modified_enter_event(
+                                        pid, ctrl, alt, shift,
+                                    ) {
                                         // Fallback: xterm CSI encoding for non-console apps
-                                        let m: u8 = 1 + (shift as u8) + (alt as u8) * 2 + (ctrl as u8) * 4;
-                                        let bytes = if m > 1 { format!("\x1b[13;{}~", m).into_bytes() } else { b"\r".to_vec() };
+                                        let m: u8 =
+                                            1 + (shift as u8) + (alt as u8) * 2 + (ctrl as u8) * 4;
+                                        let bytes = if m > 1 {
+                                            format!("\x1b[13;{}~", m).into_bytes()
+                                        } else {
+                                            b"\r".to_vec()
+                                        };
                                         let _ = p.writer.write_all(&bytes);
                                         let _ = p.writer.flush();
                                     }
@@ -2054,7 +2789,9 @@ pub fn forward_key_to_active(app: &mut AppState, key: KeyEvent) -> io::Result<()
                             }
                             Node::Leaf(_) => {}
                             Node::Split { children, .. } => {
-                                for c in children { inject_all(c, ctrl, alt, shift); }
+                                for c in children {
+                                    inject_all(c, ctrl, alt, shift);
+                                }
                             }
                         }
                     }
@@ -2117,21 +2854,33 @@ pub fn forward_key_to_active(app: &mut AppState, key: KeyEvent) -> io::Result<()
                                     if is_ctrl_c {
                                         // Keyboard pass-through: let raw-mode TUIs (opencode,
                                         // neovim) handle 0x03 themselves (force=false).
-                                        crate::platform::mouse_inject::send_ctrl_c_event(pid, false, false);
+                                        crate::platform::mouse_inject::send_ctrl_c_event(
+                                            pid, false, false,
+                                        );
                                     } else {
-                                        injected = crate::platform::mouse_inject::send_modified_key_event(pid, ch, true, false, false);
+                                        injected =
+                                            crate::platform::mouse_inject::send_modified_key_event(
+                                                pid, ch, true, false, false,
+                                            );
                                     }
                                 }
                                 if !injected {
                                     let _ = p.writer.write_all(&[raw]);
                                     let _ = p.writer.flush();
                                 }
-                                crate::debug_log::input_log("ctrl-key",
-                                    &format!("sync inject_ctrl char='{}' pid={:?}", ch, p.child_pid));
+                                crate::debug_log::input_log(
+                                    "ctrl-key",
+                                    &format!(
+                                        "sync inject_ctrl char='{}' pid={:?}",
+                                        ch, p.child_pid
+                                    ),
+                                );
                             }
                             Node::Leaf(_) => {}
                             Node::Split { children, .. } => {
-                                for child in children { inject_ctrl_all(child, ch, raw, is_ctrl_c); }
+                                for child in children {
+                                    inject_ctrl_all(child, ch, raw, is_ctrl_c);
+                                }
                             }
                         }
                     }
@@ -2146,17 +2895,31 @@ pub fn forward_key_to_active(app: &mut AppState, key: KeyEvent) -> io::Result<()
                                 if is_ctrl_c {
                                     // Keyboard pass-through: let raw-mode TUIs (opencode,
                                     // neovim) handle 0x03 themselves (force=false).
-                                    crate::platform::mouse_inject::send_ctrl_c_event(pid, false, false);
+                                    crate::platform::mouse_inject::send_ctrl_c_event(
+                                        pid, false, false,
+                                    );
                                 } else {
-                                    injected = crate::platform::mouse_inject::send_modified_key_event(pid, inject_char, true, false, false);
+                                    injected =
+                                        crate::platform::mouse_inject::send_modified_key_event(
+                                            pid,
+                                            inject_char,
+                                            true,
+                                            false,
+                                            false,
+                                        );
                                 }
                             }
                             if !injected {
                                 let _ = active.writer.write_all(&[ctrl_char]);
                                 let _ = active.writer.flush();
                             }
-                            crate::debug_log::input_log("ctrl-key",
-                                &format!("inject_ctrl char='{}' pid={:?}", inject_char, active.child_pid));
+                            crate::debug_log::input_log(
+                                "ctrl-key",
+                                &format!(
+                                    "inject_ctrl char='{}' pid={:?}",
+                                    inject_char, active.child_pid
+                                ),
+                            );
                         }
                     }
                 }
@@ -2175,20 +2938,25 @@ pub fn forward_key_to_active(app: &mut AppState, key: KeyEvent) -> io::Result<()
         let win = &mut app.windows[app.active_idx];
         fn write_all_panes(node: &mut Node, data: &[u8]) {
             match node {
-                Node::Leaf(p) if !p.dead => { let _ = p.writer.write_all(data); let _ = p.writer.flush(); }
+                Node::Leaf(p) if !p.dead => {
+                    let _ = p.writer.write_all(data);
+                    let _ = p.writer.flush();
+                }
                 Node::Leaf(_) => {}
-                Node::Split { children, .. } => { for c in children { write_all_panes(c, data); } }
+                Node::Split { children, .. } => {
+                    for c in children {
+                        write_all_panes(c, data);
+                    }
+                }
             }
         }
         write_all_panes(&mut win.root, &encoded);
-
     } else {
         let win = &mut app.windows[app.active_idx];
         if let Some(active) = active_pane_mut(&mut win.root, &win.active_path) {
             if !active.dead {
                 let _ = active.writer.write_all(&encoded);
                 let _ = active.writer.flush();
-
             }
         }
     }
@@ -2234,8 +3002,24 @@ fn paste_clipboard_to_active(app: &mut AppState) -> io::Result<()> {
 ///
 /// When mouse protocol is NOT enabled (shell prompt), use Win32 MOUSE_EVENT
 /// injection as a harmless fallback (most programs ignore it).
-fn forward_mouse_to_pane(pane: &mut Pane, area: Rect, abs_x: u16, abs_y: u16, button_state: u32, event_flags: u32) {
-    forward_mouse_to_pane_ex(pane, area, abs_x, abs_y, button_state, event_flags, 0xff, false);
+fn forward_mouse_to_pane(
+    pane: &mut Pane,
+    area: Rect,
+    abs_x: u16,
+    abs_y: u16,
+    button_state: u32,
+    event_flags: u32,
+) {
+    forward_mouse_to_pane_ex(
+        pane,
+        area,
+        abs_x,
+        abs_y,
+        button_state,
+        event_flags,
+        0xff,
+        false,
+    );
 }
 
 /// Forward a mouse event to a child pane by writing SGR mouse sequences
@@ -2244,17 +3028,32 @@ fn forward_mouse_to_pane(pane: &mut Pane, area: Rect, abs_x: u16, abs_y: u16, bu
 /// ConPTY/conhost automatically translates SGR mouse sequences into
 /// MOUSE_EVENT records for crossterm/ratatui apps (ReadConsoleInputW),
 /// and passes VT through for nvim/vim apps.  (fixes #60)
-fn forward_mouse_to_pane_ex(pane: &mut Pane, area: Rect, abs_x: u16, abs_y: u16,
-                             button_state: u32, event_flags: u32,
-                             vt_button: u8, press: bool) {
+fn forward_mouse_to_pane_ex(
+    pane: &mut Pane,
+    area: Rect,
+    abs_x: u16,
+    abs_y: u16,
+    button_state: u32,
+    event_flags: u32,
+    vt_button: u8,
+    press: bool,
+) {
     let col = abs_x as i16 - area.x as i16;
     let row = abs_y as i16 - area.y as i16;
     crate::window_ops::inject_mouse_combined(
-        pane, col, row, vt_button, press, button_state, event_flags, "client");
+        pane,
+        col,
+        row,
+        vt_button,
+        press,
+        button_state,
+        event_flags,
+        "client",
+    );
 }
 
 pub fn handle_mouse(app: &mut AppState, me: MouseEvent, window_area: Rect) -> io::Result<()> {
-    use crossterm::event::{MouseEventKind, MouseButton};
+    use crossterm::event::{MouseButton, MouseEventKind};
 
     // Track last mouse position for #{mouse_x}, #{mouse_y} format variables
     app.last_mouse_x = me.column;
@@ -2265,26 +3064,57 @@ pub fn handle_mouse(app: &mut AppState, me: MouseEvent, window_area: Rect) -> io
         if matches!(me.kind, MouseEventKind::Down(MouseButton::Left)) {
             // Recompute menu_area the same way as the renderer (app.rs).
             let full_area = Rect {
-                x: 0, y: 0,
+                x: 0,
+                y: 0,
                 width: window_area.width,
                 height: window_area.height + app.status_lines as u16,
             };
             let item_count = menu.items.len();
             let height = (item_count as u16 + 2).min(20);
-            let width = menu.items.iter().map(|i| i.name.len()).max().unwrap_or(10).max(menu.title.len()) as u16 + 8;
+            let width = menu
+                .items
+                .iter()
+                .map(|i| i.name.len())
+                .max()
+                .unwrap_or(10)
+                .max(menu.title.len()) as u16
+                + 8;
             let menu_area = if let (Some(x), Some(y)) = (menu.x, menu.y) {
-                let x = if x < 0 { (full_area.width as i16 + x).max(0) as u16 } else { x as u16 };
-                let y = if y < 0 { (full_area.height as i16 + y).max(0) as u16 } else { y as u16 };
-                Rect { x: x.min(full_area.width.saturating_sub(width)), y: y.min(full_area.height.saturating_sub(height)), width, height }
+                let x = if x < 0 {
+                    (full_area.width as i16 + x).max(0) as u16
+                } else {
+                    x as u16
+                };
+                let y = if y < 0 {
+                    (full_area.height as i16 + y).max(0) as u16
+                } else {
+                    y as u16
+                };
+                Rect {
+                    x: x.min(full_area.width.saturating_sub(width)),
+                    y: y.min(full_area.height.saturating_sub(height)),
+                    width,
+                    height,
+                }
             } else {
-                crate::rendering::centered_rect((width * 100 / full_area.width.max(1)).max(30), height, full_area)
+                crate::rendering::centered_rect(
+                    (width * 100 / full_area.width.max(1)).max(30),
+                    height,
+                    full_area,
+                )
             };
-            let pos = ratatui::layout::Position { x: me.column, y: me.row };
+            let pos = ratatui::layout::Position {
+                x: me.column,
+                y: me.row,
+            };
             if menu_area.contains(pos) {
                 // Block border is 1 row top
                 let inner_y = me.row.saturating_sub(menu_area.y + 1);
                 let idx = inner_y as usize;
-                if idx < menu.items.len() && !menu.items[idx].is_separator && !menu.items[idx].command.is_empty() {
+                if idx < menu.items.len()
+                    && !menu.items[idx].is_separator
+                    && !menu.items[idx].command.is_empty()
+                {
                     let cmd = menu.items[idx].command.clone();
                     app.mode = Mode::Passthrough;
                     let _ = execute_command_string(app, &cmd);
@@ -2299,7 +3129,13 @@ pub fn handle_mouse(app: &mut AppState, me: MouseEvent, window_area: Rect) -> io
         if matches!(me.kind, MouseEventKind::ScrollUp) {
             if menu.selected > 0 {
                 menu.selected -= 1;
-                while menu.selected > 0 && menu.items.get(menu.selected).map(|i| i.is_separator).unwrap_or(false) {
+                while menu.selected > 0
+                    && menu
+                        .items
+                        .get(menu.selected)
+                        .map(|i| i.is_separator)
+                        .unwrap_or(false)
+                {
                     menu.selected -= 1;
                 }
             }
@@ -2308,7 +3144,13 @@ pub fn handle_mouse(app: &mut AppState, me: MouseEvent, window_area: Rect) -> io
         if matches!(me.kind, MouseEventKind::ScrollDown) {
             if menu.selected + 1 < menu.items.len() {
                 menu.selected += 1;
-                while menu.selected + 1 < menu.items.len() && menu.items.get(menu.selected).map(|i| i.is_separator).unwrap_or(false) {
+                while menu.selected + 1 < menu.items.len()
+                    && menu
+                        .items
+                        .get(menu.selected)
+                        .map(|i| i.is_separator)
+                        .unwrap_or(false)
+                {
                     menu.selected += 1;
                 }
             }
@@ -2342,15 +3184,20 @@ pub fn handle_mouse(app: &mut AppState, me: MouseEvent, window_area: Rect) -> io
 
     // If a left-click lands on a different pane while in copy mode,
     // exit copy mode entirely and switch to the clicked pane (tmux parity #62).
-    if matches!(me.kind, crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left))
-        && matches!(app.mode, Mode::CopyMode | Mode::CopySearch { .. })
+    if matches!(
+        me.kind,
+        crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left)
+    ) && matches!(app.mode, Mode::CopyMode | Mode::CopySearch { .. })
     {
         let win = &app.windows[app.active_idx];
         let mut rects_check: Vec<(Vec<usize>, Rect)> = Vec::new();
         compute_rects(&win.root, window_area, &mut rects_check);
         let mut clicked_new_path: Option<Vec<usize>> = None;
         for (path, area) in rects_check.iter() {
-            if area.contains(ratatui::layout::Position { x: me.column, y: me.row }) {
+            if area.contains(ratatui::layout::Position {
+                x: me.column,
+                y: me.row,
+            }) {
                 if *path != win.active_path {
                     clicked_new_path = Some(path.clone());
                 }
@@ -2383,8 +3230,12 @@ pub fn handle_mouse(app: &mut AppState, me: MouseEvent, window_area: Rect) -> io
     // (row, col) for copy-mode cursor positioning.  Mirrors
     // `copy_cell_for_area` in window_ops.rs.
     fn copy_cell(area: Rect, abs_x: u16, abs_y: u16) -> (u16, u16) {
-        let col = abs_x.saturating_sub(area.x).min(area.width.saturating_sub(1));
-        let row = abs_y.saturating_sub(area.y).min(area.height.saturating_sub(1));
+        let col = abs_x
+            .saturating_sub(area.x)
+            .min(area.width.saturating_sub(1));
+        let row = abs_y
+            .saturating_sub(area.y)
+            .min(area.height.saturating_sub(1));
         (row, col)
     }
 
@@ -2412,8 +3263,19 @@ pub fn handle_mouse(app: &mut AppState, me: MouseEvent, window_area: Rect) -> io
                 match kind {
                     LayoutKind::Horizontal => {
                         if me.column >= pos.saturating_sub(tol) && me.column <= pos + tol {
-                            if let Some((left,right)) = split_sizes_at(&win.root, path.clone(), *idx) {
-                                app.drag = Some(DragState { split_path: path.clone(), kind: *kind, index: *idx, start_x: *pos, start_y: me.row, left_initial: left, _right_initial: right, total_pixels: *total_px });
+                            if let Some((left, right)) =
+                                split_sizes_at(&win.root, path.clone(), *idx)
+                            {
+                                app.drag = Some(DragState {
+                                    split_path: path.clone(),
+                                    kind: *kind,
+                                    index: *idx,
+                                    start_x: *pos,
+                                    start_y: me.row,
+                                    left_initial: left,
+                                    _right_initial: right,
+                                    total_pixels: *total_px,
+                                });
                             }
                             on_border = true;
                             break;
@@ -2421,8 +3283,19 @@ pub fn handle_mouse(app: &mut AppState, me: MouseEvent, window_area: Rect) -> io
                     }
                     LayoutKind::Vertical => {
                         if me.row >= pos.saturating_sub(tol) && me.row <= pos + tol {
-                            if let Some((left,right)) = split_sizes_at(&win.root, path.clone(), *idx) {
-                                app.drag = Some(DragState { split_path: path.clone(), kind: *kind, index: *idx, start_x: me.column, start_y: *pos, left_initial: left, _right_initial: right, total_pixels: *total_px });
+                            if let Some((left, right)) =
+                                split_sizes_at(&win.root, path.clone(), *idx)
+                            {
+                                app.drag = Some(DragState {
+                                    split_path: path.clone(),
+                                    kind: *kind,
+                                    index: *idx,
+                                    start_x: me.column,
+                                    start_y: *pos,
+                                    left_initial: left,
+                                    _right_initial: right,
+                                    total_pixels: *total_px,
+                                });
                             }
                             on_border = true;
                             break;
@@ -2433,7 +3306,10 @@ pub fn handle_mouse(app: &mut AppState, me: MouseEvent, window_area: Rect) -> io
 
             // Switch pane focus if clicking inside a pane
             for (path, area) in rects.iter() {
-                if area.contains(ratatui::layout::Position { x: me.column, y: me.row }) {
+                if area.contains(ratatui::layout::Position {
+                    x: me.column,
+                    y: me.row,
+                }) {
                     win.active_path = path.clone();
                     // Update MRU for clicked pane
                     if let Some(pid) = crate::tree::get_active_pane_id(&win.root, path) {
@@ -2448,14 +3324,20 @@ pub fn handle_mouse(app: &mut AppState, me: MouseEvent, window_area: Rect) -> io
                 if let Some(area) = active_area {
                     if let Some(active) = active_pane_mut(&mut win.root, &win.active_path) {
                         if crate::window_ops::pane_wants_mouse(active) {
-                            forward_mouse_to_pane_ex(active, area, me.column, me.row,
-                                crate::platform::mouse_inject::FROM_LEFT_1ST_BUTTON_PRESSED, 0,
-                                0, true); // SGR button 0 = left, press
+                            forward_mouse_to_pane_ex(
+                                active,
+                                area,
+                                me.column,
+                                me.row,
+                                crate::platform::mouse_inject::FROM_LEFT_1ST_BUTTON_PRESSED,
+                                0,
+                                0,
+                                true,
+                            ); // SGR button 0 = left, press
                         }
                     }
                 }
             }
-
         }
         MouseEventKind::Down(MouseButton::Right) => {
             // Windows Terminal behaviour: right-click = paste clipboard.
@@ -2473,9 +3355,16 @@ pub fn handle_mouse(app: &mut AppState, me: MouseEvent, window_area: Rect) -> io
                 if let Some(area) = active_area {
                     if let Some(active) = active_pane_mut(&mut win.root, &win.active_path) {
                         if crate::window_ops::pane_wants_mouse(active) {
-                            forward_mouse_to_pane_ex(active, area, me.column, me.row,
-                                crate::platform::mouse_inject::RIGHTMOST_BUTTON_PRESSED, 0,
-                                2, true); // SGR button 2 = right, press
+                            forward_mouse_to_pane_ex(
+                                active,
+                                area,
+                                me.column,
+                                me.row,
+                                crate::platform::mouse_inject::RIGHTMOST_BUTTON_PRESSED,
+                                0,
+                                2,
+                                true,
+                            ); // SGR button 2 = right, press
                         }
                     }
                 }
@@ -2487,13 +3376,22 @@ pub fn handle_mouse(app: &mut AppState, me: MouseEvent, window_area: Rect) -> io
         }
         MouseEventKind::Down(MouseButton::Middle) => {
             // In copy mode, suppress — don't forward to child
-            if in_copy { return Ok(()); }
+            if in_copy {
+                return Ok(());
+            }
             if let Some(area) = active_area {
                 if let Some(active) = active_pane_mut(&mut win.root, &win.active_path) {
                     if crate::window_ops::pane_wants_mouse(active) {
-                        forward_mouse_to_pane_ex(active, area, me.column, me.row,
-                            crate::platform::mouse_inject::FROM_LEFT_2ND_BUTTON_PRESSED, 0,
-                            1, true); // SGR button 1 = middle, press
+                        forward_mouse_to_pane_ex(
+                            active,
+                            area,
+                            me.column,
+                            me.row,
+                            crate::platform::mouse_inject::FROM_LEFT_2ND_BUTTON_PRESSED,
+                            0,
+                            1,
+                            true,
+                        ); // SGR button 1 = middle, press
                     }
                 }
             }
@@ -2539,14 +3437,16 @@ pub fn handle_mouse(app: &mut AppState, me: MouseEvent, window_area: Rect) -> io
             } else if let Some(area) = active_area {
                 if let Some(active) = active_pane_mut(&mut win.root, &win.active_path) {
                     if crate::window_ops::pane_wants_mouse(active) {
-                        forward_mouse_to_pane_ex(active, area, me.column, me.row, 0, 0,
-                            0, false); // SGR button 0 = left, release
+                        forward_mouse_to_pane_ex(active, area, me.column, me.row, 0, 0, 0, false);
+                        // SGR button 0 = left, release
                     }
                 }
             }
         }
         MouseEventKind::Up(MouseButton::Right) => {
-            if in_copy { return Ok(()); }
+            if in_copy {
+                return Ok(());
+            }
             // Forward right-release only when active pane wants mouse input.
             let wants_mouse = active_pane(&win.root, &win.active_path)
                 .map_or(false, |p| crate::window_ops::pane_wants_mouse(p));
@@ -2554,20 +3454,23 @@ pub fn handle_mouse(app: &mut AppState, me: MouseEvent, window_area: Rect) -> io
                 if let Some(area) = active_area {
                     if let Some(active) = active_pane_mut(&mut win.root, &win.active_path) {
                         if crate::window_ops::pane_wants_mouse(active) {
-                            forward_mouse_to_pane_ex(active, area, me.column, me.row, 0, 0,
-                                2, false); // SGR button 2 = right, release
+                            forward_mouse_to_pane_ex(
+                                active, area, me.column, me.row, 0, 0, 2, false,
+                            ); // SGR button 2 = right, release
                         }
                     }
                 }
             }
         }
         MouseEventKind::Up(MouseButton::Middle) => {
-            if in_copy { return Ok(()); }
+            if in_copy {
+                return Ok(());
+            }
             if let Some(area) = active_area {
                 if let Some(active) = active_pane_mut(&mut win.root, &win.active_path) {
                     if crate::window_ops::pane_wants_mouse(active) {
-                        forward_mouse_to_pane_ex(active, area, me.column, me.row, 0, 0,
-                            1, false); // SGR button 1 = middle, release
+                        forward_mouse_to_pane_ex(active, area, me.column, me.row, 0, 0, 1, false);
+                        // SGR button 1 = middle, release
                     }
                 }
             }
@@ -2614,10 +3517,16 @@ pub fn handle_mouse(app: &mut AppState, me: MouseEvent, window_area: Rect) -> io
                     if let Some(area) = active_area {
                         let win2 = &mut app.windows[app.active_idx];
                         if let Some(active) = active_pane_mut(&mut win2.root, &win2.active_path) {
-                            forward_mouse_to_pane_ex(active, area, me.column, me.row,
+                            forward_mouse_to_pane_ex(
+                                active,
+                                area,
+                                me.column,
+                                me.row,
                                 crate::platform::mouse_inject::FROM_LEFT_1ST_BUTTON_PRESSED,
                                 crate::platform::mouse_inject::MOUSE_MOVED,
-                                32, true); // SGR button 32 = left-drag
+                                32,
+                                true,
+                            ); // SGR button 32 = left-drag
                         }
                     }
                 } else {
@@ -2649,9 +3558,16 @@ pub fn handle_mouse(app: &mut AppState, me: MouseEvent, window_area: Rect) -> io
             if let Some(area) = active_area {
                 if let Some(active) = active_pane_mut(&mut win.root, &win.active_path) {
                     if crate::window_ops::pane_wants_hover(active) {
-                        forward_mouse_to_pane_ex(active, area, me.column, me.row,
-                            0, crate::platform::mouse_inject::MOUSE_MOVED,
-                            35, true);
+                        forward_mouse_to_pane_ex(
+                            active,
+                            area,
+                            me.column,
+                            me.row,
+                            0,
+                            crate::platform::mouse_inject::MOUSE_MOVED,
+                            35,
+                            true,
+                        );
                     }
                 }
             }
@@ -2665,7 +3581,12 @@ pub fn handle_mouse(app: &mut AppState, me: MouseEvent, window_area: Rect) -> io
                 scroll_copy_up(app, 3);
                 return Ok(());
             }
-            if let Some((path, area)) = rects.iter().find(|(_, area)| area.contains(ratatui::layout::Position { x: me.column, y: me.row })) {
+            if let Some((path, area)) = rects.iter().find(|(_, area)| {
+                area.contains(ratatui::layout::Position {
+                    x: me.column,
+                    y: me.row,
+                })
+            }) {
                 win.active_path = path.clone();
                 active_area = Some(*area);
             }
@@ -2682,9 +3603,16 @@ pub fn handle_mouse(app: &mut AppState, me: MouseEvent, window_area: Rect) -> io
                     if let Some(active) = active_pane_mut(&mut win.root, &win.active_path) {
                         let wheel_delta: i16 = 120;
                         let button_state = ((wheel_delta as i32) << 16) as u32;
-                        forward_mouse_to_pane_ex(active, area, me.column, me.row,
-                            button_state, crate::platform::mouse_inject::MOUSE_WHEELED,
-                            64, true); // SGR button 64 = scroll-up
+                        forward_mouse_to_pane_ex(
+                            active,
+                            area,
+                            me.column,
+                            me.row,
+                            button_state,
+                            crate::platform::mouse_inject::MOUSE_WHEELED,
+                            64,
+                            true,
+                        ); // SGR button 64 = scroll-up
                     }
                 }
             } else if app.scroll_enter_copy_mode {
@@ -2710,7 +3638,12 @@ pub fn handle_mouse(app: &mut AppState, me: MouseEvent, window_area: Rect) -> io
                 }
                 return Ok(());
             }
-            if let Some((path, area)) = rects.iter().find(|(_, area)| area.contains(ratatui::layout::Position { x: me.column, y: me.row })) {
+            if let Some((path, area)) = rects.iter().find(|(_, area)| {
+                area.contains(ratatui::layout::Position {
+                    x: me.column,
+                    y: me.row,
+                })
+            }) {
                 win.active_path = path.clone();
                 active_area = Some(*area);
             }
@@ -2723,9 +3656,16 @@ pub fn handle_mouse(app: &mut AppState, me: MouseEvent, window_area: Rect) -> io
                     if let Some(active) = active_pane_mut(&mut win.root, &win.active_path) {
                         let wheel_delta: i16 = -120;
                         let button_state = ((wheel_delta as i32) << 16) as u32;
-                        forward_mouse_to_pane_ex(active, area, me.column, me.row,
-                            button_state, crate::platform::mouse_inject::MOUSE_WHEELED,
-                            65, true); // SGR button 65 = scroll-down
+                        forward_mouse_to_pane_ex(
+                            active,
+                            area,
+                            me.column,
+                            me.row,
+                            button_state,
+                            crate::platform::mouse_inject::MOUSE_WHEELED,
+                            65,
+                            true,
+                        ); // SGR button 65 = scroll-down
                     }
                 }
             } else if !app.scroll_enter_copy_mode {
@@ -2767,7 +3707,9 @@ fn write_paste_chunked(writer: &mut dyn std::io::Write, text: &[u8], bracket: bo
         out
     };
     let text = &text[..];
-    if bracket { let _ = writer.write_all(b"\x1b[200~"); }
+    if bracket {
+        let _ = writer.write_all(b"\x1b[200~");
+    }
     let mut offset: usize = 0;
     while offset < text.len() {
         let remaining = (text.len() - offset).min(CHUNK);
@@ -2777,11 +3719,15 @@ fn write_paste_chunked(writer: &mut dyn std::io::Write, text: &[u8], bracket: bo
                 // Zero bytes written — yield and retry once
                 std::thread::sleep(std::time::Duration::from_millis(10));
                 match writer.write(chunk) {
-                    Ok(n) if n > 0 => { offset += n; }
+                    Ok(n) if n > 0 => {
+                        offset += n;
+                    }
                     _ => break, // give up on persistent failure
                 }
             }
-            Ok(n) => { offset += n; }
+            Ok(n) => {
+                offset += n;
+            }
             Err(_) => break,
         }
         // Yield between chunks to let the consumer drain the buffer
@@ -2789,7 +3735,9 @@ fn write_paste_chunked(writer: &mut dyn std::io::Write, text: &[u8], bracket: bo
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
     }
-    if bracket { let _ = writer.write_all(b"\x1b[201~"); }
+    if bracket {
+        let _ = writer.write_all(b"\x1b[201~");
+    }
     let _ = writer.flush();
 }
 
@@ -2829,7 +3777,15 @@ pub fn send_paste_to_active(app: &mut AppState, text: &str) -> io::Result<()> {
             false
         }
     };
-    crate::debug_log::input_log("paste", &format!("use_bracket={} text_len={} text_preview={:?}", use_bracket, text.len(), &text.chars().take(100).collect::<String>()));
+    crate::debug_log::input_log(
+        "paste",
+        &format!(
+            "use_bracket={} text_len={} text_preview={:?}",
+            use_bracket,
+            text.len(),
+            &text.chars().take(100).collect::<String>()
+        ),
+    );
 
     // On Windows, bracketed paste delivery is tricky:
     //
@@ -2862,7 +3818,9 @@ pub fn send_paste_to_active(app: &mut AppState, text: &str) -> io::Result<()> {
                         write_paste_chunked(&mut p.writer, text, bracket);
                     }
                     crate::types::Node::Split { children, .. } => {
-                        for c in children { write_all_panes(c, text, bracket); }
+                        for c in children {
+                            write_all_panes(c, text, bracket);
+                        }
                     }
                 }
             }
@@ -2886,7 +3844,9 @@ pub fn send_paste_to_active(app: &mut AppState, text: &str) -> io::Result<()> {
                         write_paste_chunked(&mut p.writer, text, bracket);
                     }
                     Node::Split { children, .. } => {
-                        for c in children { write_paste_all_panes(c, text, bracket); }
+                        for c in children {
+                            write_paste_all_panes(c, text, bracket);
+                        }
                     }
                 }
             }
@@ -2914,7 +3874,10 @@ pub fn send_text_to_active(app: &mut AppState, text: &str) -> io::Result<()> {
             app.mode = Mode::Passthrough;
             return Ok(());
         }
-        if let Mode::PopupMode { ref mut popup_pane, .. } = app.mode {
+        if let Mode::PopupMode {
+            ref mut popup_pane, ..
+        } = app.mode
+        {
             if let Some(ref mut pty) = popup_pane {
                 let _ = pty.writer.write_all(text.as_bytes());
                 let _ = pty.writer.flush();
@@ -2991,32 +3954,60 @@ pub fn send_text_to_active(app: &mut AppState, text: &str) -> io::Result<()> {
 
     // A focused floating pane (tmux new-pane) receives input instead of the
     // tiled active pane, while the layout keeps rendering underneath.
-    {
+    let floating_error = {
         let win = &mut app.windows[app.active_idx];
         if let Some(fi) = win.floating_focus {
             if let Some(fp) = win.floating.get_mut(fi) {
-                let _ = fp.pane.writer.write_all(text.as_bytes());
-                let _ = fp.pane.writer.flush();
-                return Ok(());
+                write_input(&mut *fp.pane.writer, text.as_bytes())
+                    .err()
+                    .map(|error| (fp.pane.id, error))
+            } else {
+                None
             }
+        } else {
+            None
         }
+    };
+    if let Some((pane_id, error)) = floating_error {
+        report_input_delivery_error(app, pane_id, "send-keys", &error);
+        return Ok(());
+    }
+    if app.windows[app.active_idx].floating_focus.is_some() {
+        return Ok(());
     }
 
     if app.sync_input {
         // Fan out to ALL panes in the current window
         let win = &mut app.windows[app.active_idx];
-        fn write_all_panes(node: &mut Node, text: &[u8]) {
+        fn write_all_panes(node: &mut Node, text: &[u8]) -> Option<(usize, io::Error)> {
             match node {
-                Node::Leaf(p) => { let _ = p.writer.write_all(text); let _ = p.writer.flush(); }
-                Node::Split { children, .. } => { for c in children { write_all_panes(c, text); } }
+                Node::Leaf(p) => {
+                    write_input(&mut *p.writer, text).err().map(|error| (p.id, error))
+                }
+                Node::Split { children, .. } => {
+                    for c in children {
+                        if let Some(error) = write_all_panes(c, text) {
+                            return Some(error);
+                        }
+                    }
+                    None
+                }
             }
         }
-        write_all_panes(&mut win.root, text.as_bytes());
+        let error = write_all_panes(&mut win.root, text.as_bytes());
+        if let Some((pane_id, error)) = error {
+            report_input_delivery_error(app, pane_id, "send-keys", &error);
+        }
     } else {
         let win = &mut app.windows[app.active_idx];
+        let mut error = None;
         if let Some(p) = active_pane_mut(&mut win.root, &win.active_path) {
-            let _ = p.writer.write_all(text.as_bytes());
-            let _ = p.writer.flush();
+            error = write_input(&mut *p.writer, text.as_bytes())
+                .err()
+                .map(|error| (p.id, error));
+        }
+        if let Some((pane_id, error)) = error {
+            report_input_delivery_error(app, pane_id, "send-keys", &error);
         }
     }
     Ok(())
@@ -3027,10 +4018,18 @@ fn handle_copy_mode_char(app: &mut AppState, c: char) -> io::Result<()> {
     // Handle text-object pending state (waiting for w/W after a/i)
     if let Some(prefix) = app.copy_text_object_pending.take() {
         match (prefix, c) {
-            (0, 'w') => { crate::copy_mode::select_a_word(app); }
-            (1, 'w') => { crate::copy_mode::select_inner_word(app); }
-            (0, 'W') => { crate::copy_mode::select_a_word_big(app); }
-            (1, 'W') => { crate::copy_mode::select_inner_word_big(app); }
+            (0, 'w') => {
+                crate::copy_mode::select_a_word(app);
+            }
+            (1, 'w') => {
+                crate::copy_mode::select_inner_word(app);
+            }
+            (0, 'W') => {
+                crate::copy_mode::select_a_word_big(app);
+            }
+            (1, 'W') => {
+                crate::copy_mode::select_inner_word_big(app);
+            }
             _ => {}
         }
         return Ok(());
@@ -3074,30 +4073,101 @@ fn handle_copy_mode_char(app: &mut AppState, c: char) -> io::Result<()> {
         'q' | ']' | '\x1b' => {
             exit_copy_mode(app);
         }
-        'h' => { for _ in 0..n { move_copy_cursor(app, -1, 0); } }
-        'l' => { for _ in 0..n { move_copy_cursor(app, 1, 0); } }
-        'k' => { for _ in 0..n { move_copy_cursor(app, 0, -1); } }
-        'j' => { for _ in 0..n { move_copy_cursor(app, 0, 1); } }
-        'g' => { scroll_to_top(app); }
-        'G' => { scroll_to_bottom(app); }
-        'w' => { for _ in 0..n { crate::copy_mode::move_word_forward(app); } }
-        'b' => { for _ in 0..n { crate::copy_mode::move_word_backward(app); } }
-        'e' => { for _ in 0..n { crate::copy_mode::move_word_end(app); } }
-        'W' => { for _ in 0..n { crate::copy_mode::move_word_forward_big(app); } }
-        'B' => { for _ in 0..n { crate::copy_mode::move_word_backward_big(app); } }
-        'E' => { for _ in 0..n { crate::copy_mode::move_word_end_big(app); } }
-        'H' => { crate::copy_mode::move_to_screen_top(app); }
-        'M' => { crate::copy_mode::move_to_screen_middle(app); }
-        'L' => { crate::copy_mode::move_to_screen_bottom(app); }
+        'h' => {
+            for _ in 0..n {
+                move_copy_cursor(app, -1, 0);
+            }
+        }
+        'l' => {
+            for _ in 0..n {
+                move_copy_cursor(app, 1, 0);
+            }
+        }
+        'k' => {
+            for _ in 0..n {
+                move_copy_cursor(app, 0, -1);
+            }
+        }
+        'j' => {
+            for _ in 0..n {
+                move_copy_cursor(app, 0, 1);
+            }
+        }
+        'g' => {
+            scroll_to_top(app);
+        }
+        'G' => {
+            scroll_to_bottom(app);
+        }
+        'w' => {
+            for _ in 0..n {
+                crate::copy_mode::move_word_forward(app);
+            }
+        }
+        'b' => {
+            for _ in 0..n {
+                crate::copy_mode::move_word_backward(app);
+            }
+        }
+        'e' => {
+            for _ in 0..n {
+                crate::copy_mode::move_word_end(app);
+            }
+        }
+        'W' => {
+            for _ in 0..n {
+                crate::copy_mode::move_word_forward_big(app);
+            }
+        }
+        'B' => {
+            for _ in 0..n {
+                crate::copy_mode::move_word_backward_big(app);
+            }
+        }
+        'E' => {
+            for _ in 0..n {
+                crate::copy_mode::move_word_end_big(app);
+            }
+        }
+        'H' => {
+            crate::copy_mode::move_to_screen_top(app);
+        }
+        'M' => {
+            crate::copy_mode::move_to_screen_middle(app);
+        }
+        'L' => {
+            crate::copy_mode::move_to_screen_bottom(app);
+        }
         // Preserve the count so e.g. "3fx" finds the 3rd 'x' (consumed above).
-        'f' => { app.copy_find_char_pending = Some(0); app.copy_count = Some(n); }
-        'F' => { app.copy_find_char_pending = Some(1); app.copy_count = Some(n); }
-        't' => { app.copy_find_char_pending = Some(2); app.copy_count = Some(n); }
-        'T' => { app.copy_find_char_pending = Some(3); app.copy_count = Some(n); }
-        'D' => { crate::copy_mode::copy_end_of_line(app)?; exit_copy_mode(app); }
-        '0' => { crate::copy_mode::move_to_line_start(app); }
-        '$' => { crate::copy_mode::move_to_line_end(app); }
-        '^' => { crate::copy_mode::move_to_first_nonblank(app); }
+        'f' => {
+            app.copy_find_char_pending = Some(0);
+            app.copy_count = Some(n);
+        }
+        'F' => {
+            app.copy_find_char_pending = Some(1);
+            app.copy_count = Some(n);
+        }
+        't' => {
+            app.copy_find_char_pending = Some(2);
+            app.copy_count = Some(n);
+        }
+        'T' => {
+            app.copy_find_char_pending = Some(3);
+            app.copy_count = Some(n);
+        }
+        'D' => {
+            crate::copy_mode::copy_end_of_line(app)?;
+            exit_copy_mode(app);
+        }
+        '0' => {
+            crate::copy_mode::move_to_line_start(app);
+        }
+        '$' => {
+            crate::copy_mode::move_to_line_end(app);
+        }
+        '^' => {
+            crate::copy_mode::move_to_first_nonblank(app);
+        }
         ' ' => {
             if let Some((r, c)) = crate::copy_mode::get_copy_pos(app) {
                 app.copy_anchor = Some((r, c));
@@ -3140,26 +4210,53 @@ fn handle_copy_mode_char(app: &mut AppState, c: char) -> io::Result<()> {
                 exit_copy_mode(app);
             }
         }
-        'y' => { yank_selection(app)?; exit_copy_mode(app); }
-        '/' => { app.mode = Mode::CopySearch { input: String::new(), forward: true }; refresh_search_prompt(app); }
-        '?' => { app.mode = Mode::CopySearch { input: String::new(), forward: false }; refresh_search_prompt(app); }
-        'n' => { search_next(app); }
-        'N' => { search_prev(app); }
-        'i' => { app.copy_text_object_pending = Some(1); }  // inner text object
-        'a' => { app.copy_text_object_pending = Some(0); }  // a text object
+        'y' => {
+            yank_selection(app)?;
+            exit_copy_mode(app);
+        }
+        '/' => {
+            app.mode = Mode::CopySearch {
+                input: String::new(),
+                forward: true,
+            };
+            refresh_search_prompt(app);
+        }
+        '?' => {
+            app.mode = Mode::CopySearch {
+                input: String::new(),
+                forward: false,
+            };
+            refresh_search_prompt(app);
+        }
+        'n' => {
+            search_next(app);
+        }
+        'N' => {
+            search_prev(app);
+        }
+        'i' => {
+            app.copy_text_object_pending = Some(1);
+        } // inner text object
+        'a' => {
+            app.copy_text_object_pending = Some(0);
+        } // a text object
         _ => {} // Swallow unrecognized characters in copy mode
     }
     Ok(())
 }
 
 pub fn send_key_to_active(app: &mut AppState, k: &str, force_signal: bool) -> io::Result<()> {
+    // An explicit forced C-c is an out-of-band interrupt binding, not input for
+    // psmux's clock/copy/menu/popup UI. Let it bypass those mode handlers and
+    // reach the underlying pane even while an overlay is active.
+    let forced_ctrl_c = force_signal && matches!(k, "C-c" | "c-c");
     // In clock mode, any key exits back to passthrough
-    if matches!(app.mode, Mode::ClockMode) {
+    if !forced_ctrl_c && matches!(app.mode, Mode::ClockMode) {
         app.mode = Mode::Passthrough;
         return Ok(());
     }
     // Route named keys to active overlay (so CLI send-keys can interact with overlays)
-    if matches!(app.mode, Mode::PopupMode { .. }) {
+    if !forced_ctrl_c && matches!(app.mode, Mode::PopupMode { .. }) {
         // Map named keys to VT sequences for the popup PTY
         let seq = match k {
             "enter" => Some("\r"),
@@ -3182,7 +4279,10 @@ pub fn send_key_to_active(app: &mut AppState, k: &str, force_signal: bool) -> io
             _ => None,
         };
         if let Some(seq) = seq {
-            if let Mode::PopupMode { ref mut popup_pane, .. } = app.mode {
+            if let Mode::PopupMode {
+                ref mut popup_pane, ..
+            } = app.mode
+            {
                 if let Some(ref mut pty) = popup_pane {
                     let _ = pty.writer.write_all(seq.as_bytes());
                     let _ = pty.writer.flush();
@@ -3191,7 +4291,7 @@ pub fn send_key_to_active(app: &mut AppState, k: &str, force_signal: bool) -> io
         }
         return Ok(());
     }
-    if matches!(app.mode, Mode::ConfirmMode { .. }) {
+    if !forced_ctrl_c && matches!(app.mode, Mode::ConfirmMode { .. }) {
         match k {
             "esc" | "escape" => {
                 app.mode = Mode::Passthrough;
@@ -3200,17 +4300,21 @@ pub fn send_key_to_active(app: &mut AppState, k: &str, force_signal: bool) -> io
         }
         return Ok(());
     }
-    if matches!(app.mode, Mode::MenuMode { .. }) {
+    if !forced_ctrl_c && matches!(app.mode, Mode::MenuMode { .. }) {
         match k {
             "up" => {
                 if let Mode::MenuMode { ref mut menu } = app.mode {
-                    if menu.selected > 0 { menu.selected -= 1; }
+                    if menu.selected > 0 {
+                        menu.selected -= 1;
+                    }
                 }
             }
             "down" => {
                 if let Mode::MenuMode { ref mut menu } = app.mode {
                     let len = menu.items.len();
-                    if menu.selected + 1 < len { menu.selected += 1; }
+                    if menu.selected + 1 < len {
+                        menu.selected += 1;
+                    }
                 }
             }
             "enter" => {
@@ -3233,7 +4337,7 @@ pub fn send_key_to_active(app: &mut AppState, k: &str, force_signal: bool) -> io
         }
         return Ok(());
     }
-    if matches!(app.mode, Mode::PaneChooser { .. }) {
+    if !forced_ctrl_c && matches!(app.mode, Mode::PaneChooser { .. }) {
         match k {
             "esc" | "escape" => {
                 app.mode = Mode::Passthrough;
@@ -3243,9 +4347,12 @@ pub fn send_key_to_active(app: &mut AppState, k: &str, force_signal: bool) -> io
         return Ok(());
     }
     // --- Copy-search mode: handle esc/enter/backspace ---
-    if matches!(app.mode, Mode::CopySearch { .. }) {
+    if !forced_ctrl_c && matches!(app.mode, Mode::CopySearch { .. }) {
         match k {
-            "esc" => { app.mode = Mode::CopyMode; app.status_message = None; }
+            "esc" => {
+                app.mode = Mode::CopyMode;
+                app.status_message = None;
+            }
             "enter" => {
                 if let Mode::CopySearch { ref input, forward } = app.mode {
                     let query = input.clone();
@@ -3262,7 +4369,9 @@ pub fn send_key_to_active(app: &mut AppState, k: &str, force_signal: bool) -> io
                 app.status_message = None;
             }
             "backspace" => {
-                if let Mode::CopySearch { ref mut input, .. } = app.mode { input.pop(); }
+                if let Mode::CopySearch { ref mut input, .. } = app.mode {
+                    input.pop();
+                }
                 refresh_search_prompt(app);
             }
             _ => {}
@@ -3271,7 +4380,7 @@ pub fn send_key_to_active(app: &mut AppState, k: &str, force_signal: bool) -> io
     }
 
     // --- Copy mode: full vi-style key table ---
-    if matches!(app.mode, Mode::CopyMode) {
+    if !forced_ctrl_c && matches!(app.mode, Mode::CopyMode) {
         match k {
             "esc" | "q" => {
                 exit_copy_mode(app);
@@ -3292,33 +4401,86 @@ pub fn send_key_to_active(app: &mut AppState, k: &str, force_signal: bool) -> io
                     app.copy_selection_mode = crate::types::SelectionMode::Char;
                 }
             }
-            "up" => { move_copy_cursor(app, 0, -1); }
-            "down" => { move_copy_cursor(app, 0, 1); }
-            "pageup" => { scroll_copy_up(app, 10); }
-            "pagedown" => { scroll_copy_down(app, 10); }
-            "left" => { move_copy_cursor(app, -1, 0); }
-            "right" => { move_copy_cursor(app, 1, 0); }
-            "home" => { crate::copy_mode::move_to_line_start(app); }
-            "end" => { crate::copy_mode::move_to_line_end(app); }
+            "up" => {
+                move_copy_cursor(app, 0, -1);
+            }
+            "down" => {
+                move_copy_cursor(app, 0, 1);
+            }
+            "pageup" => {
+                scroll_copy_up(app, 10);
+            }
+            "pagedown" => {
+                scroll_copy_down(app, 10);
+            }
+            "left" => {
+                move_copy_cursor(app, -1, 0);
+            }
+            "right" => {
+                move_copy_cursor(app, 1, 0);
+            }
+            "home" => {
+                crate::copy_mode::move_to_line_start(app);
+            }
+            "end" => {
+                crate::copy_mode::move_to_line_end(app);
+            }
             "C-b" | "c-b" => {
-                if app.mode_keys == "emacs" { move_copy_cursor(app, -1, 0); }
-                else { scroll_copy_up(app, 10); }
+                if app.mode_keys == "emacs" {
+                    move_copy_cursor(app, -1, 0);
+                } else {
+                    scroll_copy_up(app, 10);
+                }
             }
             "C-f" | "c-f" => {
-                if app.mode_keys == "emacs" { move_copy_cursor(app, 1, 0); }
-                else { scroll_copy_down(app, 10); }
+                if app.mode_keys == "emacs" {
+                    move_copy_cursor(app, 1, 0);
+                } else {
+                    scroll_copy_down(app, 10);
+                }
             }
-            "C-n" | "c-n" => { move_copy_cursor(app, 0, 1); }
-            "C-p" | "c-p" => { move_copy_cursor(app, 0, -1); }
-            "C-a" | "c-a" => { crate::copy_mode::move_to_line_start(app); }
-            "C-e" | "c-e" => { crate::copy_mode::move_to_line_end(app); }
-            "C-v" | "c-v" => { scroll_copy_down(app, 10); }
-            "M-v" | "m-v" => { scroll_copy_up(app, 10); }
-            "M-f" | "m-f" => { crate::copy_mode::move_word_forward(app); }
-            "M-b" | "m-b" => { crate::copy_mode::move_word_backward(app); }
-            "M-w" | "m-w" => { yank_selection(app)?; exit_copy_mode(app); }
-            "C-s" | "c-s" => { app.mode = Mode::CopySearch { input: String::new(), forward: true }; refresh_search_prompt(app); }
-            "C-r" | "c-r" => { app.mode = Mode::CopySearch { input: String::new(), forward: false }; refresh_search_prompt(app); }
+            "C-n" | "c-n" => {
+                move_copy_cursor(app, 0, 1);
+            }
+            "C-p" | "c-p" => {
+                move_copy_cursor(app, 0, -1);
+            }
+            "C-a" | "c-a" => {
+                crate::copy_mode::move_to_line_start(app);
+            }
+            "C-e" | "c-e" => {
+                crate::copy_mode::move_to_line_end(app);
+            }
+            "C-v" | "c-v" => {
+                scroll_copy_down(app, 10);
+            }
+            "M-v" | "m-v" => {
+                scroll_copy_up(app, 10);
+            }
+            "M-f" | "m-f" => {
+                crate::copy_mode::move_word_forward(app);
+            }
+            "M-b" | "m-b" => {
+                crate::copy_mode::move_word_backward(app);
+            }
+            "M-w" | "m-w" => {
+                yank_selection(app)?;
+                exit_copy_mode(app);
+            }
+            "C-s" | "c-s" => {
+                app.mode = Mode::CopySearch {
+                    input: String::new(),
+                    forward: true,
+                };
+                refresh_search_prompt(app);
+            }
+            "C-r" | "c-r" => {
+                app.mode = Mode::CopySearch {
+                    input: String::new(),
+                    forward: false,
+                };
+                refresh_search_prompt(app);
+            }
             "C-c" | "c-c" => {
                 exit_copy_mode(app);
             }
@@ -3334,27 +4496,38 @@ pub fn send_key_to_active(app: &mut AppState, k: &str, force_signal: bool) -> io
                 }
             }
             "C-u" | "c-u" => {
-                let half = app.windows.get(app.active_idx)
+                let half = app
+                    .windows
+                    .get(app.active_idx)
                     .and_then(|w| active_pane(&w.root, &w.active_path))
-                    .map(|p| (p.last_rows / 2) as usize).unwrap_or(10);
+                    .map(|p| (p.last_rows / 2) as usize)
+                    .unwrap_or(10);
                 scroll_copy_up(app, half);
             }
             "C-d" | "c-d" => {
-                let half = app.windows.get(app.active_idx)
+                let half = app
+                    .windows
+                    .get(app.active_idx)
                     .and_then(|w| active_pane(&w.root, &w.active_path))
-                    .map(|p| (p.last_rows / 2) as usize).unwrap_or(10);
+                    .map(|p| (p.last_rows / 2) as usize)
+                    .unwrap_or(10);
                 scroll_copy_down(app, half);
             }
             _ => {}
         }
         return Ok(());
     }
-    
+
     // Write a named key to a single pane (extracted for sync_input support).
-    // force_signal: when true, bypass the raw-mode TUI heuristic for C-c and
-    // always deliver CTRL_C_EVENT.  Pass true for `send-keys -f C-c` bindings.
-    fn write_named_key_to_pane(p: &mut crate::types::Pane, k: &str, force_signal: bool) {
+    // force_signal: when true, route C-c through the stronger Windows
+    // CTRL_BREAK_EVENT path. Pass true for `send-keys -f C-c` bindings.
+    fn write_named_key_to_pane(
+        p: &mut crate::types::Pane,
+        k: &str,
+        force_signal: bool,
+    ) -> Option<(usize, io::Error)> {
         use std::io::Write as _;
+        let mut write_error = None;
         match k {
             "enter" => write_key_seq(p, b"\r"),
             "tab" => write_key_seq(p, b"\t"),
@@ -3389,7 +4562,9 @@ pub fn send_key_to_active(app: &mut AppState, k: &str, force_signal: bool) -> io
                         12 => "\x1b[24~",
                         _ => "",
                     };
-                    if !seq.is_empty() { let _ = write!(p.writer, "{}", seq); }
+                    if !seq.is_empty() {
+                        let _ = write!(p.writer, "{}", seq);
+                    }
                 }
             }
             // Ctrl+Shift+<letter>: inject a native KEY_EVENT carrying BOTH the
@@ -3408,7 +4583,9 @@ pub fn send_key_to_active(app: &mut AppState, k: &str, force_signal: bool) -> io
                 #[cfg(windows)]
                 {
                     let injected = if let Some(pid) = p.child_pid {
-                        crate::platform::mouse_inject::send_modified_key_event(pid, c, true, false, true)
+                        crate::platform::mouse_inject::send_modified_key_event(
+                            pid, c, true, false, true,
+                        )
                     } else {
                         false
                     };
@@ -3468,12 +4645,43 @@ pub fn send_key_to_active(app: &mut AppState, k: &str, force_signal: bool) -> io
                 // tmux-parity mapping so C-/ -> 0x1f (^_), not the naive '/' & 0x1f
                 // == 0x0f (^O) collision with C-o (issue #226/#394).  Letters keep
                 // their usual byte (a->0x01 …), so Ctrl+<letter> is unaffected.
-                let ctrl_char = ctrl_char_send_keys_byte(c)
-                    .unwrap_or((c.to_ascii_lowercase() as u8) & 0x1F);
-                // Always write the raw control byte so ConPTY can generate
-                // console control events (e.g. CTRL_C_EVENT for \x03).
-                // Raw bytes do NOT start with \x1b so they never corrupt
-                // ConPTY's VT parser state.
+                let ctrl_char =
+                    ctrl_char_send_keys_byte(c).unwrap_or((c.to_ascii_lowercase() as u8) & 0x1F);
+                // A forced C-c is an explicit kill binding. Route it through the
+                // genuine Ctrl+Break path, which reaches raw-mode ConPTY targets;
+                // do not also queue 0x03, or that byte can leak into the shell
+                // after the foreground application exits.
+                let forced_interrupt_requested = c.eq_ignore_ascii_case(&'c') && force_signal;
+                let forced_interrupt_delivered = if forced_interrupt_requested {
+                    #[cfg(windows)]
+                    {
+                        if p.child_pid.is_none() {
+                            p.child_pid = crate::platform::mouse_inject::get_child_pid(&*p.child);
+                        }
+                        p.child_pid
+                            .map(|pid| {
+                                crate::platform::mouse_inject::send_ctrl_break_event(pid, false)
+                            })
+                            .unwrap_or(false)
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        false
+                    }
+                } else {
+                    false
+                };
+
+                if forced_interrupt_requested && !forced_interrupt_delivered {
+                    write_error = Some(io::Error::new(
+                        io::ErrorKind::Other,
+                        "forced Ctrl+C could not deliver CTRL_BREAK_EVENT",
+                    ));
+                }
+
+                // Ordinary Ctrl+keys still use their raw control byte. Raw bytes
+                // do NOT start with \x1b, so they never corrupt ConPTY's VT parser
+                // state.
                 //
                 // ConPTY already reconstructs the proper VK + LEFT_CTRL_PRESSED
                 // console key event from this raw C0 byte, so console apps
@@ -3484,19 +4692,21 @@ pub fn send_key_to_active(app: &mut AppState, k: &str, force_signal: bool) -> io
                 // arrived as <C-w><C-w>, turning neovim's window command into a
                 // no-op and making `<C-w>s` behave like a bare `s`; PSReadLine's
                 // Ctrl+W likewise deleted two words instead of one).
-                let _ = p.writer.write_all(&[ctrl_char]);
-                let _ = p.writer.flush();
+                if !forced_interrupt_requested {
+                    if let Err(error) = p.writer.write_all(&[ctrl_char]) {
+                        write_error = Some(error);
+                    }
+                }
                 // Ctrl+C is the sole exception: a CTRL_C_EVENT must be raised so
                 // the child's console handler runs (SIGINT parity, issue #338).
-                // force_signal comes from `send-keys -f` in psmux.conf: when true,
-                // bypass the raw-mode TUI heuristic and always deliver the signal,
-                // allowing a dedicated keybinding (e.g. `bind -n C-F12 send-keys -f C-c`)
-                // to terminate any foreground app (including opencode, neovim).
-                // Without -f, direct keyboard Ctrl+C lets TUIs handle 0x03 themselves.
+                // Without -f, direct keyboard Ctrl+C lets TUIs handle 0x03
+                // themselves. The explicit forced form never falls back to a raw
+                // byte: doing so can leak ETX into the shell after the foreground
+                // application exits and would falsely report a force operation.
                 #[cfg(windows)]
-                if c.eq_ignore_ascii_case(&'c') {
+                if c.eq_ignore_ascii_case(&'c') && !forced_interrupt_requested {
                     if let Some(pid) = p.child_pid {
-                        crate::platform::mouse_inject::send_ctrl_c_event(pid, false, force_signal);
+                        crate::platform::mouse_inject::send_ctrl_c_event(pid, false, false);
                     }
                 }
             }
@@ -3521,7 +4731,9 @@ pub fn send_key_to_active(app: &mut AppState, k: &str, force_signal: bool) -> io
                 // LEFT_CTRL_PRESSED | LEFT_ALT_PRESSED).  ConPTY does NOT
                 // reassemble ESC + ctrl-char into Ctrl+Alt+key.
                 let injected = if let Some(pid) = p.child_pid {
-                    crate::platform::mouse_inject::send_modified_key_event(pid, c, true, true, false)
+                    crate::platform::mouse_inject::send_modified_key_event(
+                        pid, c, true, true, false,
+                    )
                 } else {
                     false
                 };
@@ -3537,9 +4749,13 @@ pub fn send_key_to_active(app: &mut AppState, k: &str, force_signal: bool) -> io
             #[cfg(windows)]
             s if {
                 let u = s.to_uppercase();
-                let r = u.trim_start_matches("C-").trim_start_matches("M-").trim_start_matches("S-");
+                let r = u
+                    .trim_start_matches("C-")
+                    .trim_start_matches("M-")
+                    .trim_start_matches("S-");
                 r == "ENTER" || r == "RETURN" || r == "CR"
-            } => {
+            } =>
+            {
                 let upper = s.to_uppercase();
                 let has_shift = upper.contains("S-");
                 let has_ctrl = upper.contains("C-");
@@ -3549,7 +4765,9 @@ pub fn send_key_to_active(app: &mut AppState, k: &str, force_signal: bool) -> io
                     // Ctrl+Enter this carries an LF payload (#409); Ctrl+Shift /
                     // Ctrl+Alt keep CR.
                     if let Some(pid) = p.child_pid {
-                        crate::platform::mouse_inject::send_modified_enter_event(pid, has_ctrl, has_alt, has_shift)
+                        crate::platform::mouse_inject::send_modified_enter_event(
+                            pid, has_ctrl, has_alt, has_shift,
+                        )
                     } else {
                         false
                     }
@@ -3578,37 +4796,68 @@ pub fn send_key_to_active(app: &mut AppState, k: &str, force_signal: bool) -> io
             }
             _ => {}
         }
-        let _ = p.writer.flush();
+        if write_error.is_none() {
+            if let Err(error) = p.writer.flush() {
+                write_error = Some(error);
+            }
+        }
+        write_error.map(|error| (p.id, error))
     }
 
     // A focused floating pane (tmux new-pane) receives the key instead of the
     // tiled active pane.
-    {
+    let floating_error = {
         let win = &mut app.windows[app.active_idx];
         if let Some(fi) = win.floating_focus {
             if let Some(fp) = win.floating.get_mut(fi) {
-                write_named_key_to_pane(&mut fp.pane, k, force_signal);
-                return Ok(());
+                write_named_key_to_pane(&mut fp.pane, k, force_signal)
+            } else {
+                None
             }
+        } else {
+            None
         }
+    };
+    if let Some((pane_id, error)) = floating_error {
+        report_input_delivery_error(app, pane_id, "send-key", &error);
+        return Ok(());
+    }
+    if app.windows[app.active_idx].floating_focus.is_some() {
+        return Ok(());
     }
 
     // Distribute the key to all panes (sync) or just the active pane.
     if app.sync_input {
         let win = &mut app.windows[app.active_idx];
-        fn send_key_all_panes(node: &mut crate::types::Node, k: &str, force_signal: bool) {
+        fn send_key_all_panes(
+            node: &mut crate::types::Node,
+            k: &str,
+            force_signal: bool,
+        ) -> Option<(usize, io::Error)> {
             match node {
                 crate::types::Node::Leaf(p) => write_named_key_to_pane(p, k, force_signal),
                 crate::types::Node::Split { children, .. } => {
-                    for c in children { send_key_all_panes(c, k, force_signal); }
+                    for c in children {
+                        if let Some(error) = send_key_all_panes(c, k, force_signal) {
+                            return Some(error);
+                        }
+                    }
+                    None
                 }
             }
         }
-        send_key_all_panes(&mut win.root, k, force_signal);
+        let error = send_key_all_panes(&mut win.root, k, force_signal);
+        if let Some((pane_id, error)) = error {
+            report_input_delivery_error(app, pane_id, "send-key", &error);
+        }
     } else {
         let win = &mut app.windows[app.active_idx];
+        let mut error = None;
         if let Some(p) = active_pane_mut(&mut win.root, &win.active_path) {
-            write_named_key_to_pane(p, k, force_signal);
+            error = write_named_key_to_pane(p, k, force_signal);
+        }
+        if let Some((pane_id, error)) = error {
+            report_input_delivery_error(app, pane_id, "send-key", &error);
         }
     }
     Ok(())

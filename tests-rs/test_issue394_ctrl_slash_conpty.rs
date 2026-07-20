@@ -17,7 +17,12 @@ use super::*;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 
 fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
-    KeyEvent { code, modifiers, kind: KeyEventKind::Press, state: KeyEventState::NONE }
+    KeyEvent {
+        code,
+        modifiers,
+        kind: KeyEventKind::Press,
+        state: KeyEventState::NONE,
+    }
 }
 
 // === encode_key_event: the direct byte path ===
@@ -33,10 +38,22 @@ fn ctrl_slash_encodes_to_unit_separator() {
 fn ctrl_shift_minus_encodes_to_unit_separator() {
     // Ctrl+/ as ConPTY delivers it: Char('-') + CONTROL + SHIFT.  Must be 0x1f,
     // NOT the naive '-' & 0x1f == 0x0d (CR) that the old code produced.
-    let ev = key(KeyCode::Char('-'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+    let ev = key(
+        KeyCode::Char('-'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    );
     let bytes = encode_key_event(&ev).unwrap();
-    assert_eq!(bytes, vec![0x1f], "Ctrl+Shift+- must be ^_ (0x1f), got {:02x?}", bytes);
-    assert_ne!(bytes, vec![0x0d], "regression: Ctrl+Shift+- collapsed to CR");
+    assert_eq!(
+        bytes,
+        vec![0x1f],
+        "Ctrl+Shift+- must be ^_ (0x1f), got {:02x?}",
+        bytes
+    );
+    assert_ne!(
+        bytes,
+        vec![0x0d],
+        "regression: Ctrl+Shift+- collapsed to CR"
+    );
 }
 
 #[test]
@@ -49,9 +66,18 @@ fn ctrl_underscore_encodes_to_unit_separator() {
 #[test]
 fn ctrl_letters_are_unchanged_by_the_fix() {
     // Guard: Ctrl+<letter> must keep its usual control byte (a->0x01 … w->0x17).
-    assert_eq!(encode_key_event(&key(KeyCode::Char('a'), KeyModifiers::CONTROL)).unwrap(), vec![0x01]);
-    assert_eq!(encode_key_event(&key(KeyCode::Char('c'), KeyModifiers::CONTROL)).unwrap(), vec![0x03]);
-    assert_eq!(encode_key_event(&key(KeyCode::Char('w'), KeyModifiers::CONTROL)).unwrap(), vec![0x17]);
+    assert_eq!(
+        encode_key_event(&key(KeyCode::Char('a'), KeyModifiers::CONTROL)).unwrap(),
+        vec![0x01]
+    );
+    assert_eq!(
+        encode_key_event(&key(KeyCode::Char('c'), KeyModifiers::CONTROL)).unwrap(),
+        vec![0x03]
+    );
+    assert_eq!(
+        encode_key_event(&key(KeyCode::Char('w'), KeyModifiers::CONTROL)).unwrap(),
+        vec![0x17]
+    );
 }
 
 // === ctrl_char_send_keys_byte parity used by the send-key dispatch arms ===

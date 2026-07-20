@@ -74,7 +74,9 @@ fn block_is_well_formed(block: &[u16]) -> Result<(), String> {
 
 fn os_with_interior_nul() -> OsString {
     // "foo\0bar" - the kind of thing a corrupt REG_SZ value yields.
-    OsString::from_wide(&['f' as u16, 'o' as u16, 'o' as u16, 0, 'b' as u16, 'a' as u16, 'r' as u16])
+    OsString::from_wide(&[
+        'f' as u16, 'o' as u16, 'o' as u16, 0, 'b' as u16, 'a' as u16, 'r' as u16,
+    ])
 }
 
 #[test]
@@ -96,7 +98,10 @@ fn interior_nul_in_value_does_not_poison_block() {
         .expect("interior NUL in a value must not produce a malformed block (issue #167)");
     // GOODVAR must survive.
     let joined = String::from_utf16_lossy(&block);
-    assert!(joined.contains("GOODVAR=fine"), "unrelated vars must be preserved");
+    assert!(
+        joined.contains("GOODVAR=fine"),
+        "unrelated vars must be preserved"
+    );
 }
 
 #[test]
@@ -121,7 +126,10 @@ fn equals_prefixed_name_entry_is_dropped() {
     block_is_well_formed(&block)
         .expect("`=`-prefixed name must be dropped (CreateProcessW err 87 on build 26200)");
     let joined = String::from_utf16_lossy(&block);
-    assert!(joined.contains("REAL=value"), "valid vars must be preserved");
+    assert!(
+        joined.contains("REAL=value"),
+        "valid vars must be preserved"
+    );
 }
 
 #[test]
@@ -129,5 +137,9 @@ fn block_stays_double_nul_terminated() {
     let mut cmd = CommandBuilder::new("dummy");
     cmd.env("BADVAR", os_with_interior_nul());
     let block = cmd.environment_block();
-    assert_eq!(block.last(), Some(&0), "block must end with a NUL terminator");
+    assert_eq!(
+        block.last(),
+        Some(&0),
+        "block must end with a NUL terminator"
+    );
 }

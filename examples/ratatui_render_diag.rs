@@ -14,45 +14,57 @@ fn main() {
         let backend = CrosstermBackend::new(&mut raw_buf);
         let mut terminal = Terminal::new(backend).unwrap();
 
-        terminal.draw(|frame| {
-            let area = Rect::new(0, 0, 60, 3);
+        terminal
+            .draw(|frame| {
+                let area = Rect::new(0, 0, 60, 3);
 
-            // Row 0: Test various modifiers
-            let buf = frame.buffer_mut();
+                // Row 0: Test various modifiers
+                let buf = frame.buffer_mut();
 
-            // STRIKE (cols 0-5)
-            let strike_style = Style::default().add_modifier(Modifier::CROSSED_OUT);
-            for (i, ch) in "STRIKE".chars().enumerate() {
-                buf[(area.x + i as u16, area.y)].set_char(ch).set_style(strike_style);
-            }
+                // STRIKE (cols 0-5)
+                let strike_style = Style::default().add_modifier(Modifier::CROSSED_OUT);
+                for (i, ch) in "STRIKE".chars().enumerate() {
+                    buf[(area.x + i as u16, area.y)]
+                        .set_char(ch)
+                        .set_style(strike_style);
+                }
 
-            // Space
-            buf[(area.x + 6, area.y)].set_char(' ');
+                // Space
+                buf[(area.x + 6, area.y)].set_char(' ');
 
-            // HIDDEN (cols 7-12)
-            let hidden_style = Style::default().add_modifier(Modifier::HIDDEN);
-            for (i, ch) in "HIDDEN".chars().enumerate() {
-                buf[(area.x + 7 + i as u16, area.y)].set_char(ch).set_style(hidden_style);
-            }
+                // HIDDEN (cols 7-12)
+                let hidden_style = Style::default().add_modifier(Modifier::HIDDEN);
+                for (i, ch) in "HIDDEN".chars().enumerate() {
+                    buf[(area.x + 7 + i as u16, area.y)]
+                        .set_char(ch)
+                        .set_style(hidden_style);
+                }
 
-            // Space
-            buf[(area.x + 13, area.y)].set_char(' ');
+                // Space
+                buf[(area.x + 13, area.y)].set_char(' ');
 
-            // BOLDRED (cols 14-20) — using named Color::Red (should emit SGR 31)
-            let boldred_style = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
-            for (i, ch) in "BOLDRED".chars().enumerate() {
-                buf[(area.x + 14 + i as u16, area.y)].set_char(ch).set_style(boldred_style);
-            }
+                // BOLDRED (cols 14-20) — using named Color::Red (should emit SGR 31)
+                let boldred_style = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
+                for (i, ch) in "BOLDRED".chars().enumerate() {
+                    buf[(area.x + 14 + i as u16, area.y)]
+                        .set_char(ch)
+                        .set_style(boldred_style);
+                }
 
-            // Space
-            buf[(area.x + 21, area.y)].set_char(' ');
+                // Space
+                buf[(area.x + 21, area.y)].set_char(' ');
 
-            // IDX1 (cols 22-25) — using Indexed(1) for comparison
-            let idx1_style = Style::default().fg(Color::Indexed(1)).add_modifier(Modifier::BOLD);
-            for (i, ch) in "IDX1".chars().enumerate() {
-                buf[(area.x + 22 + i as u16, area.y)].set_char(ch).set_style(idx1_style);
-            }
-        }).unwrap();
+                // IDX1 (cols 22-25) — using Indexed(1) for comparison
+                let idx1_style = Style::default()
+                    .fg(Color::Indexed(1))
+                    .add_modifier(Modifier::BOLD);
+                for (i, ch) in "IDX1".chars().enumerate() {
+                    buf[(area.x + 22 + i as u16, area.y)]
+                        .set_char(ch)
+                        .set_style(idx1_style);
+                }
+            })
+            .unwrap();
     }
 
     // Write raw bytes to file for clean analysis
@@ -80,7 +92,8 @@ fn main() {
 
             // Check if the next few bytes are printable text
             let text_start = i;
-            while i < raw_buf.len() && raw_buf[i] >= 0x20 && raw_buf[i] < 0x7f && raw_buf[i] != 0x1b {
+            while i < raw_buf.len() && raw_buf[i] >= 0x20 && raw_buf[i] < 0x7f && raw_buf[i] != 0x1b
+            {
                 i += 1;
             }
             let text_after = if i > text_start {
@@ -96,7 +109,8 @@ fn main() {
             }
         } else if raw_buf[i] >= 0x20 && raw_buf[i] < 0x7f {
             let start = i;
-            while i < raw_buf.len() && raw_buf[i] >= 0x20 && raw_buf[i] < 0x7f && raw_buf[i] != 0x1b {
+            while i < raw_buf.len() && raw_buf[i] >= 0x20 && raw_buf[i] < 0x7f && raw_buf[i] != 0x1b
+            {
                 i += 1;
             }
             println!("  TEXT: {:?}", String::from_utf8_lossy(&raw_buf[start..i]));
@@ -108,9 +122,24 @@ fn main() {
     // Check for specific sequences
     let text = String::from_utf8_lossy(&raw_buf);
     println!("\n=== Key SGR Checks ===");
-    println!("Contains \\e[9m  (strikethrough): {}", text.contains("\x1b[9m") || text.contains(";9m"));
-    println!("Contains \\e[8m  (hidden):        {}", text.contains("\x1b[8m") || text.contains(";8m"));
-    println!("Contains \\e[31m (dark red):      {}", text.contains("\x1b[31m") || text.contains(";31m"));
-    println!("Contains \\e[38;5;1m (idx 1):     {}", text.contains("38;5;1m") || text.contains("38;5;1;"));
-    println!("Contains \\e[1m  (bold):          {}", text.contains("\x1b[1m") || text.contains(";1m") || text.contains(";1;"));
+    println!(
+        "Contains \\e[9m  (strikethrough): {}",
+        text.contains("\x1b[9m") || text.contains(";9m")
+    );
+    println!(
+        "Contains \\e[8m  (hidden):        {}",
+        text.contains("\x1b[8m") || text.contains(";8m")
+    );
+    println!(
+        "Contains \\e[31m (dark red):      {}",
+        text.contains("\x1b[31m") || text.contains(";31m")
+    );
+    println!(
+        "Contains \\e[38;5;1m (idx 1):     {}",
+        text.contains("38;5;1m") || text.contains("38;5;1;")
+    );
+    println!(
+        "Contains \\e[1m  (bold):          {}",
+        text.contains("\x1b[1m") || text.contains(";1m") || text.contains(";1;")
+    );
 }

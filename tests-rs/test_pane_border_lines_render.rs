@@ -38,12 +38,21 @@ fn leaf(id: usize, active: bool) -> LayoutJson {
 }
 
 fn split(kind: &str, children: Vec<LayoutJson>) -> LayoutJson {
-    LayoutJson::Split { kind: kind.to_string(), sizes: vec![50; children.len()], children }
+    LayoutJson::Split {
+        kind: kind.to_string(),
+        sizes: vec![50; children.len()],
+        children,
+    }
 }
 
 /// Render a 2-pane split with the given `pane-border-lines` style and return a
 /// map of char -> count over the whole buffer.
-fn render_counts(kind: &str, style: &str, w: u16, h: u16) -> std::collections::HashMap<char, usize> {
+fn render_counts(
+    kind: &str,
+    style: &str,
+    w: u16,
+    h: u16,
+) -> std::collections::HashMap<char, usize> {
     use ratatui::backend::TestBackend;
     use ratatui::layout::Rect;
     use ratatui::style::Color;
@@ -59,19 +68,28 @@ fn render_counts(kind: &str, style: &str, w: u16, h: u16) -> std::collections::H
         let area = Rect::new(0, 0, w, h);
         let active_rect = crate::client::compute_active_rect_json(&layout, area);
         crate::client::render_layout_json(
-            f, &layout, area,
+            f,
+            &layout,
+            area,
             false,
-            Color::DarkGray, Color::Green,
-            false, Color::Reset,
+            Color::DarkGray,
+            Color::Green,
+            false,
+            Color::Reset,
             active_rect,
-            "", false, "off", "",
+            "",
+            false,
+            "off",
+            "",
             total,
             bchars,
             None,
         );
-        let border_mask = crate::client::border_mask_from_layout(&layout, area, f.buffer_mut().area, false);
+        let border_mask =
+            crate::client::border_mask_from_layout(&layout, area, f.buffer_mut().area, false);
         crate::rendering::fix_border_intersections(f.buffer_mut(), bchars, &border_mask);
-    }).unwrap();
+    })
+    .unwrap();
 
     let buf = term.backend().buffer().clone();
     let mut counts = std::collections::HashMap::new();
@@ -89,7 +107,11 @@ fn c(counts: &std::collections::HashMap<char, usize>, ch: char) -> usize {
 #[test]
 fn single_draws_light_vertical_separator() {
     let counts = render_counts("Horizontal", "single", 40, 12);
-    assert!(c(&counts, '│') >= 8, "single H-split should draw a │ column, got {}", c(&counts, '│'));
+    assert!(
+        c(&counts, '│') >= 8,
+        "single H-split should draw a │ column, got {}",
+        c(&counts, '│')
+    );
     assert_eq!(c(&counts, '║'), 0, "single must not use double glyph");
     assert_eq!(c(&counts, '┃'), 0, "single must not use heavy glyph");
 }
@@ -97,21 +119,33 @@ fn single_draws_light_vertical_separator() {
 #[test]
 fn double_draws_double_vertical_separator() {
     let counts = render_counts("Horizontal", "double", 40, 12);
-    assert!(c(&counts, '║') >= 8, "double H-split should draw a ║ column, got {}", c(&counts, '║'));
+    assert!(
+        c(&counts, '║') >= 8,
+        "double H-split should draw a ║ column, got {}",
+        c(&counts, '║')
+    );
     assert_eq!(c(&counts, '│'), 0, "double must not use single glyph");
 }
 
 #[test]
 fn heavy_draws_heavy_vertical_separator() {
     let counts = render_counts("Horizontal", "heavy", 40, 12);
-    assert!(c(&counts, '┃') >= 8, "heavy H-split should draw a ┃ column, got {}", c(&counts, '┃'));
+    assert!(
+        c(&counts, '┃') >= 8,
+        "heavy H-split should draw a ┃ column, got {}",
+        c(&counts, '┃')
+    );
     assert_eq!(c(&counts, '│'), 0, "heavy must not use single glyph");
 }
 
 #[test]
 fn simple_draws_ascii_vertical_separator() {
     let counts = render_counts("Horizontal", "simple", 40, 12);
-    assert!(c(&counts, '|') >= 8, "simple H-split should draw a | column, got {}", c(&counts, '|'));
+    assert!(
+        c(&counts, '|') >= 8,
+        "simple H-split should draw a | column, got {}",
+        c(&counts, '|')
+    );
     assert_eq!(c(&counts, '│'), 0, "simple must not use box glyph");
 }
 
@@ -119,7 +153,12 @@ fn simple_draws_ascii_vertical_separator() {
 fn none_draws_no_separator() {
     let counts = render_counts("Horizontal", "none", 40, 12);
     for ch in ['│', '║', '┃', '|', '─', '═', '━'] {
-        assert_eq!(c(&counts, ch), 0, "none must draw no separator glyph, found {:?}", ch);
+        assert_eq!(
+            c(&counts, ch),
+            0,
+            "none must draw no separator glyph, found {:?}",
+            ch
+        );
     }
 }
 
@@ -127,9 +166,17 @@ fn none_draws_no_separator() {
 fn vertical_split_uses_horizontal_glyph() {
     // A vertical split produces a horizontal separator ROW.
     let single = render_counts("Vertical", "single", 40, 12);
-    assert!(c(&single, '─') >= 8, "single V-split should draw a ─ row, got {}", c(&single, '─'));
+    assert!(
+        c(&single, '─') >= 8,
+        "single V-split should draw a ─ row, got {}",
+        c(&single, '─')
+    );
     let double = render_counts("Vertical", "double", 40, 12);
-    assert!(c(&double, '═') >= 8, "double V-split should draw a ═ row, got {}", c(&double, '═'));
+    assert!(
+        c(&double, '═') >= 8,
+        "double V-split should draw a ═ row, got {}",
+        c(&double, '═')
+    );
     assert_eq!(c(&double, '─'), 0);
 }
 
@@ -142,10 +189,13 @@ fn nested_split_produces_double_junction() {
     use ratatui::style::Color;
     use ratatui::Terminal;
 
-    let layout = split("Horizontal", vec![
-        leaf(0, true),
-        split("Vertical", vec![leaf(1, false), leaf(2, false)]),
-    ]);
+    let layout = split(
+        "Horizontal",
+        vec![
+            leaf(0, true),
+            split("Vertical", vec![leaf(1, false), leaf(2, false)]),
+        ],
+    );
     let backend = TestBackend::new(60, 20);
     let mut term = Terminal::new(backend).unwrap();
     let total = layout.count_leaves();
@@ -154,18 +204,39 @@ fn nested_split_produces_double_junction() {
         let area = Rect::new(0, 0, 60, 20);
         let active_rect = crate::client::compute_active_rect_json(&layout, area);
         crate::client::render_layout_json(
-            f, &layout, area, false, Color::DarkGray, Color::Green,
-            false, Color::Reset, active_rect, "", false, "off", "", total, bchars,
+            f,
+            &layout,
+            area,
+            false,
+            Color::DarkGray,
+            Color::Green,
+            false,
+            Color::Reset,
+            active_rect,
+            "",
+            false,
+            "off",
+            "",
+            total,
+            bchars,
             None,
         );
-        let border_mask = crate::client::border_mask_from_layout(&layout, area, f.buffer_mut().area, false);
+        let border_mask =
+            crate::client::border_mask_from_layout(&layout, area, f.buffer_mut().area, false);
         crate::rendering::fix_border_intersections(f.buffer_mut(), bchars, &border_mask);
-    }).unwrap();
+    })
+    .unwrap();
     let buf = term.backend().buffer().clone();
     let mut junctions = 0;
     for cell in buf.content.iter() {
         let ch = cell.symbol().chars().next().unwrap_or(' ');
-        if matches!(ch, '╬' | '╠' | '╣' | '╦' | '╩') { junctions += 1; }
+        if matches!(ch, '╬' | '╠' | '╣' | '╦' | '╩') {
+            junctions += 1;
+        }
     }
-    assert!(junctions >= 1, "expected at least one double-line junction glyph, got {}", junctions);
+    assert!(
+        junctions >= 1,
+        "expected at least one double-line junction glyph, got {}",
+        junctions
+    );
 }

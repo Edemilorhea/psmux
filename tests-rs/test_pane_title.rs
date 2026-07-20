@@ -1,5 +1,5 @@
-use crate::types::AppState;
 use crate::commands::parse_command_line;
+use crate::types::AppState;
 
 // ── #177 root cause: parse_command_line must preserve explicitly-quoted EMPTY
 //    arguments so `select-pane -T ""` carries an empty value to SetPaneTitle.
@@ -18,12 +18,18 @@ fn parse_preserves_quoted_empty_arg_double() {
 
 #[test]
 fn parse_preserves_quoted_empty_arg_single() {
-    assert_eq!(parse_command_line("select-pane -T ''"), vec!["select-pane", "-T", ""]);
+    assert_eq!(
+        parse_command_line("select-pane -T ''"),
+        vec!["select-pane", "-T", ""]
+    );
 }
 
 #[test]
 fn parse_empty_arg_in_middle() {
-    assert_eq!(parse_command_line(r#"cmd a "" b"#), vec!["cmd", "a", "", "b"]);
+    assert_eq!(
+        parse_command_line(r#"cmd a "" b"#),
+        vec!["cmd", "a", "", "b"]
+    );
 }
 
 #[test]
@@ -50,7 +56,10 @@ fn parse_genuinely_empty_input() {
 #[test]
 fn title_locked_logic_matches_empty_semantics() {
     assert!(!"my-label".is_empty(), "non-empty title locks");
-    assert!("".is_empty(), "empty title clears the lock (auto-title resumes)");
+    assert!(
+        "".is_empty(),
+        "empty title clears the lock (auto-title resumes)"
+    );
 }
 
 // ── pane_border_format: #{pane_title} expansion ──
@@ -72,7 +81,10 @@ fn border_format_empty_title_falls_back() {
     let format_str = "#{pane_title}";
     let pane_title = "";
     let result = format_str.replace("#{pane_title}", pane_title);
-    assert_eq!(result, "", "empty title should produce empty string in border format");
+    assert_eq!(
+        result, "",
+        "empty title should produce empty string in border format"
+    );
 }
 
 #[test]
@@ -92,7 +104,9 @@ fn pane_border_status_stored_in_user_options() {
     let mut app = AppState::new("test".to_string());
     crate::config::parse_config_line(&mut app, "set -g pane-border-status top");
     assert_eq!(
-        app.user_options.get("pane-border-status").map(|s| s.as_str()),
+        app.user_options
+            .get("pane-border-status")
+            .map(|s| s.as_str()),
         Some("top"),
         "pane-border-status should be stored in user_options"
     );
@@ -101,9 +115,18 @@ fn pane_border_status_stored_in_user_options() {
 #[test]
 fn pane_border_format_stored_in_user_options() {
     let mut app = AppState::new("test".to_string());
-    crate::config::parse_config_line(&mut app, "set -g pane-border-format \" #{pane_index} #{pane_title} \"");
-    let val = app.user_options.get("pane-border-format").map(|s| s.as_str());
-    assert!(val.is_some(), "pane-border-format should be stored in user_options");
+    crate::config::parse_config_line(
+        &mut app,
+        "set -g pane-border-format \" #{pane_index} #{pane_title} \"",
+    );
+    let val = app
+        .user_options
+        .get("pane-border-format")
+        .map(|s| s.as_str());
+    assert!(
+        val.is_some(),
+        "pane-border-format should be stored in user_options"
+    );
 }
 
 // ── format system: #{pane_title} via expand_format ──
@@ -116,5 +139,8 @@ fn expand_format_pane_title_variable() {
     let result = crate::format::expand_format_for_window("#{pane_title}", &app, 0);
     // The window name is the fallback when pane title is empty
     // AppState::new creates no windows, so this may fallback; just verify no panic
-    assert!(!result.is_empty() || result.is_empty(), "expand_format should not panic on pane_title");
+    assert!(
+        !result.is_empty() || result.is_empty(),
+        "expand_format should not panic on pane_title"
+    );
 }

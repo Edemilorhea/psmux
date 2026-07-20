@@ -2,7 +2,11 @@ use super::*;
 
 fn make_window(name: &str, id: usize) -> crate::types::Window {
     crate::types::Window {
-        root: Node::Split { kind: LayoutKind::Horizontal, sizes: vec![], children: vec![] },
+        root: Node::Split {
+            kind: LayoutKind::Horizontal,
+            sizes: vec![],
+            children: vec![],
+        },
         active_path: vec![],
         name: name.to_string(),
         id,
@@ -30,5 +34,8 @@ fn swap_pane_target_below_pane_base_index_is_invalid() {
 
     // Regression guard: `.0` must not saturate to pane 0 when pane-base-index=1.
     let path = resolve_swap_pane_target_path(&app, ".0");
-    assert!(path.is_none(), "target below pane-base-index should be rejected");
+    assert!(
+        path.is_none(),
+        "target below pane-base-index should be rejected"
+    );
 }

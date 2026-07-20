@@ -94,8 +94,5 @@ fn warm_pane_simulation_retains_beyond_default_cap() {
         filled >= 4_900,
         "BUG #271: expected ~5000 retained after cap raise, got {filled}"
     );
-    assert!(
-        filled <= 100_000,
-        "must not exceed new cap, got {filled}"
-    );
+    assert!(filled <= 100_000, "must not exceed new cap, got {filled}");
 }

@@ -107,7 +107,10 @@ fn inline_comment_matches_no_comment_behaviour() {
     let mut without_comment = mock_app();
     parse_config_content(&mut without_comment, "set -g pane-base-index 1\n");
 
-    assert_eq!(with_comment.pane_base_index, without_comment.pane_base_index);
+    assert_eq!(
+        with_comment.pane_base_index,
+        without_comment.pane_base_index
+    );
     assert_eq!(with_comment.pane_base_index, 1);
 }
 

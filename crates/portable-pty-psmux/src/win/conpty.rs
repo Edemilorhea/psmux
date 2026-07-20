@@ -32,10 +32,12 @@ fn create_pipe_with_buffer(size: u32) -> anyhow::Result<(FileDescriptor, FileDes
     if unsafe { CreatePipe(&mut read, &mut write, &mut sa, size) } == 0 {
         return Err(std::io::Error::last_os_error().into());
     }
-    Ok(unsafe {(
-        FileDescriptor::from_raw_handle(read as _),
-        FileDescriptor::from_raw_handle(write as _),
-    )})
+    Ok(unsafe {
+        (
+            FileDescriptor::from_raw_handle(read as _),
+            FileDescriptor::from_raw_handle(write as _),
+        )
+    })
 }
 
 #[derive(Default)]

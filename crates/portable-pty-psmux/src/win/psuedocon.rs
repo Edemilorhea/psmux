@@ -96,10 +96,14 @@ fn supports_passthrough_mode() -> bool {
         info.dwOSVersionInfoSize = mem::size_of::<winapi::um::winnt::OSVERSIONINFOW>() as u32;
         // RtlGetVersion is used because GetVersionEx lies on Windows 10+
         // unless the application has a compatibility manifest.
-        type RtlGetVersionFn = unsafe extern "system" fn(*mut winapi::um::winnt::OSVERSIONINFOW) -> i32;
+        type RtlGetVersionFn =
+            unsafe extern "system" fn(*mut winapi::um::winnt::OSVERSIONINFOW) -> i32;
         let ntdll = winapi::um::libloaderapi::GetModuleHandleW(
-            ['n' as u16, 't' as u16, 'd' as u16, 'l' as u16, 'l' as u16, '.' as u16,
-             'd' as u16, 'l' as u16, 'l' as u16, 0].as_ptr()
+            [
+                'n' as u16, 't' as u16, 'd' as u16, 'l' as u16, 'l' as u16, '.' as u16, 'd' as u16,
+                'l' as u16, 'l' as u16, 0,
+            ]
+            .as_ptr(),
         );
         if ntdll.is_null() {
             return false;
@@ -157,7 +161,10 @@ impl PsuedoCon {
             };
 
             if result == S_OK {
-                return Ok(Self { con, used_passthrough: true });
+                return Ok(Self {
+                    con,
+                    used_passthrough: true,
+                });
             }
             // If the API call failed despite being on a supported build,
             // fall through to the standard path.
@@ -178,13 +185,20 @@ impl PsuedoCon {
             "failed to create psuedo console: HRESULT {}",
             result
         );
-        Ok(Self { con, used_passthrough: false })
+        Ok(Self {
+            con,
+            used_passthrough: false,
+        })
     }
 
     /// Create a ConPTY explicitly without passthrough mode, regardless of
     /// Windows build version.  Used by the retry logic when CreateProcessW
     /// rejects the passthrough ConPTY handle.
-    pub fn new_without_passthrough(size: COORD, input: FileDescriptor, output: FileDescriptor) -> Result<Self, Error> {
+    pub fn new_without_passthrough(
+        size: COORD,
+        input: FileDescriptor,
+        output: FileDescriptor,
+    ) -> Result<Self, Error> {
         let mut con: HPCON = INVALID_HANDLE_VALUE;
         let base_flags = base_flags();
 
@@ -202,7 +216,10 @@ impl PsuedoCon {
             "failed to create psuedo console (no passthrough): HRESULT {}",
             result
         );
-        Ok(Self { con, used_passthrough: false })
+        Ok(Self {
+            con,
+            used_passthrough: false,
+        })
     }
 
     pub fn resize(&self, size: COORD) -> Result<(), Error> {

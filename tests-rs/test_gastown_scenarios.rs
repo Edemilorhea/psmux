@@ -22,7 +22,11 @@ fn mock_app() -> AppState {
 
 fn make_window(name: &str, id: usize) -> crate::types::Window {
     crate::types::Window {
-        root: Node::Split { kind: LayoutKind::Horizontal, sizes: vec![], children: vec![] },
+        root: Node::Split {
+            kind: LayoutKind::Horizontal,
+            sizes: vec![],
+            children: vec![],
+        },
         active_path: vec![],
         name: name.to_string(),
         id,
@@ -212,7 +216,8 @@ fn fire_hooks_with_run_shell_does_not_set_running_status() {
         vec!["run-shell echo fired".to_string()],
     );
     fire_hooks(&mut app, "test-event");
-    let is_running = app.status_message
+    let is_running = app
+        .status_message
         .as_ref()
         .map(|(msg, _, _)| msg.starts_with("running:"))
         .unwrap_or(false);
@@ -352,7 +357,10 @@ fn list_panes_popup_has_correct_title() {
         Mode::PopupMode { command, .. } => {
             assert_eq!(command, "list-panes");
         }
-        other => panic!("expected PopupMode, got {:?}", std::mem::discriminant(other)),
+        other => panic!(
+            "expected PopupMode, got {:?}",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
@@ -367,7 +375,10 @@ fn list_panes_popup_has_correct_title() {
 fn show_hooks_empty_produces_sentinel() {
     let app = mock_app();
     let output = generate_show_hooks(&app);
-    assert_eq!(output, "(no hooks)\n", "no hooks must produce sentinel line");
+    assert_eq!(
+        output, "(no hooks)\n",
+        "no hooks must produce sentinel line"
+    );
 }
 
 #[test]
@@ -507,7 +518,10 @@ fn warm_session_names_are_excluded_from_visible_list() {
 
     assert!(visible.contains(&"0"), "numeric session must be visible");
     assert!(visible.contains(&"myapp"), "named session must be visible");
-    assert!(visible.contains(&"ns__0"), "namespaced session must be visible");
+    assert!(
+        visible.contains(&"ns__0"),
+        "namespaced session must be visible"
+    );
     assert!(
         !visible.contains(&"__warm__"),
         "__warm__ must be hidden from session list"
@@ -536,7 +550,10 @@ fn pane_died_hook_respawn_k_command_round_trips() {
     let bg = ensure_background(hook_cmd);
     assert_eq!(bg, "run-shell -b 'respawn-pane -k'");
     // Verify the inner command is preserved
-    assert!(bg.contains("respawn-pane -k"), "inner respawn-pane -k must survive ensure_background");
+    assert!(
+        bg.contains("respawn-pane -k"),
+        "inner respawn-pane -k must survive ensure_background"
+    );
 }
 
 #[test]
@@ -553,10 +570,16 @@ fn auto_respawn_hook_full_chain_verify() {
     // Step 1: Register the pane-died hook (mirrors set-hook command handler)
     let hook_name = "pane-died";
     let hook_cmd = "run-shell 'respawn-pane -k'".to_string();
-    app.hooks.entry(hook_name.to_string()).or_default().push(hook_cmd.clone());
+    app.hooks
+        .entry(hook_name.to_string())
+        .or_default()
+        .push(hook_cmd.clone());
 
     // Verify hook was registered
-    assert!(app.hooks.contains_key(hook_name), "hook must be registered under pane-died");
+    assert!(
+        app.hooks.contains_key(hook_name),
+        "hook must be registered under pane-died"
+    );
     assert_eq!(app.hooks[hook_name].len(), 1);
     assert_eq!(app.hooks[hook_name][0], "run-shell 'respawn-pane -k'");
 
@@ -564,7 +587,8 @@ fn auto_respawn_hook_full_chain_verify() {
     fire_hooks(&mut app, hook_name);
 
     // Step 3: Verify no "running:" status (background execution)
-    let is_running = app.status_message
+    let is_running = app
+        .status_message
         .as_ref()
         .map(|(msg, _, _)| msg.starts_with("running:"))
         .unwrap_or(false);
@@ -589,12 +613,17 @@ fn ctrl_req_respawn_pane_carries_kill_flag() {
     }
 
     // issue #399: a teammate launch delivers the command via `respawn-pane -- <cmd>`.
-    let req_with_cmd = CtrlReq::RespawnPane(None, true, Some("claude --agent-id Bob".to_string()), false);
+    let req_with_cmd =
+        CtrlReq::RespawnPane(None, true, Some("claude --agent-id Bob".to_string()), false);
     match req_with_cmd {
         CtrlReq::RespawnPane(wd, kill, cmd, _) => {
             assert!(wd.is_none());
             assert!(kill);
-            assert_eq!(cmd.as_deref(), Some("claude --agent-id Bob"), "-- command must be carried");
+            assert_eq!(
+                cmd.as_deref(),
+                Some("claude --agent-id Bob"),
+                "-- command must be carried"
+            );
         }
         _ => panic!("wrong variant"),
     }

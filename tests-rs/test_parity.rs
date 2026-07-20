@@ -15,44 +15,68 @@ fn mock_app() -> AppState {
 #[test]
 fn hook_before_new_window_found_in_hooks_map() {
     let mut app = mock_app();
-    crate::config::parse_config_line(&mut app, "set-hook -g before-new-window 'display-message creating'");
+    crate::config::parse_config_line(
+        &mut app,
+        "set-hook -g before-new-window 'display-message creating'",
+    );
     assert!(app.hooks.contains_key("before-new-window"));
-    assert_eq!(app.hooks["before-new-window"][0], "display-message creating");
+    assert_eq!(
+        app.hooks["before-new-window"][0],
+        "display-message creating"
+    );
 }
 
 #[test]
 fn hook_before_split_window_found_in_hooks_map() {
     let mut app = mock_app();
-    crate::config::parse_config_line(&mut app, "set-hook -g before-split-window 'display-message splitting'");
+    crate::config::parse_config_line(
+        &mut app,
+        "set-hook -g before-split-window 'display-message splitting'",
+    );
     assert!(app.hooks.contains_key("before-split-window"));
-    assert_eq!(app.hooks["before-split-window"][0], "display-message splitting");
+    assert_eq!(
+        app.hooks["before-split-window"][0],
+        "display-message splitting"
+    );
 }
 
 #[test]
 fn hook_before_kill_pane_found_in_hooks_map() {
     let mut app = mock_app();
-    crate::config::parse_config_line(&mut app, "set-hook -g before-kill-pane 'display-message killing'");
+    crate::config::parse_config_line(
+        &mut app,
+        "set-hook -g before-kill-pane 'display-message killing'",
+    );
     assert!(app.hooks.contains_key("before-kill-pane"));
 }
 
 #[test]
 fn hook_before_select_window_found_in_hooks_map() {
     let mut app = mock_app();
-    crate::config::parse_config_line(&mut app, "set-hook -g before-select-window 'display-message switching'");
+    crate::config::parse_config_line(
+        &mut app,
+        "set-hook -g before-select-window 'display-message switching'",
+    );
     assert!(app.hooks.contains_key("before-select-window"));
 }
 
 #[test]
 fn hook_before_rename_window_found_in_hooks_map() {
     let mut app = mock_app();
-    crate::config::parse_config_line(&mut app, "set-hook -g before-rename-window 'display-message renaming'");
+    crate::config::parse_config_line(
+        &mut app,
+        "set-hook -g before-rename-window 'display-message renaming'",
+    );
     assert!(app.hooks.contains_key("before-rename-window"));
 }
 
 #[test]
 fn hook_after_new_window_still_works() {
     let mut app = mock_app();
-    crate::config::parse_config_line(&mut app, "set-hook -g after-new-window 'display-message created'");
+    crate::config::parse_config_line(
+        &mut app,
+        "set-hook -g after-new-window 'display-message created'",
+    );
     assert!(app.hooks.contains_key("after-new-window"));
     assert_eq!(app.hooks["after-new-window"][0], "display-message created");
 }
@@ -60,28 +84,40 @@ fn hook_after_new_window_still_works() {
 #[test]
 fn hook_after_split_window_still_works() {
     let mut app = mock_app();
-    crate::config::parse_config_line(&mut app, "set-hook -g after-split-window 'display-message split'");
+    crate::config::parse_config_line(
+        &mut app,
+        "set-hook -g after-split-window 'display-message split'",
+    );
     assert!(app.hooks.contains_key("after-split-window"));
 }
 
 #[test]
 fn hook_after_kill_pane_still_works() {
     let mut app = mock_app();
-    crate::config::parse_config_line(&mut app, "set-hook -g after-kill-pane 'display-message killed'");
+    crate::config::parse_config_line(
+        &mut app,
+        "set-hook -g after-kill-pane 'display-message killed'",
+    );
     assert!(app.hooks.contains_key("after-kill-pane"));
 }
 
 #[test]
 fn hook_after_select_window_still_works() {
     let mut app = mock_app();
-    crate::config::parse_config_line(&mut app, "set-hook -g after-select-window 'display-message switched'");
+    crate::config::parse_config_line(
+        &mut app,
+        "set-hook -g after-select-window 'display-message switched'",
+    );
     assert!(app.hooks.contains_key("after-select-window"));
 }
 
 #[test]
 fn hook_after_resize_pane_still_works() {
     let mut app = mock_app();
-    crate::config::parse_config_line(&mut app, "set-hook -g after-resize-pane 'display-message resized'");
+    crate::config::parse_config_line(
+        &mut app,
+        "set-hook -g after-resize-pane 'display-message resized'",
+    );
     assert!(app.hooks.contains_key("after-resize-pane"));
 }
 
@@ -95,7 +131,10 @@ fn hook_client_attached_still_works() {
 #[test]
 fn hook_session_created_still_works() {
     let mut app = mock_app();
-    crate::config::parse_config_line(&mut app, "set-hook -g session-created 'display-message new'");
+    crate::config::parse_config_line(
+        &mut app,
+        "set-hook -g session-created 'display-message new'",
+    );
     assert!(app.hooks.contains_key("session-created"));
 }
 
@@ -109,9 +148,18 @@ fn hook_pane_set_clipboard_still_works() {
 #[test]
 fn hook_multiple_commands_via_append() {
     let mut app = mock_app();
-    crate::config::parse_config_line(&mut app, "set-hook -g after-new-window 'display-message first'");
-    crate::config::parse_config_line(&mut app, "set-hook -ga after-new-window 'display-message second'");
-    crate::config::parse_config_line(&mut app, "set-hook -ga after-new-window 'display-message third'");
+    crate::config::parse_config_line(
+        &mut app,
+        "set-hook -g after-new-window 'display-message first'",
+    );
+    crate::config::parse_config_line(
+        &mut app,
+        "set-hook -ga after-new-window 'display-message second'",
+    );
+    crate::config::parse_config_line(
+        &mut app,
+        "set-hook -ga after-new-window 'display-message third'",
+    );
     let cmds = app.hooks.get("after-new-window").unwrap();
     assert_eq!(cmds.len(), 3);
     assert_eq!(cmds[0], "display-message first");
@@ -122,8 +170,14 @@ fn hook_multiple_commands_via_append() {
 #[test]
 fn hook_before_and_after_coexist() {
     let mut app = mock_app();
-    crate::config::parse_config_line(&mut app, "set-hook -g before-new-window 'display-message before'");
-    crate::config::parse_config_line(&mut app, "set-hook -g after-new-window 'display-message after'");
+    crate::config::parse_config_line(
+        &mut app,
+        "set-hook -g before-new-window 'display-message before'",
+    );
+    crate::config::parse_config_line(
+        &mut app,
+        "set-hook -g after-new-window 'display-message after'",
+    );
     assert!(app.hooks.contains_key("before-new-window"));
     assert!(app.hooks.contains_key("after-new-window"));
     assert_eq!(app.hooks.len(), 2);
@@ -198,15 +252,18 @@ fn client_registry_add_client() {
 fn client_registry_add_multiple_clients() {
     let mut app = mock_app();
     for i in 0..5 {
-        app.client_registry.insert(i, ClientInfo {
-            id: i,
-            width: 120,
-            height: 30,
-            connected_at: std::time::Instant::now(),
-            last_activity: std::time::Instant::now(),
-            tty_name: format!("/dev/pts/{}", i),
-            is_control: false,
-        });
+        app.client_registry.insert(
+            i,
+            ClientInfo {
+                id: i,
+                width: 120,
+                height: 30,
+                connected_at: std::time::Instant::now(),
+                last_activity: std::time::Instant::now(),
+                tty_name: format!("/dev/pts/{}", i),
+                is_control: false,
+            },
+        );
     }
     assert_eq!(app.client_registry.len(), 5);
 }
@@ -214,24 +271,30 @@ fn client_registry_add_multiple_clients() {
 #[test]
 fn client_registry_remove_client() {
     let mut app = mock_app();
-    app.client_registry.insert(1, ClientInfo {
-        id: 1,
-        width: 120,
-        height: 30,
-        connected_at: std::time::Instant::now(),
-        last_activity: std::time::Instant::now(),
-        tty_name: "/dev/pts/0".to_string(),
-        is_control: false,
-    });
-    app.client_registry.insert(2, ClientInfo {
-        id: 2,
-        width: 80,
-        height: 24,
-        connected_at: std::time::Instant::now(),
-        last_activity: std::time::Instant::now(),
-        tty_name: "/dev/pts/1".to_string(),
-        is_control: false,
-    });
+    app.client_registry.insert(
+        1,
+        ClientInfo {
+            id: 1,
+            width: 120,
+            height: 30,
+            connected_at: std::time::Instant::now(),
+            last_activity: std::time::Instant::now(),
+            tty_name: "/dev/pts/0".to_string(),
+            is_control: false,
+        },
+    );
+    app.client_registry.insert(
+        2,
+        ClientInfo {
+            id: 2,
+            width: 80,
+            height: 24,
+            connected_at: std::time::Instant::now(),
+            last_activity: std::time::Instant::now(),
+            tty_name: "/dev/pts/1".to_string(),
+            is_control: false,
+        },
+    );
     assert_eq!(app.client_registry.len(), 2);
     app.client_registry.remove(&1);
     assert_eq!(app.client_registry.len(), 1);
@@ -281,12 +344,21 @@ fn option_catalog_contains_common_options() {
     let app = mock_app();
     let options = crate::server::option_catalog::build_option_list(&app);
     let names: Vec<&str> = options.iter().map(|(n, _, _)| n.as_str()).collect();
-    assert!(names.contains(&"escape-time"), "catalog should contain escape-time");
+    assert!(
+        names.contains(&"escape-time"),
+        "catalog should contain escape-time"
+    );
     assert!(names.contains(&"mouse"), "catalog should contain mouse");
     assert!(names.contains(&"prefix"), "catalog should contain prefix");
     assert!(names.contains(&"status"), "catalog should contain status");
-    assert!(names.contains(&"base-index"), "catalog should contain base-index");
-    assert!(names.contains(&"mode-keys"), "catalog should contain mode-keys");
+    assert!(
+        names.contains(&"base-index"),
+        "catalog should contain base-index"
+    );
+    assert!(
+        names.contains(&"mode-keys"),
+        "catalog should contain mode-keys"
+    );
 }
 
 #[test]
@@ -294,9 +366,18 @@ fn option_catalog_entries_have_scope() {
     let app = mock_app();
     let options = crate::server::option_catalog::build_option_list(&app);
     let scopes: Vec<&str> = options.iter().map(|(_, _, s)| s.as_str()).collect();
-    assert!(scopes.contains(&"server"), "catalog should have server scope entries");
-    assert!(scopes.contains(&"session"), "catalog should have session scope entries");
-    assert!(scopes.contains(&"window"), "catalog should have window scope entries");
+    assert!(
+        scopes.contains(&"server"),
+        "catalog should have server scope entries"
+    );
+    assert!(
+        scopes.contains(&"session"),
+        "catalog should have session scope entries"
+    );
+    assert!(
+        scopes.contains(&"window"),
+        "catalog should have window scope entries"
+    );
 }
 
 #[test]
@@ -336,7 +417,9 @@ fn option_catalog_all_entries_have_valid_types() {
         assert!(
             valid_types.contains(&def.option_type),
             "option '{}' has invalid type '{}' (expected one of {:?})",
-            def.name, def.option_type, valid_types
+            def.name,
+            def.option_type,
+            valid_types
         );
     }
 }
@@ -348,7 +431,9 @@ fn option_catalog_all_entries_have_valid_scopes() {
         assert!(
             valid_scopes.contains(&def.scope),
             "option '{}' has invalid scope '{}' (expected one of {:?})",
-            def.name, def.scope, valid_scopes
+            def.name,
+            def.scope,
+            valid_scopes
         );
     }
 }
@@ -359,24 +444,34 @@ fn option_catalog_no_duplicate_names() {
     for def in crate::server::option_catalog::OPTION_CATALOG {
         assert!(
             seen.insert(def.name),
-            "duplicate option name in catalog: '{}'", def.name
+            "duplicate option name in catalog: '{}'",
+            def.name
         );
     }
 }
 
 #[test]
 fn option_catalog_default_for_base_index() {
-    assert_eq!(crate::server::option_catalog::default_for("base-index"), Some("0"));
+    assert_eq!(
+        crate::server::option_catalog::default_for("base-index"),
+        Some("0")
+    );
 }
 
 #[test]
 fn option_catalog_default_for_history_limit() {
-    assert_eq!(crate::server::option_catalog::default_for("history-limit"), Some("2000"));
+    assert_eq!(
+        crate::server::option_catalog::default_for("history-limit"),
+        Some("2000")
+    );
 }
 
 #[test]
 fn option_catalog_default_for_remain_on_exit() {
-    assert_eq!(crate::server::option_catalog::default_for("remain-on-exit"), Some("off"));
+    assert_eq!(
+        crate::server::option_catalog::default_for("remain-on-exit"),
+        Some("off")
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -440,7 +535,10 @@ fn prompt_history_capped_at_100() {
 #[test]
 fn prompt_history_vi_mode_default_insert() {
     let app = mock_app();
-    assert!(!app.command_vi_normal, "command prompt should start in insert mode");
+    assert!(
+        !app.command_vi_normal,
+        "command prompt should start in insert mode"
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -462,7 +560,8 @@ fn search_next_wraps_by_default() {
 #[test]
 fn search_next_does_not_wrap_when_off() {
     let mut app = mock_app();
-    app.user_options.insert("wrap-search".to_string(), "off".to_string());
+    app.user_options
+        .insert("wrap-search".to_string(), "off".to_string());
     app.copy_search_matches = vec![(0, 5, 8), (1, 10, 13), (2, 0, 3)];
     app.copy_search_idx = 2; // at last match
     crate::copy_mode::search_next(&mut app);
@@ -494,7 +593,8 @@ fn search_prev_wraps_by_default() {
 #[test]
 fn search_prev_does_not_wrap_when_off() {
     let mut app = mock_app();
-    app.user_options.insert("wrap-search".to_string(), "off".to_string());
+    app.user_options
+        .insert("wrap-search".to_string(), "off".to_string());
     app.copy_search_matches = vec![(0, 5, 8), (1, 10, 13), (2, 0, 3)];
     app.copy_search_idx = 0; // at first match
     crate::copy_mode::search_prev(&mut app);
@@ -579,7 +679,10 @@ fn session_group_can_be_set() {
 fn session_id_is_unique() {
     let app1 = AppState::new("s1".to_string());
     let app2 = AppState::new("s2".to_string());
-    assert_ne!(app1.session_id, app2.session_id, "each AppState should get a unique session_id");
+    assert_ne!(
+        app1.session_id, app2.session_id,
+        "each AppState should get a unique session_id"
+    );
 }
 
 #[test]

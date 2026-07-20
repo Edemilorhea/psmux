@@ -50,15 +50,25 @@ fn plugin_discovery_finds_xdg_path() {
     let tmp = std::env::temp_dir().join("psmux_test_xdg_plugin");
     let _ = fs::remove_dir_all(&tmp);
 
-    let plugin_dir = tmp.join(".config").join("psmux").join("plugins")
+    let plugin_dir = tmp
+        .join(".config")
+        .join("psmux")
+        .join("plugins")
         .join("psmux-test-theme");
     fs::create_dir_all(&plugin_dir).unwrap();
-    fs::write(plugin_dir.join("plugin.conf"), "set -g @test-theme-option 'xdg-found'\n").unwrap();
+    fs::write(
+        plugin_dir.join("plugin.conf"),
+        "set -g @test-theme-option 'xdg-found'\n",
+    )
+    .unwrap();
 
     let _env = EnvGuard::new(tmp.to_str().unwrap());
 
     let mut app = mock_app();
-    parse_config_content(&mut app, "set -g @plugin 'psmux-plugins/psmux-test-theme'\n");
+    parse_config_content(
+        &mut app,
+        "set -g @plugin 'psmux-plugins/psmux-test-theme'\n",
+    );
 
     let val = app.user_options.get("@test-theme-option");
     assert_eq!(
@@ -80,12 +90,19 @@ fn plugin_discovery_still_finds_classic_path() {
 
     let plugin_dir = tmp.join(".psmux").join("plugins").join("psmux-test-theme");
     fs::create_dir_all(&plugin_dir).unwrap();
-    fs::write(plugin_dir.join("plugin.conf"), "set -g @test-classic-option 'classic-found'\n").unwrap();
+    fs::write(
+        plugin_dir.join("plugin.conf"),
+        "set -g @test-classic-option 'classic-found'\n",
+    )
+    .unwrap();
 
     let _env = EnvGuard::new(tmp.to_str().unwrap());
 
     let mut app = mock_app();
-    parse_config_content(&mut app, "set -g @plugin 'psmux-plugins/psmux-test-theme'\n");
+    parse_config_content(
+        &mut app,
+        "set -g @plugin 'psmux-plugins/psmux-test-theme'\n",
+    );
 
     let val = app.user_options.get("@test-classic-option");
     assert_eq!(
@@ -105,19 +122,34 @@ fn run_shell_tilde_psmux_fallback_to_xdg() {
     let tmp = std::env::temp_dir().join("psmux_test_runshell_fallback");
     let _ = fs::remove_dir_all(&tmp);
 
-    let xdg_scripts = tmp.join(".config").join("psmux").join("plugins")
-        .join("psmux-test-plugin").join("scripts");
+    let xdg_scripts = tmp
+        .join(".config")
+        .join("psmux")
+        .join("plugins")
+        .join("psmux-test-plugin")
+        .join("scripts");
     fs::create_dir_all(&xdg_scripts).unwrap();
     fs::write(xdg_scripts.join("test.ps1"), "# test script\n").unwrap();
 
     let _env = EnvGuard::new(tmp.to_str().unwrap());
 
     let wrong_path = tmp.join(".psmux").join("plugins");
-    assert!(!wrong_path.is_dir(), "Test setup: classic plugin dir should NOT exist");
+    assert!(
+        !wrong_path.is_dir(),
+        "Test setup: classic plugin dir should NOT exist"
+    );
 
-    let correct_path = tmp.join(".config").join("psmux").join("plugins")
-        .join("psmux-test-plugin").join("scripts").join("test.ps1");
-    assert!(correct_path.exists(), "Test setup: script should exist at XDG path");
+    let correct_path = tmp
+        .join(".config")
+        .join("psmux")
+        .join("plugins")
+        .join("psmux-test-plugin")
+        .join("scripts")
+        .join("test.ps1");
+    assert!(
+        correct_path.exists(),
+        "Test setup: script should exist at XDG path"
+    );
 
     let _ = fs::remove_dir_all(&tmp);
 }
@@ -129,10 +161,17 @@ fn plugin_discovery_xdg_short_name() {
     let tmp = std::env::temp_dir().join("psmux_test_xdg_short");
     let _ = fs::remove_dir_all(&tmp);
 
-    let plugin_dir = tmp.join(".config").join("psmux").join("plugins")
+    let plugin_dir = tmp
+        .join(".config")
+        .join("psmux")
+        .join("plugins")
         .join("psmux-test-short");
     fs::create_dir_all(&plugin_dir).unwrap();
-    fs::write(plugin_dir.join("plugin.conf"), "set -g @test-short 'short-found'\n").unwrap();
+    fs::write(
+        plugin_dir.join("plugin.conf"),
+        "set -g @test-short 'short-found'\n",
+    )
+    .unwrap();
 
     let _env = EnvGuard::new(tmp.to_str().unwrap());
 
@@ -156,13 +195,17 @@ fn plugin_discovery_xdg_ps1_entry() {
     let tmp = std::env::temp_dir().join("psmux_test_xdg_ps1");
     let _ = fs::remove_dir_all(&tmp);
 
-    let plugin_dir = tmp.join(".config").join("psmux").join("plugins")
+    let plugin_dir = tmp
+        .join(".config")
+        .join("psmux")
+        .join("plugins")
         .join("psmux-test-ps1");
     fs::create_dir_all(&plugin_dir).unwrap();
     fs::write(
         plugin_dir.join("psmux-test-ps1.ps1"),
         "# PSMux plugin\n# tmux set -g @ps1-test 'ps1-found'\n",
-    ).unwrap();
+    )
+    .unwrap();
 
     let _env = EnvGuard::new(tmp.to_str().unwrap());
 
@@ -172,7 +215,8 @@ fn plugin_discovery_xdg_ps1_entry() {
     for script in &app.pending_plugin_scripts {
         assert!(
             !script.contains(".psmux\\plugins") || script.contains(".config\\psmux\\plugins"),
-            "Pending script path should use XDG location, got: {}", script
+            "Pending script path should use XDG location, got: {}",
+            script
         );
     }
 
@@ -195,7 +239,8 @@ fn plugin_discovery_strips_branch_suffix() {
     fs::write(
         plugin_dir.join("plugin.conf"),
         "set -g @test-branch-option 'branch-found'\n",
-    ).unwrap();
+    )
+    .unwrap();
 
     let _env = EnvGuard::new(tmp.to_str().unwrap());
 

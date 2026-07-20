@@ -19,7 +19,11 @@ fn mock_app() -> AppState {
 
 fn make_window(name: &str, id: usize) -> crate::types::Window {
     crate::types::Window {
-        root: Node::Split { kind: LayoutKind::Horizontal, sizes: vec![], children: vec![] },
+        root: Node::Split {
+            kind: LayoutKind::Horizontal,
+            sizes: vec![],
+            children: vec![],
+        },
         active_path: vec![],
         name: name.to_string(),
         id,
@@ -102,14 +106,20 @@ fn resolve_shell_binary_cmd_exe_passthrough() {
 #[cfg(windows)]
 fn resolve_shell_binary_arbitrary_passthrough() {
     let result = resolve_shell_binary("notepad");
-    assert_eq!(result, "notepad", "unknown binaries should pass through unchanged");
+    assert_eq!(
+        result, "notepad",
+        "unknown binaries should pass through unchanged"
+    );
 }
 
 #[test]
 #[cfg(windows)]
 fn resolve_shell_binary_full_path_passthrough() {
     let result = resolve_shell_binary(r"C:\Windows\System32\cmd.exe");
-    assert_eq!(result, r"C:\Windows\System32\cmd.exe", "full paths should pass through unchanged");
+    assert_eq!(
+        result, r"C:\Windows\System32\cmd.exe",
+        "full paths should pass through unchanged"
+    );
 }
 
 // ─── build_run_shell_command tests ──────────────────────────────────────────
@@ -169,9 +179,18 @@ fn build_run_shell_command_generic_command_uses_shell_wrapper() {
 #[cfg(windows)]
 fn build_run_shell_command_preserves_args() {
     let cmd = build_run_shell_command("pwsh -NoProfile -Command echo hello world");
-    let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().to_string()).collect();
-    assert!(args.contains(&"-NoProfile".to_string()), "Should preserve -NoProfile arg");
-    assert!(args.contains(&"-Command".to_string()), "Should preserve -Command arg");
+    let args: Vec<String> = cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().to_string())
+        .collect();
+    assert!(
+        args.contains(&"-NoProfile".to_string()),
+        "Should preserve -NoProfile arg"
+    );
+    assert!(
+        args.contains(&"-Command".to_string()),
+        "Should preserve -Command arg"
+    );
 }
 
 // ─── expand_run_shell_path tests ────────────────────────────────────────────
@@ -315,26 +334,40 @@ fn run_shell_double_quoted_command() {
 fn ensure_background_adds_flag_to_run_shell() {
     let result = ensure_background("run-shell echo test");
     assert!(result.contains("-b"), "Should add -b flag. Got: {}", result);
-    assert!(result.starts_with("run-shell -b"), "Flag should be right after command. Got: {}", result);
+    assert!(
+        result.starts_with("run-shell -b"),
+        "Flag should be right after command. Got: {}",
+        result
+    );
 }
 
 #[test]
 fn ensure_background_adds_flag_to_run_alias() {
     let result = ensure_background("run echo test");
     assert!(result.contains("-b"), "Should add -b flag. Got: {}", result);
-    assert!(result.starts_with("run -b"), "Flag should be right after alias. Got: {}", result);
+    assert!(
+        result.starts_with("run -b"),
+        "Flag should be right after alias. Got: {}",
+        result
+    );
 }
 
 #[test]
 fn ensure_background_noop_when_already_background() {
     let result = ensure_background("run-shell -b echo test");
-    assert_eq!(result, "run-shell -b echo test", "Should not double add -b flag");
+    assert_eq!(
+        result, "run-shell -b echo test",
+        "Should not double add -b flag"
+    );
 }
 
 #[test]
 fn ensure_background_noop_for_non_run_commands() {
     let result = ensure_background("display-message hello");
-    assert_eq!(result, "display-message hello", "Non run commands should be unchanged");
+    assert_eq!(
+        result, "display-message hello",
+        "Non run commands should be unchanged"
+    );
 }
 
 // ─── parse_command_line tests for edge cases ────────────────────────────────

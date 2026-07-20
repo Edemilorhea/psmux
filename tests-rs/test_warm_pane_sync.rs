@@ -7,9 +7,11 @@
 // and tests/test_warm_pane_sync_options.ps1.
 
 use super::*;
-use crate::warm_pane_sync::{for_env_change, for_option_change, for_post_config, for_resize,
-    reconcile_consumed_parser, WarmPanePatch, WarmPaneSync};
 use crate::types::AppState;
+use crate::warm_pane_sync::{
+    for_env_change, for_option_change, for_post_config, for_resize, reconcile_consumed_parser,
+    WarmPanePatch, WarmPaneSync,
+};
 
 fn fresh_app() -> AppState {
     let mut app = AppState::new("test".to_string());
@@ -78,8 +80,14 @@ fn unrelated_options_are_noop() {
     let app = fresh_app();
     // Sample a bunch of options that should NOT touch the warm pane.
     for name in [
-        "status-style", "mouse", "prefix", "base-index", "renumber-windows",
-        "status-left", "status-right", "pane-border-style",
+        "status-style",
+        "mouse",
+        "prefix",
+        "base-index",
+        "renumber-windows",
+        "status-left",
+        "status-right",
+        "pane-border-style",
     ] {
         assert!(
             matches!(for_option_change(name, &app), WarmPaneSync::Noop),
@@ -103,13 +111,18 @@ fn resize_to_same_size_is_noop() {
     // Without a warm pane, `for_resize` returns Respawn defensively
     // (no warm pane means we can't compare).  Set up a fake one to
     // exercise the equal-size branch.
-    let fake_term = std::sync::Arc::new(std::sync::Mutex::new(
-        vt100::Parser::new(40, 120, app.history_limit),
-    ));
+    let fake_term = std::sync::Arc::new(std::sync::Mutex::new(vt100::Parser::new(
+        40,
+        120,
+        app.history_limit,
+    )));
     let pty = portable_pty::native_pty_system();
     let pair = pty
         .openpty(portable_pty::PtySize {
-            rows: 40, cols: 120, pixel_width: 0, pixel_height: 0,
+            rows: 40,
+            cols: 120,
+            pixel_width: 0,
+            pixel_height: 0,
         })
         .expect("openpty");
     let mut cmd = portable_pty::CommandBuilder::new("cmd.exe");
@@ -130,14 +143,18 @@ fn resize_to_same_size_is_noop() {
         pane_id: 0,
         rows: 40,
         cols: 120,
-        output_ring: std::sync::Arc::new(std::sync::Mutex::new(
-            std::collections::VecDeque::new(),
-        )),
+        output_ring: std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
     });
 
     assert!(matches!(for_resize(&app, 40, 120), WarmPaneSync::Noop));
-    assert!(matches!(for_resize(&app, 41, 120), WarmPaneSync::Respawn(_)));
-    assert!(matches!(for_resize(&app, 40, 121), WarmPaneSync::Respawn(_)));
+    assert!(matches!(
+        for_resize(&app, 41, 120),
+        WarmPaneSync::Respawn(_)
+    ));
+    assert!(matches!(
+        for_resize(&app, 40, 121),
+        WarmPaneSync::Respawn(_)
+    ));
 }
 
 #[test]
@@ -171,7 +188,8 @@ fn post_config_custom_default_shell_respawns() {
 #[test]
 fn post_config_env_vars_respawn() {
     let mut app = fresh_app();
-    app.environment.insert("MY_VAR".to_string(), "hello".to_string());
+    app.environment
+        .insert("MY_VAR".to_string(), "hello".to_string());
     assert!(matches!(for_post_config(&app), WarmPaneSync::Respawn(_)));
 }
 
@@ -203,9 +221,11 @@ fn post_config_skips_implicit_psmux_env() {
     // PSMUX_TARGET_SESSION / TMUX / TMUX_PANE are server-internal and
     // must not trigger a respawn — they are set on every spawn anyway.
     let mut app = fresh_app();
-    app.environment.insert("PSMUX_TARGET_SESSION".to_string(), "test".to_string());
+    app.environment
+        .insert("PSMUX_TARGET_SESSION".to_string(), "test".to_string());
     app.environment.insert("TMUX".to_string(), "1".to_string());
-    app.environment.insert("TMUX_PANE".to_string(), "%0".to_string());
+    app.environment
+        .insert("TMUX_PANE".to_string(), "%0".to_string());
     assert!(matches!(for_post_config(&app), WarmPaneSync::Noop));
 }
 
@@ -243,7 +263,9 @@ fn reconcile_consumed_parser_is_noop_when_already_synced() {
 fn reconcile_consumed_parser_shrinks_when_limit_lowered() {
     let mut p = vt100::Parser::new(2, 10, 2000);
     let mut data = String::new();
-    for i in 0..30 { data.push_str(&format!("L{i}\r\n")); }
+    for i in 0..30 {
+        data.push_str(&format!("L{i}\r\n"));
+    }
     p.process(data.as_bytes());
     assert!(p.screen().scrollback_filled() > 5);
 

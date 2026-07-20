@@ -62,9 +62,14 @@ fn prefix_defaults_has_plain_v_not_ctrl_v() {
     // PREFIX_DEFAULTS has ("v", "rectangle-toggle") which is plain 'v',
     // not Ctrl+V. These are entirely different keys.
     let has_plain_v = crate::help::PREFIX_DEFAULTS.iter().any(|(k, _)| *k == "v");
-    let has_ctrl_v = crate::help::PREFIX_DEFAULTS.iter().any(|(k, _)| *k == "C-v");
+    let has_ctrl_v = crate::help::PREFIX_DEFAULTS
+        .iter()
+        .any(|(k, _)| *k == "C-v");
 
-    assert!(has_plain_v, "PREFIX_DEFAULTS should have plain 'v' (rectangle-toggle)");
+    assert!(
+        has_plain_v,
+        "PREFIX_DEFAULTS should have plain 'v' (rectangle-toggle)"
+    );
     assert!(!has_ctrl_v, "PREFIX_DEFAULTS should NOT have 'C-v'");
 }
 
@@ -77,18 +82,21 @@ fn unbind_key_cv_does_not_remove_plain_v() {
     populate_default_bindings(&mut app);
 
     let prefix = app.key_tables.get("prefix").unwrap();
-    let has_plain_v_before = prefix.iter().any(|b| {
-        matches!(b.key.0, KeyCode::Char('v')) && !b.key.1.contains(KeyModifiers::CONTROL)
-    });
-    assert!(has_plain_v_before, "Prefix should have plain 'v' before unbind");
+    let has_plain_v_before = prefix
+        .iter()
+        .any(|b| matches!(b.key.0, KeyCode::Char('v')) && !b.key.1.contains(KeyModifiers::CONTROL));
+    assert!(
+        has_plain_v_before,
+        "Prefix should have plain 'v' before unbind"
+    );
 
     // unbind-key C-v (Ctrl+V, not plain v)
     parse_unbind_key(&mut app, "unbind-key C-v");
 
     let prefix = app.key_tables.get("prefix").unwrap();
-    let has_plain_v_after = prefix.iter().any(|b| {
-        matches!(b.key.0, KeyCode::Char('v')) && !b.key.1.contains(KeyModifiers::CONTROL)
-    });
+    let has_plain_v_after = prefix
+        .iter()
+        .any(|b| matches!(b.key.0, KeyCode::Char('v')) && !b.key.1.contains(KeyModifiers::CONTROL));
 
     // Plain 'v' should STILL be present (C-v and v are different keys)
     // NOTE: If this test fails, it means parse_unbind_key conflates C-v with v,
@@ -109,9 +117,9 @@ fn unbind_key_plain_v_removes_rectangle_toggle() {
     parse_unbind_key(&mut app, "unbind-key v");
 
     let prefix = app.key_tables.get("prefix").unwrap();
-    let has_plain_v = prefix.iter().any(|b| {
-        matches!(b.key.0, KeyCode::Char('v')) && !b.key.1.contains(KeyModifiers::CONTROL)
-    });
+    let has_plain_v = prefix
+        .iter()
+        .any(|b| matches!(b.key.0, KeyCode::Char('v')) && !b.key.1.contains(KeyModifiers::CONTROL));
     assert!(
         !has_plain_v,
         "Plain 'v' (rectangle-toggle) should be removed by unbind-key v"
@@ -131,10 +139,10 @@ fn exhaustive_unbind_still_leaves_hardcoded_cv_path() {
     populate_default_bindings(&mut app);
 
     // Unbind C-v from every possible table
-    parse_unbind_key(&mut app, "unbind-key C-v");        // prefix
-    parse_unbind_key(&mut app, "unbind-key -n C-v");      // root
+    parse_unbind_key(&mut app, "unbind-key C-v"); // prefix
+    parse_unbind_key(&mut app, "unbind-key -n C-v"); // root
     parse_unbind_key(&mut app, "unbind-key -T prefix C-v"); // explicit prefix
-    parse_unbind_key(&mut app, "unbind-key -T root C-v");   // explicit root
+    parse_unbind_key(&mut app, "unbind-key -T root C-v"); // explicit root
 
     // Now verify: was there EVER a C-v in ANY table?
     // Answer: No. The only 'v' in key_tables is plain 'v' (no CONTROL).
@@ -166,18 +174,18 @@ fn bind_then_unbind_ctrl_v_works() {
     parse_bind_key(&mut app, "bind-key -n C-v send-keys custom-action");
 
     let root = app.key_tables.get("root").unwrap();
-    let has_cv = root.iter().any(|b| {
-        matches!(b.key.0, KeyCode::Char('v')) && b.key.1.contains(KeyModifiers::CONTROL)
-    });
+    let has_cv = root
+        .iter()
+        .any(|b| matches!(b.key.0, KeyCode::Char('v')) && b.key.1.contains(KeyModifiers::CONTROL));
     assert!(has_cv, "C-v should be in root table after explicit bind");
 
     // Now unbind it
     parse_unbind_key(&mut app, "unbind-key -n C-v");
 
     let root = app.key_tables.get("root").unwrap();
-    let has_cv_after = root.iter().any(|b| {
-        matches!(b.key.0, KeyCode::Char('v')) && b.key.1.contains(KeyModifiers::CONTROL)
-    });
+    let has_cv_after = root
+        .iter()
+        .any(|b| matches!(b.key.0, KeyCode::Char('v')) && b.key.1.contains(KeyModifiers::CONTROL));
     assert!(
         !has_cv_after,
         "C-v should be removed from root table after unbind-key -n C-v"
@@ -258,10 +266,22 @@ fn parse_key_name_distinguishes_v_from_ctrl_v() {
     let (v_code, v_mods) = plain_v.unwrap();
     let (cv_code, cv_mods) = ctrl_v.unwrap();
 
-    assert!(matches!(v_code, KeyCode::Char('v')), "plain v should parse to Char('v')");
-    assert!(matches!(cv_code, KeyCode::Char('v')), "C-v should parse to Char('v')");
-    assert!(!v_mods.contains(KeyModifiers::CONTROL), "plain v should have no CONTROL modifier");
-    assert!(cv_mods.contains(KeyModifiers::CONTROL), "C-v should have CONTROL modifier");
+    assert!(
+        matches!(v_code, KeyCode::Char('v')),
+        "plain v should parse to Char('v')"
+    );
+    assert!(
+        matches!(cv_code, KeyCode::Char('v')),
+        "C-v should parse to Char('v')"
+    );
+    assert!(
+        !v_mods.contains(KeyModifiers::CONTROL),
+        "plain v should have no CONTROL modifier"
+    );
+    assert!(
+        cv_mods.contains(KeyModifiers::CONTROL),
+        "C-v should have CONTROL modifier"
+    );
 
     // After normalization, they should still be different
     let norm_v = normalize_key_for_binding((v_code, v_mods));

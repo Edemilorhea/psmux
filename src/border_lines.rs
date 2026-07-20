@@ -48,11 +48,18 @@ pub struct BorderChars {
 pub const DEFAULT: &str = "single";
 
 /// The valid choice values, for validation / customize-mode.
-pub const CHOICES: &[&str] = &["single", "double", "heavy", "simple", "number", "spaces", "none"];
+pub const CHOICES: &[&str] = &[
+    "single", "double", "heavy", "simple", "number", "spaces", "none",
+];
 
 const SINGLE: BorderChars = BorderChars {
-    vertical: '│', horizontal: '─', cross: '┼',
-    left_tee: '├', right_tee: '┤', top_tee: '┬', bottom_tee: '┴',
+    vertical: '│',
+    horizontal: '─',
+    cross: '┼',
+    left_tee: '├',
+    right_tee: '┤',
+    top_tee: '┬',
+    bottom_tee: '┴',
     has_junctions: true,
 };
 
@@ -64,23 +71,43 @@ pub fn border_chars(name: &str) -> Option<BorderChars> {
     match name.trim() {
         "none" => None,
         "double" => Some(BorderChars {
-            vertical: '║', horizontal: '═', cross: '╬',
-            left_tee: '╠', right_tee: '╣', top_tee: '╦', bottom_tee: '╩',
+            vertical: '║',
+            horizontal: '═',
+            cross: '╬',
+            left_tee: '╠',
+            right_tee: '╣',
+            top_tee: '╦',
+            bottom_tee: '╩',
             has_junctions: true,
         }),
         "heavy" => Some(BorderChars {
-            vertical: '┃', horizontal: '━', cross: '╋',
-            left_tee: '┣', right_tee: '┫', top_tee: '┳', bottom_tee: '┻',
+            vertical: '┃',
+            horizontal: '━',
+            cross: '╋',
+            left_tee: '┣',
+            right_tee: '┫',
+            top_tee: '┳',
+            bottom_tee: '┻',
             has_junctions: true,
         }),
         "simple" => Some(BorderChars {
-            vertical: '|', horizontal: '-', cross: '+',
-            left_tee: '+', right_tee: '+', top_tee: '+', bottom_tee: '+',
+            vertical: '|',
+            horizontal: '-',
+            cross: '+',
+            left_tee: '+',
+            right_tee: '+',
+            top_tee: '+',
+            bottom_tee: '+',
             has_junctions: true,
         }),
         "spaces" => Some(BorderChars {
-            vertical: ' ', horizontal: ' ', cross: ' ',
-            left_tee: ' ', right_tee: ' ', top_tee: ' ', bottom_tee: ' ',
+            vertical: ' ',
+            horizontal: ' ',
+            cross: ' ',
+            left_tee: ' ',
+            right_tee: ' ',
+            top_tee: ' ',
+            bottom_tee: ' ',
             has_junctions: false,
         }),
         // "single", "default", "number", and any unknown value.
@@ -106,7 +133,10 @@ mod tests {
     fn single_is_default_and_uses_light_glyphs() {
         let bc = border_chars("single").unwrap();
         assert_eq!((bc.vertical, bc.horizontal, bc.cross), ('│', '─', '┼'));
-        assert_eq!((bc.left_tee, bc.right_tee, bc.top_tee, bc.bottom_tee), ('├', '┤', '┬', '┴'));
+        assert_eq!(
+            (bc.left_tee, bc.right_tee, bc.top_tee, bc.bottom_tee),
+            ('├', '┤', '┬', '┴')
+        );
         assert!(bc.has_junctions);
         // The catalog default resolves to the single glyph set.
         assert_eq!(border_chars(DEFAULT), Some(bc));
@@ -116,14 +146,20 @@ mod tests {
     fn double_uses_double_glyphs() {
         let bc = border_chars("double").unwrap();
         assert_eq!((bc.vertical, bc.horizontal, bc.cross), ('║', '═', '╬'));
-        assert_eq!((bc.left_tee, bc.right_tee, bc.top_tee, bc.bottom_tee), ('╠', '╣', '╦', '╩'));
+        assert_eq!(
+            (bc.left_tee, bc.right_tee, bc.top_tee, bc.bottom_tee),
+            ('╠', '╣', '╦', '╩')
+        );
     }
 
     #[test]
     fn heavy_uses_heavy_glyphs() {
         let bc = border_chars("heavy").unwrap();
         assert_eq!((bc.vertical, bc.horizontal, bc.cross), ('┃', '━', '╋'));
-        assert_eq!((bc.left_tee, bc.right_tee, bc.top_tee, bc.bottom_tee), ('┣', '┫', '┳', '┻'));
+        assert_eq!(
+            (bc.left_tee, bc.right_tee, bc.top_tee, bc.bottom_tee),
+            ('┣', '┫', '┳', '┻')
+        );
     }
 
     #[test]
@@ -131,7 +167,10 @@ mod tests {
         let bc = border_chars("simple").unwrap();
         assert_eq!((bc.vertical, bc.horizontal, bc.cross), ('|', '-', '+'));
         // All junctions collapse to '+', matching tmux SIMPLE_BORDERS.
-        assert_eq!((bc.left_tee, bc.right_tee, bc.top_tee, bc.bottom_tee), ('+', '+', '+', '+'));
+        assert_eq!(
+            (bc.left_tee, bc.right_tee, bc.top_tee, bc.bottom_tee),
+            ('+', '+', '+', '+')
+        );
     }
 
     #[test]
@@ -150,7 +189,9 @@ mod tests {
 
     #[test]
     fn validity_matches_choices() {
-        for c in CHOICES { assert!(is_valid(c), "{c} should be valid"); }
+        for c in CHOICES {
+            assert!(is_valid(c), "{c} should be valid");
+        }
         assert!(!is_valid("bogus"));
         // Whitespace is tolerated by the parser.
         assert_eq!(border_chars("  double  "), border_chars("double"));

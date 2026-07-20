@@ -54,7 +54,12 @@ fn filled_parser_with_decset(rows: u16, cols: u16, decset: &[u8]) -> Arc<Mutex<v
 fn make_pane(term: Arc<Mutex<vt100::Parser>>, rows: u16, cols: u16) -> crate::types::Pane {
     let pty = portable_pty::native_pty_system();
     let pair = pty
-        .openpty(portable_pty::PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+        .openpty(portable_pty::PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
         .expect("openpty");
     let mut cmd = portable_pty::CommandBuilder::new("cmd.exe");
     cmd.arg("/c");
@@ -111,12 +116,16 @@ fn discussion349_filled_container_screen_trips_permissive_gate_but_not_hover_gat
     let hover = pane_wants_hover(&pane);
     eprintln!("[filled container] pane_wants_mouse={permissive} pane_wants_hover={hover}");
 
-    assert!(permissive,
+    assert!(
+        permissive,
         "trap not reproduced: the fullscreen heuristic should false-positive on a filled screen \
-         (this is the deliberate #285 tradeoff for clicks)");
-    assert!(!hover,
+         (this is the deliberate #285 tradeoff for clicks)"
+    );
+    assert!(
+        !hover,
         "FIX CONTRACT: bare motion must NOT be forwarded — the child never enabled \
-         DECSET 1002/1003, so pane_wants_hover must be false");
+         DECSET 1002/1003, so pane_wants_hover must be false"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -128,16 +137,20 @@ fn discussion349_filled_container_screen_trips_permissive_gate_but_not_hover_gat
 fn discussion349_decset_1003_any_motion_still_gets_hover() {
     let term = filled_parser_with_decset(10, 60, b"\x1b[?1003h\x1b[?1006h");
     let pane = make_pane(term, 10, 60);
-    assert!(pane_wants_hover(&pane),
-        "a child that enabled AnyMotion (DECSET 1003) must still receive bare motion (#60)");
+    assert!(
+        pane_wants_hover(&pane),
+        "a child that enabled AnyMotion (DECSET 1003) must still receive bare motion (#60)"
+    );
 }
 
 #[test]
 fn discussion349_decset_1002_button_motion_still_gets_hover() {
     let term = filled_parser_with_decset(10, 60, b"\x1b[?1002h\x1b[?1006h");
     let pane = make_pane(term, 10, 60);
-    assert!(pane_wants_hover(&pane),
-        "a child that enabled ButtonMotion (DECSET 1002) must still receive bare motion");
+    assert!(
+        pane_wants_hover(&pane),
+        "a child that enabled ButtonMotion (DECSET 1002) must still receive bare motion"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -149,8 +162,10 @@ fn discussion349_decset_1002_button_motion_still_gets_hover() {
 fn discussion349_alt_screen_without_mouse_protocol_gets_no_hover() {
     let term = filled_parser_with_decset(10, 60, b"\x1b[?1049h");
     let pane = make_pane(term, 10, 60);
-    assert!(!pane_wants_hover(&pane),
-        "alt-screen without an explicit mouse protocol must not receive bare motion (#296)");
+    assert!(
+        !pane_wants_hover(&pane),
+        "alt-screen without an explicit mouse protocol must not receive bare motion (#296)"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -165,6 +180,8 @@ fn discussion349_clicks_keep_permissive_gate_on_filled_screen() {
     // handle_pane_mouse gates button != 35 on pane_wants_mouse; a filled
     // screen with a non-shell foreground must still satisfy it so TUI click
     // support on DECSET-stripping ConPTY builds keeps working (#285).
-    assert!(pane_wants_mouse(&pane),
-        "clicks must keep the permissive pane_wants_mouse gate (#285)");
+    assert!(
+        pane_wants_mouse(&pane),
+        "clicks must keep the permissive pane_wants_mouse gate (#285)"
+    );
 }

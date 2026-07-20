@@ -1,7 +1,7 @@
+use std::env;
 use std::io::{self, ErrorKind, Write};
 use std::path::Path;
 use std::time::{Duration, SystemTime};
-use std::env;
 
 const STALE_PORT_PROBE_ATTEMPTS: usize = 3;
 const STALE_PORT_CONNECT_TIMEOUT: Duration = Duration::from_millis(100);
@@ -42,8 +42,12 @@ pub fn next_session_name(ns_prefix: Option<&str>) -> String {
         for entry in entries.flatten() {
             if let Some(fname) = entry.file_name().to_str() {
                 if let Some((base, ext)) = fname.rsplit_once('.') {
-                    if ext != "port" { continue; }
-                    if is_warm_session(base) { continue; }
+                    if ext != "port" {
+                        continue;
+                    }
+                    if is_warm_session(base) {
+                        continue;
+                    }
                     // Extract the session name part (after namespace prefix if any)
                     let session_part = if let Some(pfx) = ns_prefix {
                         let full_pfx = format!("{}__", pfx);
@@ -53,7 +57,9 @@ pub fn next_session_name(ns_prefix: Option<&str>) -> String {
                             continue; // different namespace
                         }
                     } else {
-                        if base.contains("__") { continue; } // namespaced session
+                        if base.contains("__") {
+                            continue;
+                        } // namespaced session
                         base
                     };
                     if let Ok(n) = session_part.parse::<u32>() {
@@ -92,7 +98,11 @@ impl CounterLock {
 
     fn acquire(path: String) -> Self {
         for _ in 0..2000 {
-            match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
                 Ok(mut f) => {
                     let _ = write!(f, "{}", std::process::id());
                     return CounterLock { path };
@@ -263,11 +273,19 @@ fn select_orphan_pids(
 ) -> Vec<u32> {
     let mut out = Vec::new();
     for c in candidates {
-        if c.pid == self_pid { continue; }
-        if tracked_pids.contains(&c.pid) { continue; }
-        if c.ports.iter().any(|p| tracked_ports.contains(p)) { continue; }
+        if c.pid == self_pid {
+            continue;
+        }
+        if tracked_pids.contains(&c.pid) {
+            continue;
+        }
+        if c.ports.iter().any(|p| tracked_ports.contains(p)) {
+            continue;
+        }
         // Only reap processes old enough to have finished registering.
-        if age_cutoff_ft != 0 && c.creation_ft > age_cutoff_ft { continue; }
+        if age_cutoff_ft != 0 && c.creation_ft > age_cutoff_ft {
+            continue;
+        }
         out.push(c.pid);
     }
     out
@@ -277,9 +295,12 @@ fn select_orphan_pids(
 /// recorded in `.pid` files whose sibling `.port` still exists. A `.pid` without
 /// a live `.port` is ignored so a dead-then-reused PID can't be treated as
 /// tracked.
-fn read_tracked_registry(psmux_dir: &Path)
-    -> (std::collections::HashSet<u16>, std::collections::HashSet<u32>)
-{
+fn read_tracked_registry(
+    psmux_dir: &Path,
+) -> (
+    std::collections::HashSet<u16>,
+    std::collections::HashSet<u32>,
+) {
     let mut tracked_ports = std::collections::HashSet::new();
     let mut tracked_pids = std::collections::HashSet::new();
     if let Ok(entries) = std::fs::read_dir(psmux_dir) {
@@ -288,7 +309,9 @@ fn read_tracked_registry(psmux_dir: &Path)
             match path.extension().and_then(|e| e.to_str()) {
                 Some("port") => {
                     if let Ok(s) = std::fs::read_to_string(&path) {
-                        if let Ok(p) = s.trim().parse::<u16>() { tracked_ports.insert(p); }
+                        if let Ok(p) = s.trim().parse::<u16>() {
+                            tracked_ports.insert(p);
+                        }
                     }
                 }
                 Some("pid") => {
@@ -297,7 +320,9 @@ fn read_tracked_registry(psmux_dir: &Path)
                     if port_sibling.exists() {
                         if let Ok(s) = std::fs::read_to_string(&path) {
                             // Tolerate both `pid` and `pid:creation_filetime` bodies.
-                            if let Some((pid, _)) = parse_pid_file_contents(&s) { tracked_pids.insert(pid); }
+                            if let Some((pid, _)) = parse_pid_file_contents(&s) {
+                                tracked_pids.insert(pid);
+                            }
                         }
                     }
                 }
@@ -334,7 +359,9 @@ pub struct PidTarget {
 pub fn parse_pid_file_contents(s: &str) -> Option<(u32, Option<u64>)> {
     let s = s.trim();
     match s.split_once(':') {
-        Some((pid_str, time_str)) => Some((pid_str.trim().parse().ok()?, time_str.trim().parse().ok())),
+        Some((pid_str, time_str)) => {
+            Some((pid_str.trim().parse().ok()?, time_str.trim().parse().ok()))
+        }
         None => Some((s.parse().ok()?, None)),
     }
 }
@@ -354,13 +381,17 @@ pub fn format_pid_file_contents(pid: u32, creation_time: u64) -> String {
 /// candidates). This selects targets; it does not kill.
 pub fn force_kill_targets(dir: &std::path::Path, ns_prefix: Option<&str>) -> Vec<PidTarget> {
     let mut targets = Vec::new();
-    let Ok(entries) = std::fs::read_dir(dir) else { return targets; };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return targets;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().map(|e| e == "pid").unwrap_or(false) {
             if let Some(pfx) = ns_prefix {
                 let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-                if !stem.starts_with(pfx) { continue; }
+                if !stem.starts_with(pfx) {
+                    continue;
+                }
             }
             if let Ok(contents) = std::fs::read_to_string(&path) {
                 // A recorded creation time is required: it is the identity gate.
@@ -425,16 +456,33 @@ fn reap_orphaned_servers_in(psmux_dir: &Path) {
                 PSMUX_SERVER_IMAGE_NAMES.contains(&n.as_str())
             })
             .unwrap_or(false);
-        if !is_psmux { continue; }
+        if !is_psmux {
+            continue;
+        }
         let creation_ft = process_kill::process_creation_time(pid).unwrap_or(u64::MAX);
-        candidates.push(ServerCandidate { pid, ports, creation_ft });
+        candidates.push(ServerCandidate {
+            pid,
+            ports,
+            creation_ft,
+        });
     }
 
-    let orphans = select_orphan_pids(&candidates, &tracked_ports, &tracked_pids, self_pid, age_cutoff_ft);
+    let orphans = select_orphan_pids(
+        &candidates,
+        &tracked_ports,
+        &tracked_pids,
+        self_pid,
+        age_cutoff_ft,
+    );
     for pid in orphans {
         if crate::debug_log::session_log_enabled() {
-            crate::debug_log::session_log("reaper", &format!(
-                "terminating orphaned psmux server pid {} (no registry entry references it)", pid));
+            crate::debug_log::session_log(
+                "reaper",
+                &format!(
+                    "terminating orphaned psmux server pid {} (no registry entry references it)",
+                    pid
+                ),
+            );
         }
         process_kill::terminate_server_pid(pid, Some(now_ft));
     }
@@ -587,9 +635,13 @@ where
                     Some(true) => continue, // live server; nothing to clean
                     Some(false) => {
                         if crate::debug_log::session_log_enabled() {
-                            crate::debug_log::session_log("cleanup", &format!(
-                                "reaping '{}': recorded server PID is dead or recycled",
-                                registry_base(&path)));
+                            crate::debug_log::session_log(
+                                "cleanup",
+                                &format!(
+                                    "reaping '{}': recorded server PID is dead or recycled",
+                                    registry_base(&path)
+                                ),
+                            );
                         }
                         remove_session_registry_files(&path);
                         continue;
@@ -609,9 +661,14 @@ where
                         }
                     } else {
                         if crate::debug_log::session_log_enabled() {
-                            crate::debug_log::session_log("cleanup", &format!(
-                                "reaping '{}': unparseable port value {:?}",
-                                registry_base(&path), port_str.trim()));
+                            crate::debug_log::session_log(
+                                "cleanup",
+                                &format!(
+                                    "reaping '{}': unparseable port value {:?}",
+                                    registry_base(&path),
+                                    port_str.trim()
+                                ),
+                            );
                         }
                         remove_session_registry_files(&path);
                     }
@@ -623,7 +680,10 @@ where
 
 /// Display name (file stem) of a registry path, for logging.
 fn registry_base(port_path: &Path) -> &str {
-    port_path.file_stem().and_then(|s| s.to_str()).unwrap_or("?")
+    port_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("?")
 }
 
 fn remove_session_registry_files(port_path: &Path) {
@@ -711,15 +771,22 @@ fn probe_session_for_cleanup(key: &str, port: u16) -> PortProbeResult {
         match probe_auth_identity(addr, key) {
             Ok(AuthProbe::Authenticated) => {
                 if crate::debug_log::session_log_enabled() {
-                    crate::debug_log::session_log("probe",
-                        &format!("port {}: AUTH accepted -> alive", port));
+                    crate::debug_log::session_log(
+                        "probe",
+                        &format!("port {}: AUTH accepted -> alive", port),
+                    );
                 }
                 return PortProbeResult::Alive;
             }
             Ok(AuthProbe::Rejected) => {
                 if crate::debug_log::session_log_enabled() {
-                    crate::debug_log::session_log("probe", &format!(
-                        "port {}: AUTH rejected by a different server (reused port) -> stale", port));
+                    crate::debug_log::session_log(
+                        "probe",
+                        &format!(
+                            "port {}: AUTH rejected by a different server (reused port) -> stale",
+                            port
+                        ),
+                    );
                 }
                 return PortProbeResult::Stale;
             }
@@ -735,14 +802,18 @@ fn probe_session_for_cleanup(key: &str, port: u16) -> PortProbeResult {
 
     if saw_refused && !saw_inconclusive {
         if crate::debug_log::session_log_enabled() {
-            crate::debug_log::session_log("probe",
-                &format!("port {}: connection refused on all attempts -> stale", port));
+            crate::debug_log::session_log(
+                "probe",
+                &format!("port {}: connection refused on all attempts -> stale", port),
+            );
         }
         PortProbeResult::Stale
     } else {
         if crate::debug_log::session_log_enabled() {
-            crate::debug_log::session_log("probe",
-                &format!("port {}: no definitive answer -> inconclusive (kept)", port));
+            crate::debug_log::session_log(
+                "probe",
+                &format!("port {}: no definitive answer -> inconclusive (kept)", port),
+            );
         }
         PortProbeResult::Inconclusive
     }
@@ -793,7 +864,9 @@ pub fn send_auth_cmd(addr: &str, key: &str, cmd: &[u8]) -> io::Result<()> {
         Some(k) => k,
         None => return Ok(()),
     };
-    let sock_addr: std::net::SocketAddr = addr.parse().map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    let sock_addr: std::net::SocketAddr = addr
+        .parse()
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
     if let Ok(mut s) = std::net::TcpStream::connect_timeout(&sock_addr, Duration::from_millis(50)) {
         let _ = s.set_nodelay(true);
         let _ = write!(s, "AUTH {}\n", key);
@@ -813,7 +886,12 @@ pub fn send_auth_cmd(addr: &str, key: &str, cmd: &[u8]) -> io::Result<()> {
 pub fn send_auth_cmd_response(addr: &str, key: &str, cmd: &[u8]) -> io::Result<String> {
     let key = match validate_auth_key(key) {
         Some(k) => k,
-        None => return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid session key")),
+        None => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid session key",
+            ))
+        }
     };
     let mut s = std::net::TcpStream::connect(addr)?;
     let _ = s.set_nodelay(true);
@@ -859,7 +937,10 @@ fn open_authed(
         s.write_all(b"\n").ok()?;
     }
     let _ = s.flush();
-    Some(std::io::BufReader::new(std::io::Read::take(s, MAX_AUTHED_RESPONSE_BYTES)))
+    Some(std::io::BufReader::new(std::io::Read::take(
+        s,
+        MAX_AUTHED_RESPONSE_BYTES,
+    )))
 }
 
 /// Read one response line from an authenticated stream, transparently
@@ -900,7 +981,10 @@ fn read_authed_line<R: std::io::BufRead>(br: &mut R) -> Option<String> {
 fn read_authed_all<R: std::io::Read>(rd: &mut R) -> Option<String> {
     let mut buf = String::new();
     std::io::Read::read_to_string(rd, &mut buf).ok()?;
-    let body = buf.strip_prefix("OK\n").or_else(|| buf.strip_prefix("OK\r\n")).unwrap_or(&buf);
+    let body = buf
+        .strip_prefix("OK\n")
+        .or_else(|| buf.strip_prefix("OK\r\n"))
+        .unwrap_or(&buf);
     let trimmed = body.trim();
     if trimmed.is_empty() || trimmed.starts_with("ERROR:") {
         None
@@ -1159,16 +1243,28 @@ pub fn remove_session_registry(base: &str) {
 }
 
 pub fn send_control(line: String) -> io::Result<()> {
-    let mut target = env::var("PSMUX_TARGET_SESSION").ok().unwrap_or_else(|| "default".to_string());
+    let mut target = env::var("PSMUX_TARGET_SESSION")
+        .ok()
+        .unwrap_or_else(|| "default".to_string());
     // Never target a warm (standby) session — resolve to a real session instead
     if is_warm_session(&target) {
         // Extract namespace from warm session name (e.g. "foo____warm__" -> Some("foo"))
         let ns = target.strip_suffix("____warm__").map(|s| s.to_string());
-        target = resolve_last_session_name_ns(ns.as_deref()).unwrap_or_else(|| "default".to_string());
+        target =
+            resolve_last_session_name_ns(ns.as_deref()).unwrap_or_else(|| "default".to_string());
     }
     let full_target = env::var("PSMUX_TARGET_FULL").ok();
     let path = crate::paths::port_file(&target);
-    let port = std::fs::read_to_string(&path).ok().and_then(|s| s.trim().parse::<u16>().ok()).ok_or_else(|| io::Error::new(io::ErrorKind::Other, format!("no server running on session '{}'", target)))?.clone();
+    let port = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| s.trim().parse::<u16>().ok())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("no server running on session '{}'", target),
+            )
+        })?
+        .clone();
     let session_key = read_session_key(&target).unwrap_or_default();
     let addr: std::net::SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
     // 1s connect timeout: a busy-but-alive server must not be mistaken for a
@@ -1203,21 +1299,34 @@ pub fn send_control(line: String) -> io::Result<()> {
 }
 
 pub fn send_control_with_response(line: String) -> io::Result<String> {
-    let mut target = env::var("PSMUX_TARGET_SESSION").ok().unwrap_or_else(|| "default".to_string());
+    let mut target = env::var("PSMUX_TARGET_SESSION")
+        .ok()
+        .unwrap_or_else(|| "default".to_string());
     // Never target a warm (standby) session — resolve to a real session instead
     if is_warm_session(&target) {
         let ns = target.strip_suffix("____warm__").map(|s| s.to_string());
-        target = resolve_last_session_name_ns(ns.as_deref()).unwrap_or_else(|| "default".to_string());
+        target =
+            resolve_last_session_name_ns(ns.as_deref()).unwrap_or_else(|| "default".to_string());
     }
     let full_target = env::var("PSMUX_TARGET_FULL").ok();
     let path = crate::paths::port_file(&target);
-    let port = std::fs::read_to_string(&path).ok().and_then(|s| s.trim().parse::<u16>().ok()).ok_or_else(|| io::Error::new(io::ErrorKind::Other, format!("no server running on session '{}'", target)))?.clone();
+    let port = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| s.trim().parse::<u16>().ok())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("no server running on session '{}'", target),
+            )
+        })?
+        .clone();
     let session_key = read_session_key(&target).unwrap_or_default();
     // Bounded connect: against a saturated listen backlog, a bare connect()
     // fails only after the ~21s Windows SYN-retransmit and surfaces as the
     // notorious `os error 10060`. A 1s timeout turns that into a fast, retryable
     // error instead of a multi-second hang printed to the user.
-    let addr: std::net::SocketAddr = format!("127.0.0.1:{}", port).parse()
+    let addr: std::net::SocketAddr = format!("127.0.0.1:{}", port)
+        .parse()
         .map_err(|_| io::Error::new(io::ErrorKind::Other, "bad server address"))?;
     let mut stream = std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(1000))?;
     let _ = stream.set_nodelay(true);
@@ -1239,7 +1348,12 @@ pub fn send_control_with_response(line: String) -> io::Result<String> {
         match std::io::Read::read(&mut stream, &mut temp) {
             Ok(0) => break,
             Ok(n) => buf.extend_from_slice(&temp[..n]),
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut => { timed_out = true; break; }
+            Err(e)
+                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
+            {
+                timed_out = true;
+                break;
+            }
             Err(_) => break,
         }
     }
@@ -1248,7 +1362,10 @@ pub fn send_control_with_response(line: String) -> io::Result<String> {
     // windows on a merely-slow server (silent wrong answer). Surface it as a
     // retryable error so the caller can retry or report honestly.
     if timed_out && buf.is_empty() {
-        return Err(io::Error::new(io::ErrorKind::TimedOut, "no response from server (timed out)"));
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "no response from server (timed out)",
+        ));
     }
     let result = String::from_utf8_lossy(&buf).to_string();
     // Strip the "OK\n" AUTH response prefix if present
@@ -1312,7 +1429,14 @@ pub fn resolve_last_session_name_ns_in(dir: &std::path::Path, ns: Option<&str>) 
         for e in rd.flatten() {
             if let Some(fname) = e.file_name().to_str() {
                 if let Some((base, ext)) = fname.rsplit_once('.') {
-                    if ext == "port" { if let Ok(md) = e.metadata() { picks.push((base.to_string(), md.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH))); } }
+                    if ext == "port" {
+                        if let Ok(md) = e.metadata() {
+                            picks.push((
+                                base.to_string(),
+                                md.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+                            ));
+                        }
+                    }
                 }
             }
         }
@@ -1379,7 +1503,11 @@ fn session_base_owning_tmux_port(tmux_val: &str, psmux_dir: &std::path::Path) ->
             if let Ok(port_str) = std::fs::read_to_string(&path) {
                 if port_str.trim().parse::<u16>().ok() == Some(port) {
                     let base = path.file_stem().and_then(|s| s.to_str())?;
-                    return if is_warm_session(base) { None } else { Some(base.to_string()) };
+                    return if is_warm_session(base) {
+                        None
+                    } else {
+                        Some(base.to_string())
+                    };
                 }
             }
         }
@@ -1390,24 +1518,37 @@ fn session_base_owning_tmux_port(tmux_val: &str, psmux_dir: &std::path::Path) ->
 pub fn resolve_default_session_name() -> Option<String> {
     if let Ok(name) = env::var("PSMUX_DEFAULT_SESSION") {
         let p = crate::paths::port_file(&name);
-        if std::path::Path::new(&p).exists() { return Some(name); }
+        if std::path::Path::new(&p).exists() {
+            return Some(name);
+        }
     }
     // `.psmuxrc` is a home-relative config file, not part of the data dir, so it
     // stays under home_dir(); `pmuxrc` and the port files live in the data dir.
     let home = crate::paths::home_dir();
-    let candidates = [format!("{}\\.psmuxrc", home), format!("{}\\pmuxrc", crate::paths::psmux_dir())];
+    let candidates = [
+        format!("{}\\.psmuxrc", home),
+        format!("{}\\pmuxrc", crate::paths::psmux_dir()),
+    ];
     for cfg in candidates.iter() {
         if let Ok(text) = std::fs::read_to_string(cfg) {
             let line = text.lines().find(|l| !l.trim().is_empty())?;
-            let name = if let Some(rest) = line.strip_prefix("default-session ") { rest.trim().to_string() } else { line.trim().to_string() };
+            let name = if let Some(rest) = line.strip_prefix("default-session ") {
+                rest.trim().to_string()
+            } else {
+                line.trim().to_string()
+            };
             let p = crate::paths::port_file(&name);
-            if std::path::Path::new(&p).exists() { return Some(name); }
+            if std::path::Path::new(&p).exists() {
+                return Some(name);
+            }
         }
     }
     None
 }
 
-pub fn reap_children_placeholder() -> io::Result<bool> { Ok(false) }
+pub fn reap_children_placeholder() -> io::Result<bool> {
+    Ok(false)
+}
 
 /// Return the names of all live sessions by scanning .psmux/*.port files.
 pub fn list_session_names() -> Vec<String> {
@@ -1423,14 +1564,20 @@ pub fn list_session_names_ns(ns: Option<&str>) -> Vec<String> {
             if let Some(fname) = e.file_name().to_str().map(|s| s.to_string()) {
                 if let Some((base, ext)) = fname.rsplit_once('.') {
                     if ext == "port" {
-                        if is_warm_session(base) { continue; }
+                        if is_warm_session(base) {
+                            continue;
+                        }
                         // Filter by namespace
                         match ns {
                             Some(prefix) => {
-                                if !base.starts_with(&format!("{}__", prefix)) { continue; }
+                                if !base.starts_with(&format!("{}__", prefix)) {
+                                    continue;
+                                }
                             }
                             None => {
-                                if base.contains("__") { continue; }
+                                if base.contains("__") {
+                                    continue;
+                                }
                             }
                         }
                         names.push(base.to_string());
@@ -1459,7 +1606,10 @@ pub struct TreeEntry {
 
 /// List all running sessions and their windows for choose-tree display.
 /// Queries each running server via its TCP port for window list info.
-pub fn list_all_sessions_tree(current_session: &str, current_windows: &[(String, usize, String, bool, usize)]) -> Vec<TreeEntry> {
+pub fn list_all_sessions_tree(
+    current_session: &str,
+    current_windows: &[(String, usize, String, bool, usize)],
+) -> Vec<TreeEntry> {
     let Some(psmux_dir) = crate::paths::psmux_dir_opt() else {
         return vec![];
     };
@@ -1471,10 +1621,13 @@ pub fn list_all_sessions_tree(current_session: &str, current_windows: &[(String,
             if path.extension().map(|e| e == "port").unwrap_or(false) {
                 if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
                     // Hide warm (standby) sessions from choose-tree
-                    if is_warm_session(stem) { continue; }
+                    if is_warm_session(stem) {
+                        continue;
+                    }
                     if let Ok(port_str) = std::fs::read_to_string(&path) {
                         if let Ok(port) = port_str.trim().parse::<u16>() {
-                            let mtime = entry.metadata()
+                            let mtime = entry
+                                .metadata()
                                 .and_then(|m| m.modified())
                                 .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
                             sessions.push((stem.to_string(), port, mtime));

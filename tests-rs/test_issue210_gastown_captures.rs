@@ -34,14 +34,20 @@ fn negative_s_clamps_to_zero_not_bottom() {
 fn positive_s_still_absolute() {
     for s in [0i32, 5, 10, 49] {
         let (start, _) = crate::copy_mode::compute_capture_range(Some(s), None, 49);
-        assert_eq!(start, s as u16, "positive S={s} must be absolute (production code)");
+        assert_eq!(
+            start, s as u16,
+            "positive S={s} must be absolute (production code)"
+        );
     }
 }
 
 #[test]
 fn positive_s_clamped_to_last_row() {
     let (start, _) = crate::copy_mode::compute_capture_range(Some(100), None, 49);
-    assert_eq!(start, 49, "S beyond pane height must clamp to last row (production code)");
+    assert_eq!(
+        start, 49,
+        "S beyond pane height must clamp to last row (production code)"
+    );
 }
 
 #[test]
@@ -60,8 +66,14 @@ fn default_end_is_last_row() {
 fn s_minus_5_returns_full_screen_for_50_row_pane() {
     let (start, end) = crate::copy_mode::compute_capture_range(Some(-5), None, 49);
     let rows_captured = (end - start + 1) as usize;
-    assert_eq!(rows_captured, 50, "capture -S -5 must return all 50 visible rows (production code)");
-    assert_eq!(start, 0, "start must include top of screen where PS prompt lives");
+    assert_eq!(
+        rows_captured, 50,
+        "capture -S -5 must return all 50 visible rows (production code)"
+    );
+    assert_eq!(
+        start, 0,
+        "start must include top of screen where PS prompt lives"
+    );
 }
 
 #[test]
@@ -89,7 +101,10 @@ fn s_and_e_explicit_subrange() {
 #[test]
 fn e_beyond_last_row_clamped() {
     let (_, end) = crate::copy_mode::compute_capture_range(None, Some(200), 49);
-    assert_eq!(end, 49, "E beyond pane height must clamp to last_row (production code)");
+    assert_eq!(
+        end, 49,
+        "E beyond pane height must clamp to last_row (production code)"
+    );
 }
 
 #[test]
@@ -114,15 +129,21 @@ fn nudge_session_before_after_strings_differ_with_fix() {
     // NEW: rows 0-49  = has content => non-empty
 
     let old_before = "\n\n\n\n\n"; // 5 empty rows (the bug)
-    let old_after  = "\n\n\n\n\n"; // still 5 empty rows after Enter
-    assert_eq!(old_before, old_after, "old capture: before==after (the bug)");
+    let old_after = "\n\n\n\n\n"; // still 5 empty rows after Enter
+    assert_eq!(
+        old_before, old_after,
+        "old capture: before==after (the bug)"
+    );
 
     // With the fix, the capture includes rows 0-49.
     // Before Enter: rows 0-3 = startup msgs, row 4 = prompt, rows 5-49 = empty
     let new_before = "Windows PowerShell\nCopyright\n\nPS C:\\> \n\n"; // non-empty
-    // After Enter: row 4 = prompt, row 5 = NEW prompt, rows 6-49 = empty
-    let new_after  = "Windows PowerShell\nCopyright\n\nPS C:\\> \nPS C:\\> \n"; // different
-    assert_ne!(new_before, new_after, "after fix: before!=after so NudgeSession succeeds");
+                                                                       // After Enter: row 4 = prompt, row 5 = NEW prompt, rows 6-49 = empty
+    let new_after = "Windows PowerShell\nCopyright\n\nPS C:\\> \nPS C:\\> \n"; // different
+    assert_ne!(
+        new_before, new_after,
+        "after fix: before!=after so NudgeSession succeeds"
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -152,8 +173,11 @@ fn new_session_server_args_include_dimensions() {
     }
 
     let args_str = server_args.join(" ");
-    assert!(args_str.contains("-x 220"), "server args must include -x 220");
-    assert!(args_str.contains("-y 50"),  "server args must include -y 50");
+    assert!(
+        args_str.contains("-x 220"),
+        "server args must include -x 220"
+    );
+    assert!(args_str.contains("-y 50"), "server args must include -y 50");
 }
 
 #[test]
@@ -164,8 +188,14 @@ fn new_session_no_dimensions_no_x_y_flags() {
     let init_height: Option<String> = None;
 
     let mut server_args: Vec<String> = vec!["server".into(), "-s".into(), name.into()];
-    if let Some(ref w) = init_width { server_args.push("-x".into()); server_args.push(w.clone()); }
-    if let Some(ref h) = init_height { server_args.push("-y".into()); server_args.push(h.clone()); }
+    if let Some(ref w) = init_width {
+        server_args.push("-x".into());
+        server_args.push(w.clone());
+    }
+    if let Some(ref h) = init_height {
+        server_args.push("-y".into());
+        server_args.push(h.clone());
+    }
 
     let args_str = server_args.join(" ");
     assert!(!args_str.contains("-x"), "no -x when init_width is None");
@@ -190,9 +220,9 @@ fn new_session_no_dimensions_no_x_y_flags() {
 fn pane_current_command_documents_ps_built_in_limitation() {
     // When a PowerShell built-in cmdlet runs (no child process), the expected
     // return value is the shell name.
-    let expected_for_ps_sleep = "pwsh";          // Start-Sleep runs in-process
-    let expected_for_external_ping = "PING";     // real child process detected
-    let expected_for_cmd_timeout = "timeout";    // real child process detected
+    let expected_for_ps_sleep = "pwsh"; // Start-Sleep runs in-process
+    let expected_for_external_ping = "PING"; // real child process detected
+    let expected_for_cmd_timeout = "timeout"; // real child process detected
 
     // These are the CORRECT psmux behaviours on Windows.
     assert_eq!(expected_for_ps_sleep, "pwsh");
@@ -213,11 +243,15 @@ fn pane_current_command_documents_ps_built_in_limitation() {
 fn sleep_alias_vs_external_process_distinction() {
     // The PS alias table: `sleep` → Start-Sleep (built-in, no child process)
     let ps_alias_sleep_creates_child = false;
-    assert!(!ps_alias_sleep_creates_child,
-        "PowerShell `sleep` runs Start-Sleep in-process; no child process is spawned");
+    assert!(
+        !ps_alias_sleep_creates_child,
+        "PowerShell `sleep` runs Start-Sleep in-process; no child process is spawned"
+    );
 
     // An EXTERNAL command like `ping` DOES create a child process.
     let ping_creates_child = true;
-    assert!(ping_creates_child,
-        "ping.exe is an external process; pane_current_command returns 'PING'");
+    assert!(
+        ping_creates_child,
+        "ping.exe is an external process; pane_current_command returns 'PING'"
+    );
 }

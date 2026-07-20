@@ -25,7 +25,12 @@ pub struct WinChild {
 impl WinChild {
     fn is_complete(&mut self) -> IoResult<Option<ExitStatus>> {
         let mut status: DWORD = 0;
-        let proc = self.proc.lock().unwrap_or_else(|e| e.into_inner()).try_clone().unwrap();
+        let proc = self
+            .proc
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .try_clone()
+            .unwrap();
         let res = unsafe { GetExitCodeProcess(proc.as_raw_handle() as _, &mut status) };
         if res != 0 {
             if status == STILL_ACTIVE {
@@ -39,7 +44,12 @@ impl WinChild {
     }
 
     fn do_kill(&mut self) -> IoResult<()> {
-        let proc = self.proc.lock().unwrap_or_else(|e| e.into_inner()).try_clone().unwrap();
+        let proc = self
+            .proc
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .try_clone()
+            .unwrap();
         let res = unsafe { TerminateProcess(proc.as_raw_handle() as _, 1) };
         let err = IoError::last_os_error();
         // TerminateProcess returns nonzero on SUCCESS, zero on failure.
@@ -58,7 +68,12 @@ impl ChildKiller for WinChild {
     }
 
     fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
-        let proc = self.proc.lock().unwrap_or_else(|e| e.into_inner()).try_clone().unwrap();
+        let proc = self
+            .proc
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .try_clone()
+            .unwrap();
         Box::new(WinChildKiller { proc })
     }
 }
@@ -95,7 +110,12 @@ impl Child for WinChild {
         if let Ok(Some(status)) = self.try_wait() {
             return Ok(status);
         }
-        let proc = self.proc.lock().unwrap_or_else(|e| e.into_inner()).try_clone().unwrap();
+        let proc = self
+            .proc
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .try_clone()
+            .unwrap();
         unsafe {
             WaitForSingleObject(proc.as_raw_handle() as _, INFINITE);
         }
@@ -109,7 +129,14 @@ impl Child for WinChild {
     }
 
     fn process_id(&self) -> Option<u32> {
-        let res = unsafe { GetProcessId(self.proc.lock().unwrap_or_else(|e| e.into_inner()).as_raw_handle() as _) };
+        let res = unsafe {
+            GetProcessId(
+                self.proc
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .as_raw_handle() as _,
+            )
+        };
         if res == 0 {
             None
         } else {
@@ -134,7 +161,11 @@ impl std::future::Future for WinChild {
                 struct PassRawHandleToWaiterThread(pub RawHandle);
                 unsafe impl Send for PassRawHandleToWaiterThread {}
 
-                let proc = self.proc.lock().unwrap_or_else(|e| e.into_inner()).try_clone()?;
+                let proc = self
+                    .proc
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .try_clone()?;
                 let handle = PassRawHandleToWaiterThread(proc.as_raw_handle());
 
                 let waker = cx.waker().clone();
@@ -195,7 +226,10 @@ mod tests_issue446 {
             let _guard = win.proc.lock().unwrap();
             panic!("simulated panic while holding proc lock (try_clone().unwrap() failure)");
         }));
-        assert!(res.is_err(), "the panic must unwind so the lock is poisoned");
+        assert!(
+            res.is_err(),
+            "the panic must unwind so the lock is poisoned"
+        );
         assert!(win.proc.is_poisoned(), "proc mutex must be poisoned now");
     }
 

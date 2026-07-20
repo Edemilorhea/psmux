@@ -170,7 +170,10 @@ fn fix_osc94_clamps_out_of_range_state() {
     let mut p = fresh_parser();
     // state=99 — out of spec; the implementation clamps to 4.
     p.process(&osc94(99, 50));
-    let (s, _) = p.screen().progress().expect("captured even when out of range");
+    let (s, _) = p
+        .screen()
+        .progress()
+        .expect("captured even when out of range");
     assert!(s <= 4, "state must be clamped into 0..=4, got {}", s);
 }
 
@@ -200,9 +203,17 @@ fn fix_chunked_osc94_is_stitched() {
     // Real PTY data arrives in chunks. The OSC may be split anywhere.
     let mut p = fresh_parser();
     p.process(b"\x1b]9;4;1;");
-    assert_eq!(p.screen().progress(), None, "before terminator: not yet committed");
+    assert_eq!(
+        p.screen().progress(),
+        None,
+        "before terminator: not yet committed"
+    );
     p.process(b"50\x1b\\");
-    assert_eq!(p.screen().progress(), Some((1, 50)), "after terminator: committed");
+    assert_eq!(
+        p.screen().progress(),
+        Some((1, 50)),
+        "after terminator: committed"
+    );
 }
 
 // =============================================================================
@@ -214,7 +225,11 @@ fn fix_osc94_does_not_appear_in_screen_contents() {
     let mut p = fresh_parser();
     p.process(&osc94(1, 50));
     let contents = p.screen().contents();
-    assert!(!contents.contains("9;4"), "literal '9;4' leaked into contents: {:?}", contents);
+    assert!(
+        !contents.contains("9;4"),
+        "literal '9;4' leaked into contents: {:?}",
+        contents
+    );
     assert!(!contents.contains("\x1b]"), "ESC ] leaked into contents");
 }
 
@@ -236,7 +251,10 @@ fn fix_osc94_does_not_set_path() {
 fn fix_osc94_does_not_set_squelch_cleared() {
     let mut p = fresh_parser();
     p.process(&osc94(1, 50));
-    assert!(!p.screen_mut().take_squelch_cleared(), "OSC 9;4 vs OSC 9999 must be distinct");
+    assert!(
+        !p.screen_mut().take_squelch_cleared(),
+        "OSC 9;4 vs OSC 9999 must be distinct"
+    );
 }
 
 #[test]
@@ -285,18 +303,22 @@ fn fix_progress_barrage_yields_final_state() {
     // The final reported state must equal the last OSC 9;4 it sent.
     let mut p = fresh_parser();
     let barrage = [
-        (3u8, 0u8),    // start indeterminate
+        (3u8, 0u8), // start indeterminate
         (1, 10),
         (1, 25),
         (1, 50),
         (1, 75),
         (1, 100),
-        (0, 0),        // hide
+        (0, 0), // hide
     ];
     for (s, v) in &barrage {
         p.process(&osc94(*s, *v));
     }
-    assert_eq!(p.screen().progress(), Some((0, 0)), "final state from barrage");
+    assert_eq!(
+        p.screen().progress(),
+        Some((0, 0)),
+        "final state from barrage"
+    );
 }
 
 // =============================================================================
@@ -309,11 +331,19 @@ fn regression_guard_osc0_then_osc94_then_osc2() {
     p.process(&osc0_title("first-title"));
     assert_eq!(p.screen().title(), "first-title");
     p.process(&osc94(1, 50));
-    assert_eq!(p.screen().title(), "first-title", "OSC 9;4 must not clobber title");
+    assert_eq!(
+        p.screen().title(),
+        "first-title",
+        "OSC 9;4 must not clobber title"
+    );
     assert_eq!(p.screen().progress(), Some((1, 50)));
     p.process(&osc2_title("second-title"));
     assert_eq!(p.screen().title(), "second-title");
-    assert_eq!(p.screen().progress(), Some((1, 50)), "OSC 2 must not clobber progress");
+    assert_eq!(
+        p.screen().progress(),
+        Some((1, 50)),
+        "OSC 2 must not clobber progress"
+    );
 }
 
 #[test]

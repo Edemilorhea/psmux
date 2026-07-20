@@ -35,7 +35,10 @@ fn display_popup_strips_single_quotes_from_command() {
     // absent, so no process is spawned; only the parsed command string matters.
     execute_command_string(&mut app, "display-popup -E 'lazygit'").unwrap();
     let cmd = popup_command(&app).expect("display-popup must enter PopupMode");
-    assert_eq!(cmd, "lazygit", "single quotes must be stripped from the popup command");
+    assert_eq!(
+        cmd, "lazygit",
+        "single quotes must be stripped from the popup command"
+    );
 }
 
 #[test]
@@ -43,7 +46,10 @@ fn display_popup_strips_quotes_from_multiword_command() {
     let mut app = mock_app();
     execute_command_string(&mut app, "display-popup -E 'cmd /c ver'").unwrap();
     let cmd = popup_command(&app).expect("display-popup must enter PopupMode");
-    assert_eq!(cmd, "cmd /c ver", "quoted multi-word command must survive intact WITHOUT the quotes");
+    assert_eq!(
+        cmd, "cmd /c ver",
+        "quoted multi-word command must survive intact WITHOUT the quotes"
+    );
 }
 
 #[test]
@@ -67,7 +73,9 @@ fn display_popup_e_flag_sets_close_on_exit() {
     let mut app = mock_app();
     execute_command_string(&mut app, "display-popup -E 'whoami'").unwrap();
     match &app.mode {
-        Mode::PopupMode { close_on_exit, .. } => assert!(*close_on_exit, "-E must set close_on_exit"),
+        Mode::PopupMode { close_on_exit, .. } => {
+            assert!(*close_on_exit, "-E must set close_on_exit")
+        }
         _ => panic!("expected PopupMode"),
     }
 }
@@ -83,7 +91,10 @@ fn display_popup_from_menu_item_command_runs_popup() {
     match &app.mode {
         Mode::PopupMode { command, .. } => {
             assert_eq!(command, "lazygit");
-            assert!(!command.contains('\''), "the literal quotes that broke #470 must be gone");
+            assert!(
+                !command.contains('\''),
+                "the literal quotes that broke #470 must be gone"
+            );
         }
         _ => panic!("menu-fired display-popup must enter PopupMode, not stay in a non-popup mode"),
     }
@@ -96,8 +107,14 @@ fn display_popup_regression_quotes_are_not_left_literal() {
     let mut app = mock_app();
     execute_command_string(&mut app, "display-popup -E 'lazygit'").unwrap();
     let cmd = popup_command(&app).unwrap();
-    assert!(!cmd.starts_with('\''), "command must NOT start with a literal quote (that was the bug)");
-    assert!(!cmd.ends_with('\''), "command must NOT end with a literal quote (that was the bug)");
+    assert!(
+        !cmd.starts_with('\''),
+        "command must NOT start with a literal quote (that was the bug)"
+    );
+    assert!(
+        !cmd.ends_with('\''),
+        "command must NOT end with a literal quote (that was the bug)"
+    );
 }
 
 #[test]
@@ -106,8 +123,16 @@ fn display_popup_preserves_width_height_flags_with_quoted_command() {
     let mut app = mock_app();
     execute_command_string(&mut app, "display-popup -w 50 -h 10 -E 'lazygit'").unwrap();
     match &app.mode {
-        Mode::PopupMode { command, width, height, .. } => {
-            assert_eq!(command, "lazygit", "command still stripped with -w/-h present");
+        Mode::PopupMode {
+            command,
+            width,
+            height,
+            ..
+        } => {
+            assert_eq!(
+                command, "lazygit",
+                "command still stripped with -w/-h present"
+            );
             assert_eq!(*width, 50, "-w must be honored");
             assert_eq!(*height, 10, "-h must be honored");
         }

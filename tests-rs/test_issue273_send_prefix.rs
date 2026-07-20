@@ -89,8 +89,11 @@ fn ensure_prefix_self_binding_does_not_clobber_user_override() {
     let table = app.key_tables.get("prefix").expect("prefix table");
     let bind_for_c_a = table.iter().find(|b| b.key == c_a).expect("C-a bound");
     match &bind_for_c_a.action {
-        Action::Command(c) => assert_eq!(c, "display-message custom",
-            "user override must be preserved, but got {:?}", c),
+        Action::Command(c) => assert_eq!(
+            c, "display-message custom",
+            "user override must be preserved, but got {:?}",
+            c
+        ),
         _ => panic!("expected user's Command action for C-a"),
     }
 

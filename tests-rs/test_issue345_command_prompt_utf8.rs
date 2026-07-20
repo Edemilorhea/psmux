@@ -13,7 +13,11 @@ fn insert_char(buf: &mut String, cursor: &mut usize, c: char) {
 
 fn backspace(buf: &mut String, cursor: &mut usize) {
     if *cursor > 0 {
-        let prev_len = buf[..*cursor].chars().next_back().map(|c| c.len_utf8()).unwrap_or(1);
+        let prev_len = buf[..*cursor]
+            .chars()
+            .next_back()
+            .map(|c| c.len_utf8())
+            .unwrap_or(1);
         let new_cursor = *cursor - prev_len;
         buf.replace_range(new_cursor..*cursor, "");
         *cursor = new_cursor;
@@ -22,14 +26,22 @@ fn backspace(buf: &mut String, cursor: &mut usize) {
 
 fn move_left(buf: &str, cursor: &mut usize) {
     if *cursor > 0 {
-        let prev_len = buf[..*cursor].chars().next_back().map(|c| c.len_utf8()).unwrap_or(1);
+        let prev_len = buf[..*cursor]
+            .chars()
+            .next_back()
+            .map(|c| c.len_utf8())
+            .unwrap_or(1);
         *cursor -= prev_len;
     }
 }
 
 fn move_right(buf: &str, cursor: &mut usize) {
     if *cursor < buf.len() {
-        let next_len = buf[*cursor..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+        let next_len = buf[*cursor..]
+            .chars()
+            .next()
+            .map(|c| c.len_utf8())
+            .unwrap_or(1);
         *cursor += next_len;
     }
 }
@@ -65,13 +77,20 @@ fn backspace_removes_full_char() {
 fn arrow_keys_traverse_char_boundaries() {
     let buf = String::from("a中b");
     let mut cur = 0;
-    move_right(&buf, &mut cur); assert_eq!(cur, 1);
-    move_right(&buf, &mut cur); assert_eq!(cur, 4);
-    move_right(&buf, &mut cur); assert_eq!(cur, 5);
-    move_right(&buf, &mut cur); assert_eq!(cur, 5);
-    move_left(&buf, &mut cur); assert_eq!(cur, 4);
-    move_left(&buf, &mut cur); assert_eq!(cur, 1);
-    move_left(&buf, &mut cur); assert_eq!(cur, 0);
+    move_right(&buf, &mut cur);
+    assert_eq!(cur, 1);
+    move_right(&buf, &mut cur);
+    assert_eq!(cur, 4);
+    move_right(&buf, &mut cur);
+    assert_eq!(cur, 5);
+    move_right(&buf, &mut cur);
+    assert_eq!(cur, 5);
+    move_left(&buf, &mut cur);
+    assert_eq!(cur, 4);
+    move_left(&buf, &mut cur);
+    assert_eq!(cur, 1);
+    move_left(&buf, &mut cur);
+    assert_eq!(cur, 0);
 }
 
 #[test]

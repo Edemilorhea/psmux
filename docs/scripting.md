@@ -48,7 +48,7 @@ psmux send-keys -N 5 Up
 # Send copy mode command
 psmux send-keys -X copy-mode-up
 
-# Force Ctrl+C to the foreground process (Windows CTRL_C_EVENT)
+# Force-interrupt the foreground process (Windows CTRL_BREAK_EVENT)
 # Useful for a dedicated interrupt binding when a raw-mode TUI consumes Ctrl+C.
 psmux send-keys -f C-c
 
@@ -60,10 +60,15 @@ psmux send-keys -f C-c
 ```
 
 `send-keys -f C-c` (or `--force-signal`) is a psmux extension for Windows. It
-bypasses the raw-mode TUI heuristic and sends a CTRL_C_EVENT to the foreground
-process. This keeps normal keyboard Ctrl+C pass-through behavior unchanged while
-allowing an explicit binding such as `bind -n C-F12 send-keys -f C-c` to force an
-interrupt.
+sends a genuine CTRL_BREAK_EVENT to the pane console, which can interrupt
+raw-mode applications that consume Ctrl+C. This keeps normal keyboard Ctrl+C
+pass-through behavior unchanged while allowing an explicit binding such as
+`bind -n C-F12 send-keys -f C-c` to force an interrupt. Like native Ctrl+Break,
+an application can still intercept this signal with its own console handler. If
+the native event cannot be delivered, psmux reports the failure in session
+status/debug output instead of falling back to raw `0x03`, which could otherwise
+leak into the returning shell. The external command protocol acknowledges queued
+commands before asynchronous delivery completes.
 
 ## Pane Information
 

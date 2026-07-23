@@ -3404,33 +3404,13 @@ pub fn send_key_to_active(app: &mut AppState, k: &str, force_signal: bool) -> io
     }
     // Route named keys to active overlay (so CLI send-keys can interact with overlays)
     if matches!(app.mode, Mode::PopupMode { .. }) {
-        // Map named keys to VT sequences for the popup PTY
-        let seq = match k {
-            "enter" => Some("\r"),
-            "esc" | "escape" => {
-                app.mode = Mode::Passthrough;
-                return Ok(());
-            }
-            "tab" => Some("\t"),
-            "backspace" | "bspace" => Some("\x7f"),
-            "up" => Some("\x1b[A"),
-            "down" => Some("\x1b[B"),
-            "right" => Some("\x1b[C"),
-            "left" => Some("\x1b[D"),
-            "home" => Some("\x1b[H"),
-            "end" => Some("\x1b[F"),
-            "pageup" | "ppage" => Some("\x1b[5~"),
-            "pagedown" | "npage" => Some("\x1b[6~"),
-            "delete" | "dc" => Some("\x1b[3~"),
-            "space" => Some(" "),
-            _ => None,
-        };
-        if let Some(seq) = seq {
-            if let Mode::PopupMode { ref mut popup_pane, .. } = app.mode {
-                if let Some(ref mut pty) = popup_pane {
-                    let _ = pty.writer.write_all(seq.as_bytes());
-                    let _ = pty.writer.flush();
-                }
+        if matches!(k, "esc" | "escape") {
+            app.mode = Mode::Passthrough;
+            return Ok(());
+        }
+        if let Mode::PopupMode { ref mut popup_pane, .. } = app.mode {
+            if let Some(ref mut pty) = popup_pane {
+                write_named_key_to_pane(pty, k, force_signal);
             }
         }
         return Ok(());
@@ -3688,7 +3668,7 @@ pub fn send_key_to_active(app: &mut AppState, k: &str, force_signal: bool) -> io
                 #[cfg(windows)]
                 {
                     let injected = if let Some(pid) = p.child_pid {
-                        crate::platform::mouse_inject::send_modified_key_event(pid, c, true, false, true)
+                        crate::platform::mouse_inject::send_modified_key_event(pid, c, true, false, true, None)
                     } else {
                         false
                     };
@@ -3743,13 +3723,14 @@ pub fn send_key_to_active(app: &mut AppState, k: &str, force_signal: bool) -> io
                     crate::platform::mouse_inject::send_ctrl_break_event(pid, false);
                 }
             }
-            s if (s.starts_with("C-") || s.starts_with("c-")) && s.len() == 3 => {
+            s if (s.starts_with("C-") || s.starts_with("c-")) && s.chars().count() == 3 => {
                 let c = s.chars().nth(2).unwrap_or('c');
                 // tmux-parity mapping so C-/ -> 0x1f (^_), not the naive '/' & 0x1f
                 // == 0x0f (^O) collision with C-o (issue #226/#394).  Letters keep
                 // their usual byte (a->0x01 …), so Ctrl+<letter> is unaffected.
-                let ctrl_char = ctrl_char_send_keys_byte(c)
-                    .unwrap_or((c.to_ascii_lowercase() as u8) & 0x1F);
+                let Some(ctrl_char) = ctrl_char_send_keys_byte(c) else {
+                    return;
+                };
                 // Always write the raw control byte so ConPTY can generate
                 // console control events (e.g. CTRL_C_EVENT for \x03).
                 // Raw bytes do NOT start with \x1b so they never corrupt
@@ -3780,11 +3761,15 @@ pub fn send_key_to_active(app: &mut AppState, k: &str, force_signal: bool) -> io
                 let _ = p.writer.write_all(&[ctrl_char]);
                 let _ = p.writer.flush();
             }
-            s if (s.starts_with("M-") || s.starts_with("m-")) && s.len() == 3 => {
+            s if (s.starts_with("M-") || s.starts_with("m-")) && s.chars().count() == 3 => {
                 let c = s.chars().nth(2).unwrap_or('a');
                 // Try native console injection (WriteConsoleInputW with LEFT_ALT_PRESSED)
                 // first.  ConPTY does NOT reassemble ESC+char into Alt+key events, so
                 // PSReadLine Alt+f/Alt+b/etc. won't work via the VT path.
+                #[cfg(windows)]
+                if p.child_pid.is_none() {
+                    p.child_pid = crate::platform::mouse_inject::get_child_pid(&*p.child);
+                }
                 let injected = if let Some(pid) = p.child_pid {
                     crate::platform::mouse_inject::send_alt_key_event(pid, c)
                 } else {
@@ -3795,18 +3780,31 @@ pub fn send_key_to_active(app: &mut AppState, k: &str, force_signal: bool) -> io
                     let _ = write!(p.writer, "\x1b{}", c);
                 }
             }
-            s if (s.starts_with("C-M-") || s.starts_with("c-m-")) && s.len() == 5 => {
+            s if (s.starts_with("C-M-") || s.starts_with("c-m-")) && s.chars().count() == 5 => {
                 let c = s.chars().nth(4).unwrap_or('c');
+                let Some(ctrl_char) = ctrl_char_send_keys_byte(c) else {
+                    return;
+                };
                 // Try native console injection (WriteConsoleInputW with
                 // LEFT_CTRL_PRESSED | LEFT_ALT_PRESSED).  ConPTY does NOT
                 // reassemble ESC + ctrl-char into Ctrl+Alt+key.
+                #[cfg(windows)]
+                if p.child_pid.is_none() {
+                    p.child_pid = crate::platform::mouse_inject::get_child_pid(&*p.child);
+                }
                 let injected = if let Some(pid) = p.child_pid {
-                    crate::platform::mouse_inject::send_modified_key_event(pid, c, true, true, false)
+                    crate::platform::mouse_inject::send_modified_key_event(
+                        pid,
+                        c,
+                        true,
+                        true,
+                        false,
+                        Some(ctrl_char as u16),
+                    )
                 } else {
                     false
                 };
                 if !injected {
-                    let ctrl_char = (c.to_ascii_lowercase() as u8) & 0x1F;
                     let _ = p.writer.write_all(&[0x1b, ctrl_char]);
                 }
             }

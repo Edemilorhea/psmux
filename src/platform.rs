@@ -796,6 +796,25 @@ pub fn take_client_ctrl_break() -> bool {
 //   3. Use WriteConsoleInputW(handle, MOUSE_EVENT record) for each mouse event.
 // ---------------------------------------------------------------------------
 
+pub(crate) fn modified_key_u_char(
+    ch: char,
+    ctrl: bool,
+    shift: bool,
+    u_char_override: Option<u16>,
+) -> Option<u16> {
+    if let Some(value) = u_char_override {
+        return Some(value);
+    }
+    let base_char = if shift && !ctrl { ch.to_ascii_uppercase() } else { ch };
+    if ctrl {
+        Some((base_char.to_ascii_lowercase() as u16) & 0x1F)
+    } else {
+        let mut buf = [0u16; 2];
+        let encoded = base_char.encode_utf16(&mut buf);
+        (encoded.len() == 1).then_some(encoded[0])
+    }
+}
+
 #[cfg(windows)]
 pub mod mouse_inject {
     use std::ffi::c_void;
@@ -2068,7 +2087,21 @@ pub mod mouse_inject {
     /// For Ctrl+key: `u_char` = control character (ch & 0x1F); for Alt+key:
     /// `u_char` = the plain char; for Ctrl+Alt: `u_char` = control character.
     /// Sends both key-down and key-up events for proper event pairing.
-    pub fn send_modified_key_event(child_pid: u32, ch: char, ctrl: bool, alt: bool, shift: bool) -> bool {
+    pub fn send_modified_key_event(
+        child_pid: u32,
+        ch: char,
+        ctrl: bool,
+        alt: bool,
+        shift: bool,
+        u_char_override: Option<u16>,
+    ) -> bool {
+        let Some(u_char_value) = super::modified_key_u_char(ch, ctrl, shift, u_char_override) else {
+            return false;
+        };
+        let vk = char_to_vk(ch);
+        if vk == 0 {
+            return false;
+        }
         let _console_guard = portable_pty::console_state_lock();
         unsafe {
             let had_console = GetConsoleWindow() != 0;
@@ -2130,15 +2163,6 @@ pub mod mouse_inject {
             if alt  { flags |= LEFT_ALT_PRESSED; }
             if shift { flags |= SHIFT_PRESSED; }
 
-            let base_char = if shift && !ctrl { ch.to_ascii_uppercase() } else { ch };
-            let u_char_value: u16 = if ctrl {
-                (base_char.to_ascii_lowercase() as u16) & 0x1F
-            } else {
-                let mut buf = [0u16; 2];
-                base_char.encode_utf16(&mut buf)[0]
-            };
-
-            let vk = char_to_vk(ch);
             let scan = vk_to_scan(vk);
 
             let records = [
@@ -2191,7 +2215,7 @@ pub mod mouse_inject {
 
     /// Convenience: inject Alt+key event.
     pub fn send_alt_key_event(child_pid: u32, ch: char) -> bool {
-        send_modified_key_event(child_pid, ch, false, true, false)
+        send_modified_key_event(child_pid, ch, false, true, ch.is_ascii_uppercase(), None)
     }
 
     /// Inject a modified Enter (VK_RETURN) event via WriteConsoleInputW.
@@ -2347,7 +2371,14 @@ pub mod mouse_inject {
     pub fn query_mouse_input_enabled(_pid: u32) -> Option<bool> { None }
     pub fn send_bracketed_paste(_pid: u32, _text: &str, _bracket: bool) -> bool { false }
     pub fn send_vt_response(_pid: u32, _text: &str) -> bool { false }
-    pub fn send_modified_key_event(_pid: u32, _ch: char, _ctrl: bool, _alt: bool, _shift: bool) -> bool { false }
+    pub fn send_modified_key_event(
+        _pid: u32,
+        _ch: char,
+        _ctrl: bool,
+        _alt: bool,
+        _shift: bool,
+        _u_char_override: Option<u16>,
+    ) -> bool { false }
     pub fn send_alt_key_event(_pid: u32, _ch: char) -> bool { false }
     pub fn send_modified_enter_event(_pid: u32, _ctrl: bool, _alt: bool, _shift: bool) -> bool { false }
     pub fn char_to_vk(_ch: char) -> u16 { 0 }

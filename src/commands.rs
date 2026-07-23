@@ -971,6 +971,70 @@ pub fn execute_command_string(app: &mut AppState, cmd: &str) -> io::Result<()> {
     execute_command_string_single(app, cmd)
 }
 
+fn normalize_local_send_key(key: &str) -> Option<String> {
+    let upper = key.to_uppercase();
+    match upper.as_str() {
+        "ENTER" => Some("enter".to_string()),
+        "TAB" => Some("tab".to_string()),
+        "BTAB" | "BACKTAB" => Some("btab".to_string()),
+        "ESCAPE" | "ESC" => Some("esc".to_string()),
+        "SPACE" => Some("space".to_string()),
+        "BSPACE" | "BACKSPACE" => Some("backspace".to_string()),
+        "UP" | "DOWN" | "RIGHT" | "LEFT" | "HOME" | "END"
+        | "PAGEUP" | "PAGEDOWN" | "DELETE" | "INSERT"
+        | "F1" | "F2" | "F3" | "F4" | "F5" | "F6"
+        | "F7" | "F8" | "F9" | "F10" | "F11" | "F12" => {
+            Some(upper.to_ascii_lowercase())
+        }
+        "PPAGE" => Some("pageup".to_string()),
+        "NPAGE" => Some("pagedown".to_string()),
+        "DC" => Some("delete".to_string()),
+        "IC" => Some("insert".to_string()),
+        s if s.starts_with("C-M-") => Some(format!("C-M-{}", &key[4..])),
+        s if s.starts_with("M-C-") => Some(format!("C-M-{}", &key[4..])),
+        s if s.starts_with("C-S-") => Some(format!("C-S-{}", &key[4..])),
+        s if s.starts_with("C-") => Some(format!("C-{}", &key[2..])),
+        s if s.starts_with("M-") => Some(format!("M-{}", &key[2..])),
+        s if crate::input::parse_modified_special_key(s).is_some() => Some(key.to_string()),
+        _ => None,
+    }
+}
+
+fn parse_local_send_keys_args<'a>(parts: &'a [&'a str]) -> (bool, bool, usize, Vec<&'a str>) {
+    let mut literal = false;
+    let mut force_signal = false;
+    let mut repeat_count = 1usize;
+    let mut keys = Vec::new();
+    let mut parse_options = true;
+    let mut i = 1usize;
+    while i < parts.len() {
+        let part = parts[i];
+        if parse_options && part == "--" {
+            parse_options = false;
+        } else if parse_options {
+            match part {
+                "-l" => literal = true,
+                "-f" | "--force-signal" => force_signal = true,
+                "-F" | "-H" | "-K" | "-M" | "-R" | "-X" => {}
+                "-c" | "-t" => {
+                    i += usize::from(i + 1 < parts.len());
+                }
+                "-N" => {
+                    if let Some(value) = parts.get(i + 1) {
+                        repeat_count = value.parse::<usize>().unwrap_or(1).max(1);
+                        i += 1;
+                    }
+                }
+                _ => keys.push(part),
+            }
+        } else {
+            keys.push(part);
+        }
+        i += 1;
+    }
+    (literal, force_signal, repeat_count, keys)
+}
+
 fn execute_command_string_single(app: &mut AppState, cmd: &str) -> io::Result<()> {
     let parts: Vec<&str> = cmd.split_whitespace().collect();
     if parts.is_empty() { return Ok(()); }
@@ -1448,122 +1512,23 @@ fn execute_command_string_single(app: &mut AppState, cmd: &str) -> io::Result<()
                 let _ = send_control_to_port(port, &format!("{}\n", cmd), &app.session_key);
             } else {
                 // Local: write key text directly to active pane
-                let literal = parts.iter().any(|p| *p == "-l");
-                let force_signal = parts.iter().any(|p| *p == "-f" || *p == "--force-signal");
-                let key_parts: Vec<&str> = parts[1..].iter().filter(|p| !p.starts_with('-')).copied().collect();
+                let parsed_parts = parse_command_line(cmd);
+                let local_parts: Vec<&str> = parsed_parts.iter().map(String::as_str).collect();
+                let (literal, force_signal, repeat_count, key_parts) =
+                    parse_local_send_keys_args(&local_parts);
                 if !key_parts.is_empty() {
                     if literal {
                         let text = key_parts.join(" ");
-                        if let Some(win) = app.windows.get_mut(app.active_idx) {
-                            if let Some(p) = crate::tree::active_pane_mut(&mut win.root, &win.active_path) {
-                                let _ = p.writer.write_all(text.as_bytes());
-                                let _ = p.writer.flush();
-                            }
+                        for _ in 0..repeat_count {
+                            crate::input::send_text_to_active(app, &text)?;
                         }
                     } else {
-                        for key in &key_parts {
-                            let key_upper = key.to_uppercase();
-                            let expanded = match key_upper.as_str() {
-                                "ENTER" => "\r".to_string(),
-                                "TAB" => "\t".to_string(),
-                                "BTAB" | "BACKTAB" => "\x1b[Z".to_string(),
-                                "ESCAPE" | "ESC" => "\x1b".to_string(),
-                                "SPACE" => " ".to_string(),
-                                "BSPACE" | "BACKSPACE" => "\x7f".to_string(),
-                                "UP" => "\x1b[A".to_string(),
-                                "DOWN" => "\x1b[B".to_string(),
-                                "RIGHT" => "\x1b[C".to_string(),
-                                "LEFT" => "\x1b[D".to_string(),
-                                "HOME" => "\x1b[H".to_string(),
-                                "END" => "\x1b[F".to_string(),
-                                "PAGEUP" | "PPAGE" => "\x1b[5~".to_string(),
-                                "PAGEDOWN" | "NPAGE" => "\x1b[6~".to_string(),
-                                "DELETE" | "DC" => "\x1b[3~".to_string(),
-                                "INSERT" | "IC" => "\x1b[2~".to_string(),
-                                "F1" => "\x1bOP".to_string(),
-                                "F2" => "\x1bOQ".to_string(),
-                                "F3" => "\x1bOR".to_string(),
-                                "F4" => "\x1bOS".to_string(),
-                                "F5" => "\x1b[15~".to_string(),
-                                "F6" => "\x1b[17~".to_string(),
-                                "F7" => "\x1b[18~".to_string(),
-                                "F8" => "\x1b[19~".to_string(),
-                                "F9" => "\x1b[20~".to_string(),
-                                "F10" => "\x1b[21~".to_string(),
-                                "F11" => "\x1b[23~".to_string(),
-                                "F12" => "\x1b[24~".to_string(),
-                                s if crate::input::parse_modified_special_key(s).is_some() => {
-                                    crate::input::parse_modified_special_key(s).unwrap()
-                                }
-                                s if s.starts_with("C-M-") || s.starts_with("C-m-") => {
-                                    if let Some(c) = key.chars().nth(4) {
-                                        if let Some(ctrl) = crate::input::ctrl_char_send_keys_byte(c) {
-                                            format!("\x1b{}", ctrl as char)
-                                        } else {
-                                            String::new()
-                                        }
-                                    } else {
-                                        key.to_string()
-                                    }
-                                }
-                                // Ctrl+Shift+<punctuation/digit> collapsing to a C0 byte,
-                                // e.g. Ctrl+/ arriving as "C-S--" -> 0x1f (^_), matching
-                                // Ctrl+_ and tmux (issue #394).  Must precede the generic
-                                // C- arm, whose nth(2) would read the 'S' and mis-send Ctrl+S.
-                                s if (s.starts_with("C-S-") || s.starts_with("C-s-"))
-                                    && s.chars().count() == 5
-                                    && s.chars().nth(4).map_or(false, |c| !c.is_ascii_alphabetic()) =>
-                                {
-                                    if let Some(c) = s.chars().nth(4) {
-                                        if let Some(ctrl) = crate::input::ctrl_char_send_keys_byte(c) {
-                                            String::from(ctrl as char)
-                                        } else {
-                                            String::new()
-                                        }
-                                    } else {
-                                        key.to_string()
-                                    }
-                                }
-                                s if s.starts_with("C-") => {
-                                    if let Some(c) = s.chars().nth(2) {
-                                        if let Some(ctrl) = crate::input::ctrl_char_send_keys_byte(c) {
-                                            #[cfg(windows)]
-                                            if ctrl == 0x03 {
-                                                if let Some(win) = app.windows.get_mut(app.active_idx) {
-                                                    if let Some(p) = crate::tree::active_pane_mut(&mut win.root, &win.active_path) {
-                                                        if p.child_pid.is_none() {
-                                                            p.child_pid = crate::platform::mouse_inject::get_child_pid(&*p.child);
-                                                        }
-                                                        if let Some(pid) = p.child_pid {
-                                                            crate::platform::mouse_inject::send_ctrl_c_event(pid, false, force_signal);
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            String::from(ctrl as char)
-                                        } else {
-                                            // Unsupported Ctrl combo — skip silently
-                                            // to match tmux reject behavior.
-                                            String::new()
-                                        }
-                                    } else {
-                                        key.to_string()
-                                    }
-                                }
-                                s if s.starts_with("M-") => {
-                                    if let Some(c) = key.chars().nth(2) {
-                                        format!("\x1b{}", c)
-                                    } else {
-                                        key.to_string()
-                                    }
-                                }
-                                _ => key.to_string(),
-                            };
-                            if let Some(win) = app.windows.get_mut(app.active_idx) {
-                                if let Some(p) = crate::tree::active_pane_mut(&mut win.root, &win.active_path) {
-                                    // DECCKM app-cursor mode: SS3, not CSI (see crate::input::write_key_seq).
-                                    crate::input::write_key_seq(p, expanded.as_bytes());
-                                    let _ = p.writer.flush();
+                        for _ in 0..repeat_count {
+                            for key in &key_parts {
+                                if let Some(named) = normalize_local_send_key(key) {
+                                    crate::input::send_key_to_active(app, &named, force_signal)?;
+                                } else {
+                                    crate::input::send_text_to_active(app, key)?;
                                 }
                             }
                         }
@@ -2687,3 +2652,7 @@ mod tests_issue470_menu_popup;
 #[cfg(test)]
 #[path = "../tests-rs/test_killwindow_bad_target.rs"]
 mod tests_killwindow_bad_target;
+
+#[cfg(test)]
+#[path = "../tests-rs/test_send_keys_local_routing.rs"]
+mod tests_send_keys_local_routing;

@@ -35,13 +35,89 @@ pub fn conpty_preemptive_dsr_response(_writer: &mut dyn std::io::Write) {
 /// Resolved once on first use, reused for all subsequent pane spawns.
 static CACHED_SHELL_PATH: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
 
+/// Swap an MSIX package-interior executable path for its app execution alias.
+///
+/// Store/MSIX packages (e.g. PowerShell installed from the Microsoft Store)
+/// put their package-interior directory (`C:\Program Files\WindowsApps\<pkg>`)
+/// on PATH, so `which` resolves `pwsh` to the exe INSIDE the package.
+/// Launching that exe directly is unsupported: the MSIX activation that
+/// CreateProcessW performs for a package-identity exe depends on the calling
+/// process's environment, and under ConPTY with a redirected `USERPROFILE`
+/// (test isolation, roaming setups) it fails with ACCESS_DENIED, so the pane
+/// child never spawns.  The supported launch surface is the app execution
+/// alias under `%LOCALAPPDATA%\Microsoft\WindowsApps`, which the loader
+/// resolves in-kernel regardless of environment.  `which` cannot return the
+/// alias itself: it is a zero-length APPEXECLINK reparse point that normal
+/// metadata traversal cannot follow, so `which` skips it as invalid — hence
+/// this post-resolution swap (probed with `symlink_metadata`, which does not
+/// follow the reparse point).
+#[cfg(windows)]
+pub fn prefer_app_execution_alias(resolved: String) -> String {
+    let lower = resolved.to_ascii_lowercase();
+    // Package interior lives under `...\WindowsApps\<pkg>\...`; the alias dir
+    // is `...\Microsoft\WindowsApps\` — only rewrite the former.
+    if !lower.contains("\\windowsapps\\") || lower.contains("\\microsoft\\windowsapps\\") {
+        return resolved;
+    }
+    let Some(file_name) = std::path::Path::new(&resolved).file_name() else {
+        return resolved;
+    };
+    if let Ok(local) = std::env::var("LOCALAPPDATA") {
+        let alias = std::path::Path::new(&local)
+            .join("Microsoft")
+            .join("WindowsApps")
+            .join(file_name);
+        if std::fs::symlink_metadata(&alias).is_ok() {
+            return alias.to_string_lossy().into_owned();
+        }
+    }
+    resolved
+}
+
+#[cfg(not(windows))]
+pub fn prefer_app_execution_alias(resolved: String) -> String {
+    resolved
+}
+
 /// Get the cached shell path, resolving via `which` only on first call.
+///
+/// MSIX/Store-packaged executables (anywhere under `\WindowsApps\`, whether
+/// the app-execution alias or the package-interior exe) cannot be activated
+/// from a non-interactive SSH-spawned process: confirmed by a bare
+/// `CreateProcessW` of the alias failing with ACCESS_DENIED under sshd with
+/// no psmux code involved at all -- Windows' AppModel/MSIX activation
+/// requires a proper interactive user session, which sshd's non-interactive
+/// command execution does not provide. When this server process was itself
+/// spawned from an SSH command (`SSH_CONNECTION`/`SSH_CLIENT` inherited from
+/// sshd), skip a WindowsApps-hosted shell and fall back to the classic
+/// (non-MSIX) `powershell.exe`, which every Windows install ships outside
+/// the package store and which activates fine in any process context. This
+/// turns a hard "psmux: failed to create session" for Store-only-pwsh users
+/// attaching over SSH into a graceful degrade instead (issue #167 class).
 pub fn cached_shell() -> Option<&'static str> {
     CACHED_SHELL_PATH.get_or_init(|| {
-        which::which("pwsh").ok()
+        let resolved = which::which("pwsh").ok()
             .or_else(|| which::which("powershell").ok())
             .or_else(|| which::which("cmd").ok())
-            .map(|p| p.to_string_lossy().into_owned())
+            .map(|p| prefer_app_execution_alias(p.to_string_lossy().into_owned()));
+        if let Some(ref path) = resolved {
+            let is_store = path.to_ascii_lowercase().contains("\\windowsapps\\");
+            let is_ssh_spawned = std::env::var("SSH_CONNECTION").is_ok()
+                || std::env::var("SSH_CLIENT").is_ok();
+            if is_store && is_ssh_spawned {
+                if let Ok(classic) = which::which("powershell") {
+                    let classic = classic.to_string_lossy().into_owned();
+                    if !classic.to_ascii_lowercase().contains("\\windowsapps\\") {
+                        return Some(classic);
+                    }
+                }
+                // No classic PowerShell found; cmd.exe is never MSIX-packaged.
+                if let Ok(cmd) = which::which("cmd") {
+                    return Some(cmd.to_string_lossy().into_owned());
+                }
+            }
+        }
+        resolved
     }).as_deref()
 }
 
@@ -71,6 +147,20 @@ fn default_shell_name(command: Option<&str>, configured_shell: Option<&str>) -> 
     }
 }
 
+/// Does this `default-shell`/`default-command` string need to be evaluated
+/// fresh at consume time rather than transplanted from a pre-spawned warm
+/// pane? True when it contains a format token (e.g. `#{pane_current_path}`):
+/// that value depends on which pane is active *right now*, at the moment
+/// new-window/split-window runs, so only a cold spawn's `expand_format` call
+/// (which runs then, not at warm-pane pre-spawn time) can resolve it
+/// correctly. A static command with no format tokens is fine to transplant —
+/// `warm_pane_sync` already respawns the pool with that exact command on
+/// change, so the pre-spawned process already matches what a cold spawn
+/// would produce.
+pub(crate) fn default_shell_needs_fresh_eval(default_shell: &str) -> bool {
+    default_shell.contains("#{")
+}
+
 /// Build the command injected to silently re-home a pane's shell to `dir`.
 ///
 /// The trailing clear (`cls` on Windows, `clear` elsewhere) wipes the visible
@@ -78,10 +168,29 @@ fn default_shell_name(command: Option<&str>, configured_shell: Option<&str>) -> 
 /// stays well-formed; the trailing `\r` submits it as one command line. The
 /// leading space asks shells that ignore space-prefixed commands to skip the
 /// history entry (best-effort — not every shell honours it).
+///
+/// Also explicitly syncs the OS-level current directory via
+/// `[System.IO.Directory]::SetCurrentDirectory` (PowerShell only). PowerShell's
+/// `cd`/`Set-Location` updates its own `$PWD` provider location but does NOT
+/// call Win32 `SetCurrentDirectory()`, so the process's PEB — which is what
+/// `#{pane_current_path}` reads via a PEB walk — keeps reporting the
+/// directory the shell was originally spawned in. Normally psmux's own
+/// CWD_SYNC profile hook (`build_psrl_init`) papers over this by wrapping
+/// `Set-Location`, but that hook is skipped whenever `-NoProfile` is in
+/// effect (see `build_default_shell`). Embedding the sync directly in the
+/// injected command keeps the rehome correct regardless of whether that
+/// hook is installed.
 pub(crate) fn rehome_command(dir: &str) -> String {
     let escaped = dir.replace('\'', "''");
     let clear = if cfg!(windows) { "cls" } else { "clear" };
-    format!(" cd '{}'; {}\r", escaped, clear)
+    if cfg!(windows) {
+        format!(
+            " cd '{}'; try {{ [System.IO.Directory]::SetCurrentDirectory($PWD.ProviderPath) }} catch {{}}; {}\r",
+            escaped, clear
+        )
+    } else {
+        format!(" cd '{}'; {}\r", escaped, clear)
+    }
 }
 
 /// Silently re-home an already-running pane's shell to `dir`: inject
@@ -109,6 +218,14 @@ pub(crate) fn silent_rehome(pane: &mut Pane, dir: &str) {
 }
 
 pub fn create_window(pty_system: &dyn portable_pty::PtySystem, app: &mut AppState, command: Option<&str>, start_dir: Option<&str>, empty: bool) -> io::Result<()> {
+    create_window_with_env(pty_system, app, command, start_dir, empty, &[])
+}
+
+/// `create_window` plus per-pane environment from `new-window -e KEY=VALUE`
+/// (tmux parity, issue #489). The extra variables are applied to the spawned
+/// process only, after the session environment, so `-e` wins over
+/// `set-environment`.
+pub fn create_window_with_env(pty_system: &dyn portable_pty::PtySystem, app: &mut AppState, command: Option<&str>, start_dir: Option<&str>, empty: bool, extra_env: &[(String, String)]) -> io::Result<()> {
     // ── Empty window (tmux new-window -E): a new window whose single pane has
     // no command/process. It renders blank until respawn-pane gives it one. ──
     if empty {
@@ -130,7 +247,23 @@ pub fn create_window(pty_system: &dyn portable_pty::PtySystem, app: &mut AppStat
     // prompt appears instantly — matching wezterm's "instant tab" feel.
     // A `-c <dir>` is honoured by re-homing the transplanted shell (below), so
     // the warm pane is used even when start_dir is set (#107).
-    if command.is_none() && app.warm_pane.is_some() {
+    //
+    // Gated on `!default_shell_needs_fresh_eval(&app.default_shell)`: a
+    // *static* custom `default-shell`/`default-command` is fine to
+    // transplant — `for_post_config`/`for_option_change` already respawn the
+    // warm pane with that exact command, so the pre-spawned process is
+    // semantically identical to a fresh cold spawn (cwd correction still
+    // happens below via `silent_rehome`). But a *dynamic* one containing a
+    // format token like `#{pane_current_path}` cannot be satisfied by
+    // transplanting an already-running process at all — the value has to be
+    // resolved fresh, at consume time, against whichever pane is currently
+    // active, which only the cold path's `expand_format` call does. Bypass
+    // to cold-spawn in that case; mirrors new-session's own warm-claim gate,
+    // which likewise skips warm entirely when a custom config is in play
+    // (see `has_custom_config` in main.rs).
+    // A warm pane's shell is already running, so `-e` vars can no longer be
+    // injected into its environment — bypass the transplant when -e is used.
+    if command.is_none() && extra_env.is_empty() && !default_shell_needs_fresh_eval(&app.default_shell) && app.warm_pane.is_some() {
         let mut wp = app.warm_pane.take().unwrap();
         // Resize to current terminal dimensions if they changed since pre-spawn
         let area = app.last_window_area;
@@ -162,7 +295,7 @@ pub fn create_window(pty_system: &dyn portable_pty::PtySystem, app: &mut AppStat
             }
             let epoch = std::time::Instant::now() - Duration::from_secs(2);
             let configured_shell = if app.default_shell.is_empty() { None } else { Some(app.default_shell.as_str()) };
-            let mut pane = Pane { master: wp.master, writer: wp.writer, child: wp.child, term: wp.term, last_rows: rows, last_cols: cols, id: wp.pane_id, title: hostname_cached(), title_locked: false, child_pid: wp.child_pid, data_version: wp.data_version, last_title_check: epoch, last_infer_title: epoch, dead: false, last_text_input: None, last_special_key: None, vt_bridge_cache: None, vti_mode_cache: None, mouse_input_cache: None, cursor_shape: wp.cursor_shape, bell_pending: wp.bell_pending, cpr_pending: wp.cpr_pending, copy_state: None, pane_style: None, squelch_until: None, output_ring: wp.output_ring, spawned_at: Some(std::time::Instant::now()) };
+            let mut pane = Pane { master: wp.master, writer: wp.writer, child: wp.child, term: wp.term, last_rows: rows, last_cols: cols, id: wp.pane_id, title: hostname_cached(), title_locked: false, child_pid: wp.child_pid, data_version: wp.data_version, last_title_check: epoch, last_infer_title: epoch, dead: false, last_text_input: None, last_special_key: None, vt_bridge_cache: None, vti_mode_cache: None, mouse_input_cache: None, scroll_fg_cache: None, cursor_shape: wp.cursor_shape, bell_pending: wp.bell_pending, cpr_pending: wp.cpr_pending, color_query_pending: wp.color_query_pending, copy_state: None, pane_style: None, squelch_until: None, output_ring: wp.output_ring, spawned_at: Some(std::time::Instant::now()) };
             // Honour `-c <dir>`: silently re-home the transplanted warm shell.
             if let Some(dir) = start_dir {
                 silent_rehome(&mut pane, dir);
@@ -205,6 +338,9 @@ pub fn create_window(pty_system: &dyn portable_pty::PtySystem, app: &mut AppStat
     }
     set_tmux_env(&mut shell_cmd, app.next_pane_id, app.control_port, app.socket_name.as_deref(), &app.session_name, app.claude_code_fix_tty, app.claude_code_force_interactive);
     apply_user_environment(&mut shell_cmd, &app.environment);
+    // new-window -e KEY=VALUE (#489): pane-scoped env, applied last so it
+    // overrides the session environment, matching tmux.
+    for (k, v) in extra_env { shell_cmd.env(k, v); }
     let child = pair
         .slave
         .spawn_command(shell_cmd)
@@ -227,13 +363,15 @@ pub fn create_window(pty_system: &dyn portable_pty::PtySystem, app: &mut AppStat
     let bell_writer = bell_pending.clone();
     let cpr_pending = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let cpr_writer = cpr_pending.clone();
+    let color_query_pending = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let cq_writer = color_query_pending.clone();
     let reader = pair
         .master
         .try_clone_reader()
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("clone reader error: {e}")))?;
 
     let output_ring = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::<u8>::new()));
-    spawn_reader_thread(reader, term_reader, dv_writer, cs_writer, bell_writer, cpr_writer, output_ring.clone(), app.next_pane_id);
+    spawn_reader_thread(reader, term_reader, dv_writer, cs_writer, bell_writer, cpr_writer, cq_writer, output_ring.clone(), app.next_pane_id);
 
     let configured_shell = if app.default_shell.is_empty() { None } else { Some(app.default_shell.as_str()) };
     let child_pid = crate::platform::mouse_inject::get_child_pid(&*child);
@@ -242,7 +380,7 @@ pub fn create_window(pty_system: &dyn portable_pty::PtySystem, app: &mut AppStat
     conpty_preemptive_dsr_response(&mut *pty_writer);
     let epoch = std::time::Instant::now() - Duration::from_secs(2);
     let pane_id = app.next_pane_id;
-    let pane = Pane { master: pair.master, writer: pty_writer, child, term, last_rows: size.rows, last_cols: size.cols, id: pane_id, title: hostname_cached(), title_locked: false, child_pid, data_version, last_title_check: epoch, last_infer_title: epoch, dead: false, last_text_input: None, last_special_key: None, vt_bridge_cache: None, vti_mode_cache: None, mouse_input_cache: None, cursor_shape, bell_pending, cpr_pending, copy_state: None, pane_style: None, squelch_until: None, output_ring, spawned_at: Some(std::time::Instant::now()) };
+    let pane = Pane { master: pair.master, writer: pty_writer, child, term, last_rows: size.rows, last_cols: size.cols, id: pane_id, title: hostname_cached(), title_locked: false, child_pid, data_version, last_title_check: epoch, last_infer_title: epoch, dead: false, last_text_input: None, last_special_key: None, vt_bridge_cache: None, vti_mode_cache: None, mouse_input_cache: None, scroll_fg_cache: None, cursor_shape, bell_pending, cpr_pending, color_query_pending, copy_state: None, pane_style: None, squelch_until: None, output_ring, spawned_at: Some(std::time::Instant::now()) };
     app.next_pane_id += 1;
     let win_name = command.map(|c| default_shell_name(Some(c), None)).unwrap_or_else(|| default_shell_name(None, configured_shell));
     app.windows.push(Window { root: Node::Leaf(pane), active_path: vec![], name: win_name, id: app.next_win_id, activity_flag: false, bell_flag: false, silence_flag: false, last_output_time: std::time::Instant::now(), last_seen_version: 0, manual_rename: false, layout_index: 0, pane_mru: vec![pane_id], zoom_saved: None, linked_from: None, floating: Vec::new(), floating_focus: None });
@@ -305,16 +443,18 @@ pub fn spawn_warm_pane(pty_system: &dyn portable_pty::PtySystem, app: &mut AppSt
     let bell_writer = bell_pending.clone();
     let cpr_pending = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let cpr_writer = cpr_pending.clone();
+    let color_query_pending = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let cq_writer = color_query_pending.clone();
     let reader = pair.master
         .try_clone_reader()
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("clone reader error: {e}")))?;
     let output_ring = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::<u8>::new()));
-    spawn_reader_thread(reader, term_reader, dv_writer, cs_writer, bell_writer, cpr_writer, output_ring.clone(), pane_id);
+    spawn_reader_thread(reader, term_reader, dv_writer, cs_writer, bell_writer, cpr_writer, cq_writer, output_ring.clone(), pane_id);
     let child_pid = crate::platform::mouse_inject::get_child_pid(&*child);
     let mut pty_writer = pair.master.take_writer()
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("take writer error: {e}")))?;
     conpty_preemptive_dsr_response(&mut *pty_writer);
-    Ok(crate::types::WarmPane { master: pair.master, writer: pty_writer, child, term, data_version, cursor_shape, bell_pending, cpr_pending, child_pid, pane_id, rows, cols, output_ring })
+    Ok(crate::types::WarmPane { master: pair.master, writer: pty_writer, child, term, data_version, cursor_shape, bell_pending, cpr_pending, color_query_pending, child_pid, pane_id, rows, cols, output_ring })
 }
 
 pub fn split_active(app: &mut AppState, kind: LayoutKind) -> io::Result<()> {
@@ -354,13 +494,15 @@ pub fn create_window_raw(pty_system: &dyn portable_pty::PtySystem, app: &mut App
     let bell_writer = bell_pending.clone();
     let cpr_pending = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let cpr_writer = cpr_pending.clone();
+    let color_query_pending = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let cq_writer = color_query_pending.clone();
     let reader = pair
         .master
         .try_clone_reader()
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("clone reader error: {e}")))?;
 
     let output_ring = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::<u8>::new()));
-    spawn_reader_thread(reader, term_reader, dv_writer, cs_writer, bell_writer, cpr_writer, output_ring.clone(), app.next_pane_id);
+    spawn_reader_thread(reader, term_reader, dv_writer, cs_writer, bell_writer, cpr_writer, cq_writer, output_ring.clone(), app.next_pane_id);
 
     let child_pid = crate::platform::mouse_inject::get_child_pid(&*child);
     let mut pty_writer = pair.master.take_writer()
@@ -368,7 +510,7 @@ pub fn create_window_raw(pty_system: &dyn portable_pty::PtySystem, app: &mut App
     conpty_preemptive_dsr_response(&mut *pty_writer);
     let epoch = std::time::Instant::now() - Duration::from_secs(2);
     let raw_pane_id = app.next_pane_id;
-    let pane = Pane { master: pair.master, writer: pty_writer, child, term, last_rows: size.rows, last_cols: size.cols, id: raw_pane_id, title: hostname_cached(), title_locked: false, child_pid, data_version, last_title_check: epoch, last_infer_title: epoch, dead: false, last_text_input: None, last_special_key: None, vt_bridge_cache: None, vti_mode_cache: None, mouse_input_cache: None, cursor_shape, bell_pending, cpr_pending, copy_state: None, pane_style: None, squelch_until: None, output_ring, spawned_at: Some(std::time::Instant::now()) };
+    let pane = Pane { master: pair.master, writer: pty_writer, child, term, last_rows: size.rows, last_cols: size.cols, id: raw_pane_id, title: hostname_cached(), title_locked: false, child_pid, data_version, last_title_check: epoch, last_infer_title: epoch, dead: false, last_text_input: None, last_special_key: None, vt_bridge_cache: None, vti_mode_cache: None, mouse_input_cache: None, scroll_fg_cache: None, cursor_shape, bell_pending, cpr_pending, color_query_pending, copy_state: None, pane_style: None, squelch_until: None, output_ring, spawned_at: Some(std::time::Instant::now()) };
     app.next_pane_id += 1;
     let win_name = std::path::Path::new(&raw_args[0]).file_stem().and_then(|s| s.to_str()).unwrap_or(&raw_args[0]).to_string();
     app.windows.push(Window { root: Node::Leaf(pane), active_path: vec![], name: win_name, id: app.next_win_id, activity_flag: false, bell_flag: false, silence_flag: false, last_output_time: std::time::Instant::now(), last_seen_version: 0, manual_rename: false, layout_index: 0, pane_mru: vec![raw_pane_id], zoom_saved: None, linked_from: None, floating: Vec::new(), floating_focus: None });
@@ -389,6 +531,12 @@ const MIN_SPLIT_ROWS: u16 = 2;
 const MIN_SPLIT_COLS: u16 = 10;
 
 pub fn split_active_with_command(app: &mut AppState, kind: LayoutKind, command: Option<&str>, pty_system_ref: Option<&dyn portable_pty::PtySystem>, start_dir: Option<&str>) -> io::Result<()> {
+    split_active_with_env(app, kind, command, pty_system_ref, start_dir, &[])
+}
+
+/// `split_active_with_command` plus per-pane environment from
+/// `split-window -e KEY=VALUE` (tmux parity, issue #489).
+pub fn split_active_with_env(app: &mut AppState, kind: LayoutKind, command: Option<&str>, pty_system_ref: Option<&dyn portable_pty::PtySystem>, start_dir: Option<&str>, extra_env: &[(String, String)]) -> io::Result<()> {
     // ── Guard: refuse split if the active pane is too small ──────────
     // After splitting, each half gets roughly (dim / 2) - 1 (for the divider).
     // If that would be below MIN_PANE_DIM, deny the split to avoid crashing
@@ -455,7 +603,14 @@ pub fn split_active_with_command(app: &mut AppState, kind: LayoutKind, command: 
     // cold spawn (~500ms).  Net result: split feels nearly instant.
     // A `-c <dir>` is honoured by re-homing the transplanted shell (below), so
     // the warm pane is used even when start_dir is set (#107).
-    if command.is_none() && app.warm_pane.is_some() {
+    //
+    // Gated on `!default_shell_needs_fresh_eval(...)` — see the matching
+    // comment in `create_window` for why only a *dynamic* default-command
+    // (format-variable-bearing) must bypass the transplant and cold-spawn
+    // instead; a static custom default-shell is safe to transplant.
+    // A warm pane's shell is already running, so `-e` vars can no longer be
+    // injected into its environment — bypass the transplant when -e is used.
+    if command.is_none() && extra_env.is_empty() && !default_shell_needs_fresh_eval(&app.default_shell) && app.warm_pane.is_some() {
         let mut wp = app.warm_pane.take().unwrap();
         let need_resize = rows != wp.rows || cols != wp.cols;
         // #450: never transplant a spare whose shell died in the pool —
@@ -477,7 +632,7 @@ pub fn split_active_with_command(app: &mut AppState, kind: LayoutKind, command: 
             }
             let epoch = std::time::Instant::now() - Duration::from_secs(2);
             let new_pane_id = wp.pane_id;
-            let mut new_pane = Pane { master: wp.master, writer: wp.writer, child: wp.child, term: wp.term, last_rows: rows, last_cols: cols, id: new_pane_id, title: hostname_cached(), title_locked: false, child_pid: wp.child_pid, data_version: wp.data_version, last_title_check: epoch, last_infer_title: epoch, dead: false, last_text_input: None, last_special_key: None, vt_bridge_cache: None, vti_mode_cache: None, mouse_input_cache: None, cursor_shape: wp.cursor_shape, bell_pending: wp.bell_pending, cpr_pending: wp.cpr_pending, copy_state: None, pane_style: None, squelch_until: None, output_ring: wp.output_ring, spawned_at: Some(std::time::Instant::now()) };
+            let mut new_pane = Pane { master: wp.master, writer: wp.writer, child: wp.child, term: wp.term, last_rows: rows, last_cols: cols, id: new_pane_id, title: hostname_cached(), title_locked: false, child_pid: wp.child_pid, data_version: wp.data_version, last_title_check: epoch, last_infer_title: epoch, dead: false, last_text_input: None, last_special_key: None, vt_bridge_cache: None, vti_mode_cache: None, mouse_input_cache: None, scroll_fg_cache: None, cursor_shape: wp.cursor_shape, bell_pending: wp.bell_pending, cpr_pending: wp.cpr_pending, color_query_pending: wp.color_query_pending, copy_state: None, pane_style: None, squelch_until: None, output_ring: wp.output_ring, spawned_at: Some(std::time::Instant::now()) };
             // Honour `-c <dir>`: silently re-home the transplanted warm shell.
             if let Some(dir) = start_dir {
                 silent_rehome(&mut new_pane, dir);
@@ -514,6 +669,9 @@ pub fn split_active_with_command(app: &mut AppState, kind: LayoutKind, command: 
     }
     set_tmux_env(&mut shell_cmd, app.next_pane_id, app.control_port, app.socket_name.as_deref(), &app.session_name, app.claude_code_fix_tty, app.claude_code_force_interactive);
     apply_user_environment(&mut shell_cmd, &app.environment);
+    // split-window -e KEY=VALUE (#489): pane-scoped env, applied last so it
+    // overrides the session environment, matching tmux.
+    for (k, v) in extra_env { shell_cmd.env(k, v); }
     let child = pair.slave.spawn_command(shell_cmd).map_err(|e| io::Error::new(io::ErrorKind::Other, format!("spawn shell error: {e}")))?;
     // Close the slave handle immediately – see create_window() comment.
     drop(pair.slave);
@@ -530,15 +688,17 @@ pub fn split_active_with_command(app: &mut AppState, kind: LayoutKind, command: 
     let bell_writer = bell_pending.clone();
     let cpr_pending = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let cpr_writer = cpr_pending.clone();
+    let color_query_pending = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let cq_writer = color_query_pending.clone();
     let output_ring = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::<u8>::new()));
-    spawn_reader_thread(reader, term_reader, dv_writer, cs_writer, bell_writer, cpr_writer, output_ring.clone(), app.next_pane_id);
+    spawn_reader_thread(reader, term_reader, dv_writer, cs_writer, bell_writer, cpr_writer, cq_writer, output_ring.clone(), app.next_pane_id);
     let child_pid = crate::platform::mouse_inject::get_child_pid(&*child);
     let mut pty_writer = pair.master.take_writer()
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("take writer error: {e}")))?;
     conpty_preemptive_dsr_response(&mut *pty_writer);
     let epoch = std::time::Instant::now() - Duration::from_secs(2);
     let split_pane_id = app.next_pane_id;
-    let new_leaf = Node::Leaf(Pane { master: pair.master, writer: pty_writer, child, term, last_rows: size.rows, last_cols: size.cols, id: split_pane_id, title: hostname_cached(), title_locked: false, child_pid, data_version, last_title_check: epoch, last_infer_title: epoch, dead: false, last_text_input: None, last_special_key: None, vt_bridge_cache: None, vti_mode_cache: None, mouse_input_cache: None, cursor_shape, bell_pending, cpr_pending, copy_state: None, pane_style: None, squelch_until: None, output_ring, spawned_at: Some(std::time::Instant::now()) });
+    let new_leaf = Node::Leaf(Pane { master: pair.master, writer: pty_writer, child, term, last_rows: size.rows, last_cols: size.cols, id: split_pane_id, title: hostname_cached(), title_locked: false, child_pid, data_version, last_title_check: epoch, last_infer_title: epoch, dead: false, last_text_input: None, last_special_key: None, vt_bridge_cache: None, vti_mode_cache: None, mouse_input_cache: None, scroll_fg_cache: None, cursor_shape, bell_pending, cpr_pending, color_query_pending, copy_state: None, pane_style: None, squelch_until: None, output_ring, spawned_at: Some(std::time::Instant::now()) });
     app.next_pane_id += 1;
     let win = &mut app.windows[app.active_idx];
     replace_leaf_with_split(&mut win.root, &win.active_path, kind, new_leaf);
@@ -704,11 +864,13 @@ pub fn set_tmux_env(builder: &mut CommandBuilder, pane_id: usize, control_port: 
     // ── Claude Code workarounds (removable once upstream fixes land) ──
     //
     // claude-code-fix-tty (set -g claude-code-fix-tty on/off):
-    //   Claude Code v2.1.71 standalone binary ignores `teammateMode` from
-    //   settings.json (config schema strips the field).  The `--teammate-mode
-    //   tmux` CLI flag DOES work.  We set PSMUX_CLAUDE_TEAMMATE_MODE=tmux so
-    //   the PowerShell env-shim `claude` wrapper function injects the flag
-    //   automatically.  Disable with: set -g claude-code-fix-tty off
+    //   Early Claude Code standalone binaries (v2.1.71) ignored `teammateMode`
+    //   from settings.json, so psmux injects `--teammate-mode tmux` via the
+    //   PowerShell env-shim `claude` wrapper.  Since psmux#399 (comment
+    //   5041988743) the wrapper only injects when the user has NOT configured
+    //   teammateMode in any settings.json Claude Code reads, because CLI flags
+    //   outrank settings and blind injection silently overrode an explicit
+    //   user choice.  Disable with: set -g claude-code-fix-tty off
     if fix_tty {
         builder.env("PSMUX_CLAUDE_TEAMMATE_MODE", "tmux");
     }
@@ -782,17 +944,45 @@ const ENV_SHIM_PS: &str = concat!(
     "} elseif($v.Count -gt 0){ ",
     "foreach($e in $v.GetEnumerator()){[Environment]::SetEnvironmentVariable($e.Key,$e.Value,'Process')} ",
     "} else { Get-ChildItem Env:|ForEach-Object{$_.Name+'='+$_.Value} } }; ",
-    // Claude Code teammate-mode wrapper (claude-code#26244):
-    // The standalone (Bun SFE) binary ignores `teammateMode` from settings.json
-    // but honours the `--teammate-mode tmux` CLI flag.  The agent teams tool-set
-    // is separately gated by CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS env var (set
-    // above in set_tmux_env).  This wrapper auto-injects --teammate-mode when
-    // PSMUX_CLAUDE_TEAMMATE_MODE is set (via `set -g claude-code-fix-tty on`).
-    // Disable with: set -g claude-code-fix-tty off
+    // Claude Code teammate-mode wrapper (claude-code#26244, psmux#399):
+    // Early standalone (Bun SFE) binaries ignored `teammateMode` from
+    // settings.json, so psmux force-injected the `--teammate-mode` CLI flag.
+    // Current Claude Code builds DO honour settings.json (debug log shows
+    // `[TeammateModeSnapshot] Captured from config: ...`), and a CLI flag
+    // outranks settings, so unconditional injection silently overrode an
+    // explicit user choice.  The wrapper therefore injects ONLY when the user
+    // has not configured teammateMode anywhere Claude Code reads it from:
+    // an explicit CLI flag, managed settings, user-scope settings
+    // (CLAUDE_CONFIG_DIR or ~/.claude), or a project's
+    // .claude/settings(.local).json found by walking up from the CWD at call
+    // time.  Disable entirely with: set -g claude-code-fix-tty off
+    //
+    // The real claude command is resolved at call time via Get-Command instead
+    // of hardcoding claude.exe, because npm/nvm4w installs ship only claude.cmd
+    // and claude.ps1 with no exe (psmux#475).  The CommandType filter
+    // (Application = .exe/.cmd, ExternalScript = .ps1) excludes this wrapper
+    // function itself, so there is no self-recursion.
     "if($env:PSMUX_CLAUDE_TEAMMATE_MODE){ ",
+    // _psmux_tmcfg: $true when teammateMode is already configured in a settings
+    // file Claude Code consults.  Checked at call time (not shim load time) so
+    // cd'ing into a project with its own .claude/settings.json is honoured.
+    "function Global:_psmux_tmcfg { ",
+    "$fs=@(); ",
+    "if($env:ProgramData){ $fs+=(Join-Path $env:ProgramData 'ClaudeCode/managed-settings.json') }; ",
+    "$u=if($env:CLAUDE_CONFIG_DIR){$env:CLAUDE_CONFIG_DIR}else{Join-Path $env:USERPROFILE '.claude'}; ",
+    "$fs+=(Join-Path $u 'settings.json'); ",
+    "$d=$null; try{$d=(Get-Location -PSProvider FileSystem -EA Stop).ProviderPath}catch{}; ",
+    "while($d){ ",
+    "$fs+=(Join-Path $d '.claude/settings.json'); ",
+    "$fs+=(Join-Path $d '.claude/settings.local.json'); ",
+    "$p=Split-Path $d -Parent; if(-not $p -or $p -eq $d){break}; $d=$p }; ",
+    "foreach($f in $fs){ try{ if((Test-Path -LiteralPath $f) -and ((Get-Content -LiteralPath $f -Raw) -match '\"teammateMode\"\\s*:')){ return $true } }catch{} }; ",
+    "$false }; ",
     "function Global:claude { ",
-    "if($args -contains '--teammate-mode'){ & claude.exe @args } ",
-    "else{ & claude.exe --teammate-mode $env:PSMUX_CLAUDE_TEAMMATE_MODE @args } } }",
+    "$c=Get-Command claude -CommandType Application,ExternalScript -EA 0 | Select-Object -First 1; ",
+    "if(-not $c){ $c='claude.exe' }; ",
+    "if(($args -contains '--teammate-mode') -or (_psmux_tmcfg)){ & $c @args } ",
+    "else{ & $c --teammate-mode $env:PSMUX_CLAUDE_TEAMMATE_MODE @args } } }",
 );
 
 /// PSReadLine prediction fix — disables predictions that crash with
@@ -867,6 +1057,18 @@ const CWD_SYNC: &str = concat!(
     "} }",
 );
 
+/// True when the resolved shell path is a PowerShell (either PowerShell 7
+/// `pwsh.exe` or Windows PowerShell 5.1 `powershell.exe`) and therefore needs
+/// the interactive `psrl_init` block. Besides the PSReadLine prediction fix,
+/// that block installs the Set-Location hook that keeps the Win32 process CWD
+/// in sync so `#{pane_current_path}` tracks `cd` (issue #495). Both spawn
+/// paths (`build_command`'s interactive branch and `build_default_shell`) must
+/// use this so 5.1 is never left without the hook.
+pub(crate) fn shell_needs_psrl_init(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    lower.contains("pwsh") || lower.contains("powershell")
+}
+
 /// Build the full interactive init string for PowerShell:
 /// 1. Disable PSReadLine predictions (before profile — prevents #109 crash)
 /// 2. Source the user's profile scripts
@@ -887,6 +1089,56 @@ fn build_psrl_init(env_shim: bool, allow_predictions: bool) -> String {
         s.push_str(ENV_SHIM_PS);
     }
     s
+}
+
+/// Init block for PowerShell panes where the user explicitly passed
+/// `-NoProfile`: no profile sourcing, but the PSReadLine fix and the CWD-sync
+/// hook still apply. The hook is what keeps `#{pane_current_path}` tracking
+/// `cd` (#495) — it is unrelated to profiles and must not be dropped just
+/// because profile sourcing is skipped.
+fn build_psrl_init_noprofile(env_shim: bool) -> String {
+    let mut s = format!("{}; {}", PSRL_FIX, CWD_SYNC);
+    if env_shim {
+        s.push_str("; ");
+        s.push_str(ENV_SHIM_PS);
+    }
+    s
+}
+
+/// True when `prog`'s file stem is exactly a PowerShell executable (`pwsh` or
+/// `powershell`). Stricter than `shell_needs_psrl_init` (which substring
+/// matches anywhere in the path) — used for directly spawned commands, where
+/// appending PowerShell flags to a non-PowerShell exe would break it.
+#[cfg(windows)]
+fn is_powershell_program(prog: &str) -> bool {
+    std::path::Path::new(prog)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(|s| {
+            let lower = s.to_ascii_lowercase();
+            lower == "pwsh" || lower == "powershell"
+        })
+        .unwrap_or(false)
+}
+
+/// True when the args of a directly spawned PowerShell leave it interactive:
+/// every arg is a `-Flag` and none of them executes a command or script
+/// (`-Command`, `-File`, `-EncodedCommand` or their short forms). A
+/// positional arg means a script/command (pwsh treats it as `-File`,
+/// powershell as `-Command`), so the pane is not an interactive shell and
+/// must not get the init block appended.
+#[cfg(windows)]
+fn powershell_args_interactive(args: &[String]) -> bool {
+    args.iter().all(|a| {
+        if !a.starts_with('-') {
+            return false;
+        }
+        let flag = a.trim_start_matches('-').to_ascii_lowercase();
+        !matches!(
+            flag.as_str(),
+            "command" | "c" | "file" | "f" | "encodedcommand" | "e" | "ec"
+        )
+    })
 }
 
 /// On Windows, translate Unix-style shell wrappers to Windows equivalents.
@@ -1079,6 +1331,103 @@ fn detect_env_prefix_command(cmd: &str) -> Option<(Option<String>, Vec<(String, 
     Some((cwd_override, env_sets, remainder.to_string()))
 }
 
+/// Split a spawn-command string into whitespace-separated tokens, honouring
+/// double- and single-quoted segments (quotes are consumed).  Used by the
+/// direct-spawn path below to recover `program + args` from strings like
+/// `"C:/Program Files/Git/bin/bash.exe" --login -i`.
+#[cfg(windows)]
+fn split_spawn_tokens(cmd: &str) -> Vec<String> {
+    let mut tokens: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut quote: Option<char> = None;
+    for c in cmd.chars() {
+        match quote {
+            Some(q) => {
+                if c == q { quote = None; } else { cur.push(c); }
+            }
+            None => match c {
+                '"' | '\'' => quote = Some(c),
+                c if c.is_whitespace() => {
+                    if !cur.is_empty() { tokens.push(std::mem::take(&mut cur)); }
+                }
+                _ => cur.push(c),
+            },
+        }
+    }
+    if !cur.is_empty() { tokens.push(cur); }
+    tokens
+}
+
+/// tmux parity for window/pane commands (issues #492, #493): tmux execs a
+/// multi-argument shell-command DIRECTLY (spawn.c: `execvp(argv[0], argv)`)
+/// and only routes single strings through `$SHELL -c`.  psmux wrapped every
+/// command in `<shell> -Command "<cmd>"`, which (a) leaves a wrapper
+/// powershell process around every pane (#493) and (b) breaks quoted
+/// executable paths containing spaces, which pwsh cannot parse as a bare
+/// statement (#492).
+///
+/// Resolve the command to `Some((program, args))` when it is an EXPLICIT
+/// executable path we can spawn directly:
+///   - shell syntax (pipes, redirects, `&&`, variables, ...) → None (needs a
+///     real shell);
+///   - the whole string is an existing executable path (spaces included);
+///   - a quoted first token, or the longest token-prefix, is an existing
+///     executable path (handles unquoted space paths with arguments).
+///
+/// Only commands whose program contains a path separator qualify — that is
+/// the case both reporters hit (`C:/Program Files/Git/bin/bash.exe`,
+/// `C:/cygwin64/bin/zsh.exe --login`).  Bare program names (`timeout`,
+/// `ping`, `cmd.exe`) intentionally KEEP the historical shell wrapper:
+/// console utilities like timeout.exe exit immediately when spawned without
+/// the shell re-establishing console stdin ("input redirection is not
+/// supported"), and the wrapper preserves their expected environment.
+#[cfg(windows)]
+fn try_direct_spawn(cmd: &str) -> Option<(String, Vec<String>)> {
+    let trimmed = cmd.trim();
+    if trimmed.is_empty() { return None; }
+    // pwsh call-operator form produced by the env-prefix path (#399) keeps
+    // its established shell route.
+    if trimmed.starts_with('&') { return None; }
+    // Direct spawn is only for explicit paths.
+    if !(trimmed.contains('/') || trimmed.contains('\\')) { return None; }
+    let exists_as_program = |p: &str| -> Option<String> {
+        if !(p.contains('/') || p.contains('\\')) { return None; }
+        let path = std::path::Path::new(p);
+        if path.is_file() { return Some(p.to_string()); }
+        if !p.to_ascii_lowercase().ends_with(".exe") {
+            let with_exe = format!("{}.exe", p);
+            if std::path::Path::new(&with_exe).is_file() { return Some(with_exe); }
+        }
+        None
+    };
+    // CreateProcess is picky about forward slashes in the application path
+    // (unix style `C:/...` is how users write these commands), so normalize
+    // the program to backslashes before spawning.
+    let normalize = |p: String| p.replace('/', "\\");
+    // Whole string as one path — covers `C:/Program Files/Git/bin/bash.exe`
+    // exactly as users write it in bind-key/new-window (quotes already
+    // consumed by the command parser).  Checked BEFORE the metacharacter
+    // bail so `C:\Program Files (x86)\...` paths are still resolved.
+    if let Some(prog) = exists_as_program(trimmed) {
+        return Some((normalize(prog), Vec::new()));
+    }
+    // Any shell metacharacter means the string needs a real shell.
+    if trimmed.chars().any(|c| matches!(c, '&' | '|' | '<' | '>' | ';' | '`' | '$' | '(' | ')' | '%' | '\n' | '\r')) {
+        return None;
+    }
+    let tokens = split_spawn_tokens(trimmed);
+    if tokens.is_empty() { return None; }
+    // Longest token-prefix that is an existing file: handles unquoted space
+    // paths followed by arguments (`C:/Program Files/.../bash.exe --login`).
+    for k in (1..=tokens.len()).rev() {
+        let candidate = tokens[..k].join(" ");
+        if let Some(prog) = exists_as_program(&candidate) {
+            return Some((normalize(prog), tokens[k..].to_vec()));
+        }
+    }
+    None
+}
+
 pub fn build_command(command: Option<&str>, env_shim: bool, allow_predictions: bool) -> CommandBuilder {
     // Capture CWD early — portable_pty on Windows defaults to USERPROFILE
     // (home dir) when no cwd is set on CommandBuilder, so we must set it
@@ -1093,7 +1442,7 @@ pub fn build_command(command: Option<&str>, env_shim: bool, allow_predictions: b
         // on the CommandBuilder.  The final command is then passed to whatever
         // shell `cached_shell()` resolves to, env-manipulation-free.
         #[cfg(windows)]
-        let (env_removes, env_sets, cmd, cwd_override) = {
+        let (env_removes, env_sets, cmd, cwd_override, direct_ok) = {
             let trimmed = cmd.trim();
             if let Some((inner_script, _)) = detect_bash_c_wrapper(trimmed) {
                 let (removes, sets, final_cmd) = parse_bash_env_script(inner_script);
@@ -1102,7 +1451,7 @@ pub fn build_command(command: Option<&str>, env_shim: bool, allow_predictions: b
                 } else {
                     resolve_unix_path(&final_cmd)
                 };
-                (removes, sets, final_cmd, None)
+                (removes, sets, final_cmd, None, false)
             } else if let Some((cwd_dir, sets, final_cmd)) = detect_env_prefix_command(trimmed) {
                 // POSIX `env VAR=val <program>` idiom (issue #399: Claude Code
                 // agent-teams teammate launch). Apply env/cwd directly and run the
@@ -1110,9 +1459,9 @@ pub fn build_command(command: Option<&str>, env_shim: bool, allow_predictions: b
                 // `env` binary being on PATH. The program is a path/exe token, so
                 // prefix the pwsh call operator `&` to invoke it rather than have
                 // pwsh treat the first token as a string to print.
-                (Vec::new(), sets, format!("& {}", final_cmd), cwd_dir)
+                (Vec::new(), sets, format!("& {}", final_cmd), cwd_dir, false)
             } else {
-                (Vec::new(), Vec::new(), resolve_unix_path(cmd), None)
+                (Vec::new(), Vec::new(), resolve_unix_path(cmd), None, true)
             }
         };
         #[cfg(not(windows))]
@@ -1122,6 +1471,47 @@ pub fn build_command(command: Option<&str>, env_shim: bool, allow_predictions: b
         let cwd = cwd_override
             .map(std::path::PathBuf::from)
             .or(cwd);
+
+        // tmux parity (#492, #493): spawn plain program invocations DIRECTLY
+        // instead of wrapping them in `<shell> -Command`. tmux only routes
+        // shell-syntax command strings through a shell (spawn.c execvp's
+        // multi-argument commands verbatim). This removes the lingering
+        // powershell wrapper process around every command pane (#493) and
+        // makes quoted executable paths containing spaces spawnable (#492).
+        #[cfg(windows)]
+        if direct_ok {
+            if let Some((prog, prog_args)) = try_direct_spawn(&cmd) {
+                let mut builder = CommandBuilder::new(&prog);
+                if let Some(ref dir) = cwd { builder.cwd(dir); }
+                apply_bare_env_if_set(&mut builder);
+                builder.env("TERM", "xterm-256color");
+                builder.env("COLORTERM", "truecolor");
+                builder.env("PSMUX_SESSION", "1");
+                for var in &env_removes { builder.env_remove(var); }
+                for (k, v) in &env_sets { builder.env(k, v); }
+                builder.args(&prog_args);
+                // #495 follow-up: a directly spawned pwsh/powershell path is an
+                // interactive PowerShell pane, and without psrl_init it lacks
+                // the Set-Location hook, freezing #{pane_current_path} at the
+                // spawn directory. Append the same init that default-shell
+                // panes get, unless the user's args already execute a
+                // command/script (then the pane is not an interactive shell).
+                if is_powershell_program(&prog) && powershell_args_interactive(&prog_args) {
+                    let has_noprofile = prog_args.iter()
+                        .any(|a| a.eq_ignore_ascii_case("-NoProfile"));
+                    let psrl_init = if has_noprofile {
+                        build_psrl_init_noprofile(env_shim)
+                    } else {
+                        build_psrl_init(env_shim, allow_predictions)
+                    };
+                    if !has_noprofile {
+                        builder.args(["-NoProfile"]);
+                    }
+                    builder.args(["-NoLogo", "-NoExit", "-Command", &psrl_init]);
+                }
+                return builder;
+            }
+        }
 
         let shell = cached_shell().map(|s| s.to_string());
 
@@ -1180,7 +1570,11 @@ pub fn build_command(command: Option<&str>, env_shim: bool, allow_predictions: b
                 builder.env("TERM", "xterm-256color");
                 builder.env("COLORTERM", "truecolor");
                 builder.env("PSMUX_SESSION", "1");
-                if path.to_lowercase().contains("pwsh") {
+                // Both PowerShell 7 (pwsh.exe) and Windows PowerShell 5.1
+                // (powershell.exe) need psrl_init — it installs the
+                // Set-Location hook that keeps #{pane_current_path} tracking
+                // `cd` (issue #495). See shell_needs_psrl_init.
+                if shell_needs_psrl_init(&path) {
                     builder.args(["-NoLogo", "-NoProfile", "-NoExit", "-Command", &psrl_init]);
                 }
                 builder
@@ -1215,7 +1609,7 @@ fn cached_which(program: &str) -> String {
         return cached.clone();
     }
     let resolved = which::which(program).ok()
-        .map(|p| p.to_string_lossy().into_owned())
+        .map(|p| prefer_app_execution_alias(p.to_string_lossy().into_owned()))
         .unwrap_or_else(|| program.to_string());
     map.insert(program.to_string(), resolved.clone());
     resolved
@@ -1246,16 +1640,56 @@ fn resolve_shell_program(shell_path: &str) -> (String, Vec<String>) {
     (program, extra)
 }
 
+/// Shell executable stems that are POSIX-style shells. When one of these is
+/// the configured `default-shell` it is spawned as a login shell (`-l`),
+/// matching tmux, so Git-Bash/MSYS2 profile scripts run and set up PATH
+/// (`/usr/bin` and friends). Without this an MSYS2 bash/zsh pane starts with
+/// only the inherited Windows PATH and the whole Unix toolchain is
+/// unreachable (issue #474).
+const POSIX_SHELL_STEMS: &[&str] = &["bash", "zsh", "sh", "fish", "dash", "ksh", "tcsh", "csh"];
+
+/// True when `path`'s file stem names a POSIX-style shell.
+pub(crate) fn is_posix_shell_path(path: &str) -> bool {
+    std::path::Path::new(path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(|s| POSIX_SHELL_STEMS.contains(&s.to_ascii_lowercase().as_str()))
+        .unwrap_or(false)
+}
+
+/// `git-bash.exe` is a GUI launcher that spawns its own mintty window — as a
+/// pane shell it produces a dead blank pane plus stray terminal windows
+/// (issue #474). Substitute the real console `bash.exe` that ships beside it.
+pub(crate) fn remap_git_bash_launcher(program: String) -> String {
+    let path = std::path::Path::new(&program);
+    let is_launcher = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(|s| s.eq_ignore_ascii_case("git-bash"))
+        .unwrap_or(false);
+    if is_launcher {
+        if let Some(dir) = path.parent() {
+            for candidate in [dir.join("bin").join("bash.exe"), dir.join("usr").join("bin").join("bash.exe")] {
+                if candidate.is_file() {
+                    return candidate.to_string_lossy().into_owned();
+                }
+            }
+        }
+    }
+    program
+}
+
 /// Build a CommandBuilder that launches the given shell path interactively.
 /// Used when `default-shell` / `default-command` is configured.
-/// Supports pwsh, powershell, cmd, and any arbitrary executable.
+/// Supports pwsh, powershell, cmd, bash/zsh (spawned as login shells), and
+/// any arbitrary executable.
 pub fn build_default_shell(shell_path: &str, env_shim: bool, allow_predictions: bool) -> CommandBuilder {
     let (program, extra_args) = resolve_shell_program(shell_path);
+    let program = remap_git_bash_launcher(program);
 
     // Resolve bare names via cached `which` — avoids repeated PATH scans.
     let resolved = cached_which(&program);
 
-    let lower = resolved.to_lowercase();
     let mut builder = CommandBuilder::new(&resolved);
     // Set CWD explicitly — portable_pty on Windows defaults to USERPROFILE
     // (home dir) when no cwd is set on CommandBuilder.
@@ -1273,7 +1707,18 @@ pub fn build_default_shell(shell_path: &str, env_shim: bool, allow_predictions: 
         builder.args(extra_args.clone());
     }
 
-    if lower.contains("pwsh") || lower.contains("powershell") {
+    if is_posix_shell_path(&resolved) {
+        // Keep the pane's working directory: Git-Bash and MSYS2 login shells
+        // otherwise `cd $HOME` from /etc/profile.
+        builder.env("CHERE_INVOKING", "1");
+        // tmux parity: the default shell runs as a login shell so profile
+        // scripts set up PATH (/usr/bin under MSYS2) and oh-my-zsh style
+        // configs load. Skipped when the user passed their own args — they
+        // control the invocation then.
+        if extra_args.is_empty() {
+            builder.args(["-l"]);
+        }
+    } else if shell_needs_psrl_init(&resolved) {
         // Issue #109: -NoProfile + manual profile sourcing to prevent
         // PSReadLine GetHistoryItems NullReferenceException.
         // If the user already passed -NoProfile in extra_args, we still
@@ -1282,13 +1727,10 @@ pub fn build_default_shell(shell_path: &str, env_shim: bool, allow_predictions: 
         let has_noprofile = extra_args.iter()
             .any(|a| a.eq_ignore_ascii_case("-NoProfile"));
         let psrl_init = if has_noprofile {
-            // User explicitly wants no profile — just apply PSRL fix + shim.
-            let mut s = PSRL_FIX.to_string();
-            if env_shim {
-                s.push_str("; ");
-                s.push_str(ENV_SHIM_PS);
-            }
-            s
+            // User explicitly wants no profile — apply PSRL fix + CWD-sync
+            // hook + shim. The CWD hook is unrelated to profiles and must
+            // stay, or #{pane_current_path} freezes (#495).
+            build_psrl_init_noprofile(env_shim)
         } else {
             build_psrl_init(env_shim, allow_predictions)
         };
@@ -1423,7 +1865,102 @@ impl CprScanner {
     }
 }
 
-// TODO: The 7 Arc parameters below should be grouped into a `ReaderSignals`
+/// Issue #473: scan a byte region for terminal color queries emitted by the
+/// pane's child and return the matching `color_query_pending` bitmask.
+/// Recognized queries (all observed passing through ConPTY's output pipe):
+///   OSC 4;<i>;?  → bit i (0-15)      palette entry query
+///   OSC 10;?     → COLOR_QUERY_FG    foreground query
+///   OSC 11;?     → COLOR_QUERY_BG    background query
+///   CSI ?996n    → COLOR_QUERY_SCHEME light/dark query
+/// Only matches whose final byte lands at offset >= `min_end` are counted —
+/// the boundary rescan uses this so a match fully inside the carried tail
+/// (already reported last batch) is not double-counted, which would trigger
+/// a duplicate response after the first one was drained.
+fn scan_color_queries(data: &[u8], min_end: usize) -> u32 {
+    if !data.contains(&0x1b) { return 0; }
+    let mut bits: u32 = 0;
+    let mut i = 0;
+    while i < data.len() {
+        if data[i] != 0x1b { i += 1; continue; }
+        let rest = &data[i..];
+        // CSI ?996n  (light/dark scheme query)
+        const SCHEME: &[u8] = b"\x1b[?996n";
+        if rest.starts_with(SCHEME) {
+            if i + SCHEME.len() > min_end { bits |= crate::types::COLOR_QUERY_SCHEME; }
+            i += SCHEME.len();
+            continue;
+        }
+        // OSC 10;? / OSC 11;?  (fg/bg query)
+        for (pat, bit) in [(&b"\x1b]10;?"[..], crate::types::COLOR_QUERY_FG),
+                           (&b"\x1b]11;?"[..], crate::types::COLOR_QUERY_BG)] {
+            if rest.starts_with(pat) && i + pat.len() > min_end {
+                bits |= bit;
+            }
+        }
+        // OSC 4;<index>;?  (palette query)
+        const OSC4: &[u8] = b"\x1b]4;";
+        if rest.starts_with(OSC4) {
+            let mut j = OSC4.len();
+            let mut idx: u32 = 0;
+            let mut digits = 0;
+            while j < rest.len() && rest[j].is_ascii_digit() && digits < 3 {
+                idx = idx * 10 + (rest[j] - b'0') as u32;
+                j += 1;
+                digits += 1;
+            }
+            if digits > 0 && j + 1 < rest.len() && rest[j] == b';' && rest[j + 1] == b'?' {
+                if idx < 16 && i + j + 2 > min_end {
+                    bits |= 1 << idx;
+                }
+                i += j + 2;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    bits
+}
+
+/// Cross-batch detector for color queries, same rationale as `CprScanner`:
+/// a query split across two coalesced batches is invisible to a per-batch
+/// scan.  Carries the last KEEP bytes and rescans the boundary, counting only
+/// matches that end inside the new batch.
+struct ColorQueryScanner {
+    tail: Vec<u8>,
+}
+
+impl ColorQueryScanner {
+    /// One less than the longest query (`\x1b]4;15;?` = 9 bytes).
+    const KEEP: usize = 8;
+
+    fn new() -> Self {
+        Self { tail: Vec::with_capacity(Self::KEEP) }
+    }
+
+    fn scan(&mut self, batch: &[u8]) -> u32 {
+        let mut bits = scan_color_queries(batch, 0);
+        if !self.tail.is_empty() {
+            let mut boundary = self.tail.clone();
+            let tail_len = boundary.len();
+            boundary.extend_from_slice(&batch[..batch.len().min(Self::KEEP)]);
+            // Only count matches that END past the carried tail — anything
+            // fully inside the tail was already reported last batch.  A match
+            // ends past the tail when its exclusive end exceeds tail_len.
+            bits |= scan_color_queries(&boundary, tail_len);
+        }
+        if batch.len() >= Self::KEEP {
+            self.tail.clear();
+            self.tail.extend_from_slice(&batch[batch.len() - Self::KEEP..]);
+        } else {
+            self.tail.extend_from_slice(batch);
+            let excess = self.tail.len().saturating_sub(Self::KEEP);
+            self.tail.drain(..excess);
+        }
+        bits
+    }
+}
+
+// TODO: The 8 Arc parameters below should be grouped into a `ReaderSignals`
 // struct the next time a new signal is added, to keep the call-site manageable.
 pub fn spawn_reader_thread(
     mut reader: Box<dyn std::io::Read + Send>,
@@ -1432,6 +1969,7 @@ pub fn spawn_reader_thread(
     cursor_shape: Arc<std::sync::atomic::AtomicU8>,
     bell_pending: Arc<std::sync::atomic::AtomicBool>,
     cpr_pending: Arc<std::sync::atomic::AtomicBool>,
+    color_query_pending: Arc<std::sync::atomic::AtomicU32>,
     output_ring: Arc<Mutex<std::collections::VecDeque<u8>>>,
     pane_id: usize,
 ) {
@@ -1573,6 +2111,7 @@ pub fn spawn_reader_thread(
     // ── Parser thread: coalesces staged bytes, processes under one lock ──
     thread::spawn(move || {
         let mut cpr_scanner = CprScanner::new();
+        let mut color_scanner = ColorQueryScanner::new();
         loop {
             // Wait for at least one byte (or shutdown).
             {
@@ -1645,6 +2184,11 @@ pub fn spawn_reader_thread(
             }
             let rmcup = scan_rmcup(&bytes);
             let has_cpr_query = cpr_scanner.scan(&bytes);
+            let color_query_bits = color_scanner.scan(&bytes);
+
+            // Issue #502 diagnostic: capture the exact pre-parse byte stream
+            // when PSMUX_PANE_RAW=1. Off by default, one atomic load when off.
+            crate::debug_log::pane_raw(&bytes);
 
             if let Ok(mut parser) = term_reader.lock() {
                 parser.process(&bytes);
@@ -1663,6 +2207,13 @@ pub fn spawn_reader_thread(
             if has_cpr_query {
                 cpr_pending.store(true, Ordering::Release);
                 crate::types::CPR_DATA_PENDING.store(true, Ordering::Release);
+            }
+            // Issue #473: signal the server loop to answer terminal color
+            // queries (OSC 4/10/11, CSI ?996n) so pane applications can
+            // detect the terminal palette.
+            if color_query_bits != 0 {
+                color_query_pending.fetch_or(color_query_bits, Ordering::AcqRel);
+                crate::types::COLOR_QUERY_PENDING.store(true, Ordering::Release);
             }
             dv_writer.fetch_add(1, Ordering::Release);
             crate::types::PTY_DATA_READY.store(true, Ordering::Release);
@@ -1697,6 +2248,22 @@ mod test_issue88_alt_screen_toggle;
 #[cfg(test)]
 #[path = "../tests-rs/test_cpr_responder.rs"]
 mod test_cpr_responder;
+
+#[cfg(test)]
+#[path = "../tests-rs/test_issue473_color_queries.rs"]
+mod test_issue473_color_queries;
+
+#[cfg(test)]
+#[path = "../tests-rs/test_windowsapps_alias_shell.rs"]
+mod test_windowsapps_alias_shell;
+
+#[cfg(test)]
+#[path = "../tests-rs/test_issue475_claude_wrapper.rs"]
+mod test_issue475_claude_wrapper;
+
+#[cfg(test)]
+#[path = "../tests-rs/test_issue399_teammate_settings_priority.rs"]
+mod test_issue399_teammate_settings_priority;
 
 #[cfg(test)]
 mod test_parser_audible_bell {
@@ -1806,3 +2373,19 @@ mod tests_issue450_dead_warm_pane;
 #[cfg(test)]
 #[path = "../tests-rs/test_warm_pane_start_dir.rs"]
 mod tests_warm_pane_start_dir;
+
+#[cfg(test)]
+#[path = "../tests-rs/test_issue474_unix_shells.rs"]
+mod tests_issue474_unix_shells;
+
+#[cfg(test)]
+#[path = "../tests-rs/test_issue492_493_direct_spawn.rs"]
+mod tests_issue492_493_direct_spawn;
+
+#[cfg(test)]
+#[path = "../tests-rs/test_issue495_cwd_hook_gate.rs"]
+mod tests_issue495_cwd_hook_gate;
+
+#[cfg(test)]
+#[path = "../tests-rs/test_issue495_direct_spawn_cwd_hook.rs"]
+mod tests_issue495_direct_spawn_cwd_hook;

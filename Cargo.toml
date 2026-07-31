@@ -1,6 +1,6 @@
 [package]
 name = "psmux"
-version = "3.3.6"
+version = "3.3.7"
 edition = "2021"
 description = "Terminal multiplexer for Windows - tmux alternative for PowerShell and Windows Terminal"
 license = "MIT"
@@ -66,6 +66,10 @@ path = "tests-rs/test_issue299_pwsh_snippet_integration.rs"
 name = "test_pr469_osc_command_safety"
 path = "tests-rs/test_pr469_osc_command_safety.rs"
 
+[[test]]
+name = "test_issue494_copymode_freeze"
+path = "tests-rs/test_issue494_copymode_freeze.rs"
+
 # Windows only
 [target.'cfg(not(windows))'.dependencies]
 [target.'cfg(windows)'.dependencies]
@@ -90,10 +94,10 @@ path = "src/main.rs"
 [dependencies]
 ratatui = "0.30"
 crossterm = "0.29"
-portable-pty = { version = "0.9.5", path = "crates/portable-pty-psmux", package = "portable-pty-psmux" }
+portable-pty = { version = "0.9.6", path = "crates/portable-pty-psmux", package = "portable-pty-psmux" }
 which = "8"
 chrono = "0.4"
-vt100 = { version = "0.16.8", path = "crates/vt100-psmux", package = "vt100-psmux" }
+vt100 = { version = "0.16.9", path = "crates/vt100-psmux", package = "vt100-psmux" }
 unicode-width = "0.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

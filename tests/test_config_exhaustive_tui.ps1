@@ -203,10 +203,27 @@ function Send-TcpCommand {
 }
 
 function Focus-PsmuxWindow {
-    $hwnd = [Win32Cfg]::FindWindow($null, $SESSION)
+    # Root-cause note: FindWindow(null, $SESSION) and the MainWindowTitle
+    # regex fallback both assume the console window's title equals the
+    # session name -- but psmux (matching real tmux's default `set-titles
+    # off`) never renames the host console window unless the user explicitly
+    # runs `set-titles on`, which this test never does. Confirmed live: a
+    # freshly-launched session's MainWindowTitle is just the exe path (e.g.
+    # "C:\...\psmux.exe"), never the session name, so both title-based
+    # lookups always returned zero. The launching Start-Process call already
+    # gave us the exact process (script-scope $proc) -- use its
+    # MainWindowHandle directly instead of re-discovering it by title.
+    $hwnd = [IntPtr]::Zero
+    if ($script:proc -and -not $script:proc.HasExited) {
+        $script:proc.Refresh()
+        $hwnd = $script:proc.MainWindowHandle
+    }
     if ($hwnd -eq [IntPtr]::Zero) {
-        $proc = Get-Process psmux -EA SilentlyContinue | Where-Object { $_.MainWindowTitle -match $SESSION } | Select-Object -First 1
-        if ($proc) { $hwnd = $proc.MainWindowHandle }
+        $hwnd = [Win32Cfg]::FindWindow($null, $SESSION)
+    }
+    if ($hwnd -eq [IntPtr]::Zero) {
+        $p = Get-Process psmux -EA SilentlyContinue | Where-Object { $_.MainWindowTitle -match $SESSION } | Select-Object -First 1
+        if ($p) { $hwnd = $p.MainWindowHandle }
     }
     if ($hwnd -ne [IntPtr]::Zero) {
         [Win32Cfg]::ShowWindow($hwnd, 9) | Out-Null
@@ -922,6 +939,19 @@ Send-PsmuxCommand "set-option -g mouse on"
 Write-Host "`n=== 19. SHOW-OPTIONS VIA TUI ===" -ForegroundColor Cyan
 
 # show-options via TUI: verify server still responds after each
+#
+# NOTE: `show-options` / `show-options -g` with NO specific option name,
+# run from the interactive TUI command prompt (a persistent connection),
+# opens a `ShowTextPopup` overlay (src/server/connection.rs ~2172-2202) to
+# display the full option list -- unlike `show-options -g <name>` below,
+# which returns a single value directly with no popup. That overlay was
+# never dismissed here, so it stayed on screen and swallowed every
+# keystroke Section 20 sent afterward (Ctrl+B/colon/text/Enter all landed
+# on the popup instead of opening a fresh command prompt), which is what
+# made "RAPID SEQUENTIAL SETS" silently fail 4 of 5 checks -- the psmux
+# window was simply not focused on the command prompt anymore. Send
+# Escape after each bare show-options call to close the popup before
+# moving on.
 Write-Test "TUI show-options"
 Send-PsmuxCommand "show-options"
 Start-Sleep -Milliseconds 300
@@ -931,6 +961,12 @@ if ($r.ok -and $r.resp -match 'mouse') {
 } else {
     Write-Fail "TUI show-options (server not responding)"
 }
+Focus-PsmuxWindow | Out-Null
+Start-Sleep -Milliseconds 300
+[Win32Cfg]::SendEscape()
+Start-Sleep -Milliseconds 300
+[Win32Cfg]::SendEscape()
+Start-Sleep -Milliseconds 500
 
 Write-Test "TUI show-options -g"
 Send-PsmuxCommand "show-options -g"
@@ -941,6 +977,12 @@ if ($r.ok -and $r.resp -match 'mouse') {
 } else {
     Write-Fail "TUI show-options -g (server not responding)"
 }
+Focus-PsmuxWindow | Out-Null
+Start-Sleep -Milliseconds 300
+[Win32Cfg]::SendEscape()
+Start-Sleep -Milliseconds 300
+[Win32Cfg]::SendEscape()
+Start-Sleep -Milliseconds 500
 
 Write-Test "TUI show-options -g mouse"
 Send-PsmuxCommand "show-options -g mouse"

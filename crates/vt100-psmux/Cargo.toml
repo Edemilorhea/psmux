@@ -13,7 +13,7 @@
 edition = "2021"
 rust-version = "1.70"
 name = "vt100-psmux"
-version = "0.16.8"
+version = "0.16.9"
 authors = ["Jesse Luehrs <doy@tozt.net>"]
 build = false
 include = [
@@ -48,6 +48,14 @@ path = "src/lib.rs"
 [[test]]
 name = "width_thai_441"
 path = "tests/width_thai_441.rs"
+
+[[test]]
+name = "issue502_altscreen_attrs"
+path = "tests/issue502_altscreen_attrs.rs"
+
+[[test]]
+name = "issue502_decsc_altscreen"
+path = "tests/issue502_decsc_altscreen.rs"
 
 [dependencies.itoa]
 version = "1.0.15"

@@ -3,8 +3,29 @@
 # themes that expose @<theme>-separator) arrow/rounded/slant produce DISTINCT configs
 # with the expected universal codepoints.
 $ErrorActionPreference="Continue"
+# This test's own pipeline decodes each theme .ps1's psmux subprocess stdout
+# (`& $PSMUX show-options ... | Out-String`) and then compares literal Private
+# Use Area codepoints (U+E0Bx powerline glyphs) against it. Without forcing
+# this process's own console/pipeline encoding to UTF-8, PowerShell decodes
+# psmux's UTF-8 bytes for those 3-byte glyphs using the ambient system
+# codepage, mangling a single U+E0B4 into 3 unrelated characters (confirmed:
+# U+03B5/U+00E9/U+2524) that never match any codepoint in $sepSet -- this is
+# exactly why every theme reported "sep glyph none", even though psmux itself
+# stores and returns the glyph correctly (verified directly: with
+# [Console]::OutputEncoding forced to UTF-8, a set-option/show-options round
+# trip of a raw U+E0B4 character round-trips byte-for-byte). Same fix pattern
+# as test_issue263_nested.ps1.
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
 $PSMUX=(Get-Command psmux).Source
 $base="$env:LOCALAPPDATA\Temp\psmux-plugins-check"
+# The theme .ps1 fixtures are external psmux-plugins checkouts (cloned into a
+# Temp dir by hand); when they are absent there is nothing real to test, so
+# skip instead of reporting one phantom failure per theme.
+if(-not(Test-Path "$base\psmux-theme-everforest")){
+  Write-Host "[SKIP] psmux-plugins theme checkouts not present at $base (clone psmux-plugins there to run this suite)" -ForegroundColor Yellow
+  exit 0
+}
 $S="issue58_all"
 $psmuxDir="$env:USERPROFILE\.psmux"
 $pass=0;$fail=0

@@ -11,7 +11,7 @@
 #   - detach is GRACEFUL: client-detached hook fires; ClientDetached notification sent
 
 $ErrorActionPreference = "Continue"
-$PSMUX = (Resolve-Path '.\target\release\psmux.exe').Path
+$PSMUX = (Resolve-Path "$PSScriptRoot\..\target\release\psmux.exe").Path
 $psmuxDir = "$env:USERPROFILE\.psmux"
 $SESSION = "issue275"
 $script:Passed = 0
@@ -244,7 +244,7 @@ else {
     if ($LASTEXITCODE -eq 0) {
         Write-Pass "TUI: server preserved after client detach (panes still alive)"
     } else {
-        Write-Fail "TUI: server died — detach should not kill server"
+        Write-Fail "TUI: server died, detach should not kill server"
     }
 }
 

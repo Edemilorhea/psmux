@@ -1,4 +1,4 @@
-use crate::types::{ParsedTarget, VERSION};
+use crate::types::{ParsedTarget, VERSION, build_version_string};
 
 /// Normalize `-x=VALUE` short-flag forms into `["-x", "VALUE"]`.
 ///
@@ -425,9 +425,16 @@ For more information: https://github.com/psmux/psmux
 }
 
 pub fn print_version() {
-    // Always print "tmux <version>" for compatibility with tools like
-    // libtmux/tmuxp that parse the "tmux " prefix from `-V` output.
+    // First line MUST stay "tmux <version>" (and nothing else) for
+    // compatibility with tools like libtmux/tmuxp that read the first line of
+    // `-V` output and parse the version token right after the "tmux " prefix.
     println!("tmux {}", VERSION);
+    // Second line carries the exact build provenance for humans: the git commit
+    // the binary was built from (short hash + date, plus a "dirty" marker when
+    // built from a modified tree). Tools that parse only the first line ignore
+    // it, so this stays fully backward compatible. Example:
+    //   psmux 3.3.7 (a1b2c3d 2026-07-20)
+    println!("{}", build_version_string());
 }
 
 pub fn print_commands() {
@@ -527,9 +534,22 @@ pub fn parse_target(target: &str) -> ParsedTarget {
         return result;
     }
     if target.starts_with('@') {
-        if let Ok(wid) = target[1..].parse::<usize>() {
+        // Allow a ".pane" suffix after the window id (e.g. "@2.0" or "@2.%3")
+        let (wid_part, pane_part) = match target.find('.') {
+            Some(dot) => (&target[1..dot], Some(&target[dot + 1..])),
+            None => (&target[1..], None),
+        };
+        if let Ok(wid) = wid_part.parse::<usize>() {
             result.window = Some(wid);
             result.window_is_id = true;
+            if let Some(pp) = pane_part {
+                if let Some(pid) = pp.strip_prefix('%').and_then(|s| s.parse::<usize>().ok()) {
+                    result.pane = Some(pid);
+                    result.pane_is_id = true;
+                } else if let Ok(p) = pp.parse::<usize>() {
+                    result.pane = Some(p);
+                }
+            }
         }
         return result;
     }
@@ -595,9 +615,22 @@ pub fn parse_target(target: &str) -> ParsedTarget {
                 result.pane_is_id = true;
             }
         } else if wp.starts_with('@') {
-            if let Ok(wid) = wp[1..].parse::<usize>() {
+            // Allow a ".pane" suffix after the window id (e.g. "ses:@2.0")
+            let (wid_part, pane_part) = match wp.find('.') {
+                Some(dot) => (&wp[1..dot], Some(&wp[dot + 1..])),
+                None => (&wp[1..], None),
+            };
+            if let Ok(wid) = wid_part.parse::<usize>() {
                 result.window = Some(wid);
                 result.window_is_id = true;
+                if let Some(pp) = pane_part {
+                    if let Some(pid) = pp.strip_prefix('%').and_then(|s| s.parse::<usize>().ok()) {
+                        result.pane = Some(pid);
+                        result.pane_is_id = true;
+                    } else if let Ok(p) = pp.parse::<usize>() {
+                        result.pane = Some(p);
+                    }
+                }
             }
         } else if let Some(dot_pos) = wp.find('.') {
             if dot_pos > 0 {
@@ -745,3 +778,7 @@ mod tests {
 #[cfg(test)]
 #[path = "../tests-rs/test_issue196_flag_equals.rs"]
 mod tests_issue196_flag_equals;
+
+#[cfg(test)]
+#[path = "../tests-rs/test_issue497_selectwindow_id.rs"]
+mod tests_issue497_selectwindow_id;

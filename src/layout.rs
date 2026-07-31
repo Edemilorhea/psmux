@@ -146,6 +146,13 @@ pub enum LayoutJson {
         cursor_col: u16,
         #[serde(default)]
         alternate_screen: bool,
+        /// True when the pane's app EXPLICITLY enabled a mouse protocol
+        /// (DECSET 1000/1002/1003).  Strict on purpose — no alt-screen or
+        /// fullscreen heuristic — so the client only yields its drag
+        /// selection to apps that really consume mouse events; alt-screen
+        /// apps without mouse support (e.g. `less`) keep psmux selection.
+        #[serde(default)]
+        wants_mouse: bool,
         #[serde(default)]
         hide_cursor: bool,
         #[serde(default)]
@@ -197,8 +204,74 @@ pub fn dump_window_layout_json(app: &mut AppState, win_id: usize) -> io::Result<
     dump_layout_json_inner(app, Some(win_id))
 }
 
+/// Copy-mode screen freeze (issue #494, tmux parity): while the session is in
+/// copy mode, anchor the ACTIVE pane's parser (`Screen::set_frozen`) so new
+/// output bumps the scrollback offset instead of shifting the rendered view;
+/// release the anchor on every other pane so nothing is left permanently
+/// frozen after copy mode exits or focus moves.  Returns via
+/// `app.copy_scroll_offset` the (possibly auto-bumped) parser offset so
+/// selection math and the client-side scroll indicator stay consistent.
+fn sync_copy_freeze(app: &mut AppState, in_copy_mode: bool) {
+    // `r` (refresh-from-pane, #498) releases the anchor so the pane tracks
+    // live output while copy mode stays open.
+    let in_copy_mode = in_copy_mode && !app.copy_refresh_live;
+    fn walk(node: &mut Node, path: &mut Vec<usize>, target: Option<&[usize]>) -> Option<usize> {
+        let mut synced = None;
+        match node {
+            Node::Split { children, .. } => {
+                for (i, c) in children.iter_mut().enumerate() {
+                    path.push(i);
+                    if let Some(v) = walk(c, path, target) { synced = Some(v); }
+                    path.pop();
+                }
+            }
+            Node::Leaf(p) => {
+                let freeze = target.map_or(false, |t| t == path.as_slice());
+                if let Ok(mut parser) = p.term.lock() {
+                    if parser.screen().frozen() != freeze {
+                        parser.screen_mut().set_frozen(freeze);
+                        if !freeze {
+                            // Leaving the frozen state must return the pane
+                            // to the LIVE view: the freeze auto-bumped the
+                            // parser scrollback offset, and any offset > 0
+                            // keeps anchoring on its own, which would pin
+                            // the view at the copy-mode content forever.
+                            parser.screen_mut().set_scrollback(0);
+                        }
+                    }
+                    if freeze { synced = Some(parser.screen().scrollback()); }
+                }
+            }
+        }
+        synced
+    }
+    let active_idx = app.active_idx;
+    let mut new_offset = None;
+    for (wi, win) in app.windows.iter_mut().enumerate() {
+        // Floating panes render their own live view — never frozen.
+        let target_path = if in_copy_mode && wi == active_idx && win.floating_focus.is_none() {
+            Some(win.active_path.clone())
+        } else {
+            None
+        };
+        let mut path = Vec::new();
+        if let Some(v) = walk(&mut win.root, &mut path, target_path.as_deref()) {
+            new_offset = Some(v);
+        }
+        for fp in win.floating.iter_mut() {
+            if let Ok(mut parser) = fp.pane.term.lock() {
+                if parser.screen().frozen() { parser.screen_mut().set_frozen(false); }
+            }
+        }
+    }
+    if let Some(v) = new_offset { app.copy_scroll_offset = v; }
+}
+
 fn dump_layout_json_inner(app: &mut AppState, win_id_override: Option<usize>) -> io::Result<String> {
     let in_copy_mode = matches!(app.mode, Mode::CopyMode | Mode::CopySearch { .. });
+    if win_id_override.is_none() {
+        sync_copy_freeze(app, in_copy_mode);
+    }
     let scroll_offset = app.copy_scroll_offset;
     
     fn build(node: &mut Node, cur_path: &mut Vec<usize>, active_path: &[usize], include_full_content: bool) -> LayoutJson {
@@ -241,6 +314,7 @@ fn dump_layout_json_inner(app: &mut AppState, win_id_override: Option<usize>) ->
                         return LayoutJson::Leaf {
                             id: p.id, rows: p.last_rows, cols: p.last_cols,
                             cursor_row: 0, cursor_col: 0, alternate_screen: false,
+                            wants_mouse: false,
                             hide_cursor: true,
                             cursor_shape: 0,
                             active: *cur_path == active_path, copy_mode: false,
@@ -261,6 +335,7 @@ fn dump_layout_json_inner(app: &mut AppState, win_id_override: Option<usize>) ->
                     return LayoutJson::Leaf {
                         id: p.id, rows: p.last_rows, cols: p.last_cols,
                         cursor_row: 0, cursor_col: 0, alternate_screen: false,
+                        wants_mouse: false,
                         hide_cursor: false,
                         cursor_shape: p.cursor_shape.load(std::sync::atomic::Ordering::Relaxed),
                         active: *cur_path == active_path, copy_mode: false,
@@ -292,6 +367,8 @@ fn dump_layout_json_inner(app: &mut AppState, win_id_override: Option<usize>) ->
                     }
                     has_content
                 };
+                let wants_mouse =
+                    screen.mouse_protocol_mode() != vt100::MouseProtocolMode::None;
                 let need_full_content = include_full_content && *cur_path == active_path;
                 let mut lines: Vec<Vec<CellJson>> = if need_full_content {
                     Vec::with_capacity(p.last_rows as usize)
@@ -433,6 +510,7 @@ fn dump_layout_json_inner(app: &mut AppState, win_id_override: Option<usize>) ->
                     cursor_row: cr,
                     cursor_col: cc,
                     alternate_screen,
+                    wants_mouse,
                     hide_cursor: hide_cursor_flag,
                     cursor_shape: p.cursor_shape.load(std::sync::atomic::Ordering::Relaxed),
                     active: false,
@@ -547,6 +625,7 @@ fn dump_layout_json_inner(app: &mut AppState, win_id_override: Option<usize>) ->
 /// identical JSON format that the client deserialises into `LayoutJson`.
 pub fn dump_layout_json_fast(app: &mut AppState) -> io::Result<String> {
     let in_copy = matches!(app.mode, Mode::CopyMode | Mode::CopySearch { .. });
+    sync_copy_freeze(app, in_copy);
     let scroll_off = app.copy_scroll_offset;
     let anchor = app.copy_anchor;
     let anchor_scroll = app.copy_anchor_scroll_offset;
@@ -657,6 +736,7 @@ pub fn dump_layout_json_fast(app: &mut AppState) -> io::Result<String> {
                                 "\"rows\":{},\"cols\":{},",
                                 "\"cursor_row\":0,\"cursor_col\":0,",
                                 "\"alternate_screen\":false,",
+                                "\"wants_mouse\":false,",
                                 "\"hide_cursor\":true,",
                                 "\"cursor_shape\":0,",
                                 "\"active\":{},\"copy_mode\":false,",
@@ -683,6 +763,7 @@ pub fn dump_layout_json_fast(app: &mut AppState) -> io::Result<String> {
                 struct CopyCell { text: String, fg: vt100::Color, bg: vt100::Color, bold: bool, italic: bool, underline: bool, inverse: bool, dim: bool, blink: bool, hidden: bool, strikethrough: bool, width: u16 }
                 struct LeafSnap {
                     cr: u16, cc: u16, alt: bool,
+                    wants_mouse: bool,
                     hide_cursor: bool,
                     rows_v2: Vec<RowSnap>,
                     content: Vec<Vec<CopyCell>>,
@@ -691,7 +772,7 @@ pub fn dump_layout_json_fast(app: &mut AppState) -> io::Result<String> {
                 let snap = 'snap: {
                     let parser = match p.term.lock() {
                         Ok(g) => g,
-                        Err(_) => break 'snap LeafSnap { cr: 0, cc: 0, alt: false, hide_cursor: false, rows_v2: vec![], content: vec![] },
+                        Err(_) => break 'snap LeafSnap { cr: 0, cc: 0, alt: false, wants_mouse: false, hide_cursor: false, rows_v2: vec![], content: vec![] },
                     };
                     let screen = parser.screen();
                     let (cr, cc) = screen.cursor_position();
@@ -707,6 +788,9 @@ pub fn dump_layout_json_fast(app: &mut AppState) -> io::Result<String> {
                             })
                         })
                     };
+                    // Strict — explicit mouse protocol only (see Leaf field doc).
+                    let wants_mouse =
+                        screen.mouse_protocol_mode() != vt100::MouseProtocolMode::None;
 
                     // Snapshot rows_v2 (run-merged)
                     let mut snap_rows: Vec<RowSnap> = Vec::with_capacity(p.last_rows as usize);
@@ -797,7 +881,7 @@ pub fn dump_layout_json_fast(app: &mut AppState) -> io::Result<String> {
                         }
                     }
 
-                    LeafSnap { cr, cc, alt, hide_cursor, rows_v2: snap_rows, content: snap_content }
+                    LeafSnap { cr, cc, alt, wants_mouse, hide_cursor, rows_v2: snap_rows, content: snap_content }
                 };
                 // ── Parser mutex is now RELEASED ──
                 // All JSON string building below happens without holding the lock,
@@ -812,12 +896,13 @@ pub fn dump_layout_json_fast(app: &mut AppState) -> io::Result<String> {
                         "\"rows\":{},\"cols\":{},",
                         "\"cursor_row\":{},\"cursor_col\":{},",
                         "\"alternate_screen\":{},",
+                        "\"wants_mouse\":{},",
                         "\"hide_cursor\":{},",
                         "\"cursor_shape\":{},",
                         "\"active\":{},\"copy_mode\":{},",
                         "\"scroll_offset\":{},"),
                     p.id, p.last_rows, p.last_cols,
-                    snap.cr, snap.cc, snap.alt, snap.hide_cursor,
+                    snap.cr, snap.cc, snap.alt, snap.wants_mouse, snap.hide_cursor,
                     cs,
                     is_active, need_content, so,
                 ));

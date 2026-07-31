@@ -102,6 +102,7 @@ pub fn create_popup_pane(
     ));
     let bell_pending = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let cpr_pending = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let color_query_pending = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
     let output_ring = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
 
     match pair.master.try_clone_reader() {
@@ -113,6 +114,7 @@ pub fn create_popup_pane(
                 cursor_shape.clone(),
                 bell_pending.clone(),
                 cpr_pending.clone(),
+                color_query_pending.clone(),
                 output_ring.clone(),
                 pane_id,
             );
@@ -158,11 +160,13 @@ pub fn create_popup_pane(
         vt_bridge_cache: None,
         vti_mode_cache: None,
         mouse_input_cache: None,
+        scroll_fg_cache: None,
         cursor_shape,
         bell_pending,
         // cpr_pending is now driven by the shared spawn_reader_thread above, so
         // the server can answer ESC[6n queries for interactive popup shells (#351).
         cpr_pending,
+        color_query_pending,
         copy_state: None,
         pane_style: None,
         squelch_until: None,
@@ -226,9 +230,11 @@ pub fn create_empty_pane(rows: u16, cols: u16, pane_id: usize) -> Option<Pane> {
         vt_bridge_cache: None,
         vti_mode_cache: None,
         mouse_input_cache: None,
+        scroll_fg_cache: None,
         cursor_shape: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(crate::pane::CURSOR_SHAPE_UNSET)),
         bell_pending: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         cpr_pending: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        color_query_pending: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
         copy_state: None,
         pane_style: None,
         squelch_until: None,

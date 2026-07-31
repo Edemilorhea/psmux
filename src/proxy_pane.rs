@@ -268,11 +268,13 @@ pub fn create_proxy_pane(
         vt_bridge_cache: None,
         vti_mode_cache: None,
         mouse_input_cache: None,
+        scroll_fg_cache: None,
         cursor_shape: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         bell_pending: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         // CPR responses written via this field are TCP-forwarded to the source
         // ConPTY via the ProxyMasterPty writer.
         cpr_pending: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        color_query_pending: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         copy_state: None,
         pane_style: None,
         squelch_until: None,

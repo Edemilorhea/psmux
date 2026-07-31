@@ -30,6 +30,9 @@ pub fn enter_copy_mode(app: &mut AppState) {
     app.copy_register_pending = false;
     app.copy_register = None;
     app.copy_count = None;
+    app.copy_mark = None;
+    app.copy_last_jump = None;
+    app.copy_refresh_live = false;
     // Mark the active pane as being in copy mode (pane-local state).
     save_copy_state_to_pane(app);
 }
@@ -78,6 +81,8 @@ pub fn save_copy_state_to_pane(app: &mut AppState) {
         text_object_pending: app.copy_text_object_pending,
         register_pending: app.copy_register_pending,
         register: app.copy_register,
+        mark: app.copy_mark,
+        last_jump: app.copy_last_jump,
         in_search,
         search_input,
         search_input_forward,
@@ -110,6 +115,8 @@ pub fn restore_copy_state_from_pane(app: &mut AppState) {
         app.copy_text_object_pending = s.text_object_pending;
         app.copy_register_pending = s.register_pending;
         app.copy_register = s.register;
+        app.copy_mark = s.mark;
+        app.copy_last_jump = s.last_jump;
         if s.in_search {
             app.mode = Mode::CopySearch { input: s.search_input, forward: s.search_input_forward };
         } else {
@@ -778,47 +785,135 @@ pub fn move_to_screen_bottom(app: &mut AppState) {
     app.copy_pos = Some((rows.saturating_sub(1), 0));
 }
 
+/// Jump kinds shared by f/F/t/T and their `;` / `,` repeats.
+pub const JUMP_FORWARD: u8 = 0;
+pub const JUMP_BACKWARD: u8 = 1;
+pub const JUMP_TO_FORWARD: u8 = 2;
+pub const JUMP_TO_BACKWARD: u8 = 3;
+
+/// Perform one f/F/t/T search WITHOUT recording it as the last jump.
+/// `jump_again` and `jump_reverse` go through here so repeating a jump never
+/// rewrites the stored direction (tmux keeps `jumptype` fixed across `,`).
+fn apply_jump(app: &mut AppState, kind: u8, ch: char) {
+    let (r, c) = match get_copy_pos(app) { Some(p) => p, None => return };
+    let text = match read_row_text(app, r) { Some((t, _)) => t, None => return };
+    let bytes: Vec<char> = text.chars().collect();
+    match kind {
+        JUMP_FORWARD => {
+            for i in (c as usize + 1)..bytes.len() {
+                if bytes[i] == ch { app.copy_pos = Some((r, i as u16)); return; }
+            }
+        }
+        JUMP_BACKWARD => {
+            for i in (0..(c as usize)).rev() {
+                if bytes[i] == ch { app.copy_pos = Some((r, i as u16)); return; }
+            }
+        }
+        // tmux starts the `t` search two cells along (window_copy_cursor_jump_to
+        // uses cx + 2) so that repeating it with `;` steps past the character
+        // the cursor is already parked in front of instead of stalling.
+        JUMP_TO_FORWARD => {
+            for i in (c as usize + 2)..bytes.len() {
+                if bytes[i] == ch { app.copy_pos = Some((r, (i as u16).saturating_sub(1))); return; }
+            }
+        }
+        JUMP_TO_BACKWARD => {
+            for i in (0..(c as usize).saturating_sub(1)).rev() {
+                if bytes[i] == ch { app.copy_pos = Some((r, (i as u16) + 1)); return; }
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Find character forward on current line — f key
 pub fn find_char_forward(app: &mut AppState, ch: char) {
-    let (r, c) = match get_copy_pos(app) { Some(p) => p, None => return };
-    if let Some((text, _)) = read_row_text(app, r) {
-        let bytes: Vec<char> = text.chars().collect();
-        for i in (c as usize + 1)..bytes.len() {
-            if bytes[i] == ch { app.copy_pos = Some((r, i as u16)); return; }
-        }
-    }
+    app.copy_last_jump = Some((JUMP_FORWARD, ch));
+    apply_jump(app, JUMP_FORWARD, ch);
 }
 
 /// Find character backward on current line — F key
 pub fn find_char_backward(app: &mut AppState, ch: char) {
-    let (r, c) = match get_copy_pos(app) { Some(p) => p, None => return };
-    if let Some((text, _)) = read_row_text(app, r) {
-        let bytes: Vec<char> = text.chars().collect();
-        for i in (0..(c as usize)).rev() {
-            if bytes[i] == ch { app.copy_pos = Some((r, i as u16)); return; }
-        }
-    }
+    app.copy_last_jump = Some((JUMP_BACKWARD, ch));
+    apply_jump(app, JUMP_BACKWARD, ch);
 }
 
 /// Find char up to (not including) forward — t key
 pub fn find_char_to_forward(app: &mut AppState, ch: char) {
-    let (r, c) = match get_copy_pos(app) { Some(p) => p, None => return };
-    if let Some((text, _)) = read_row_text(app, r) {
-        let bytes: Vec<char> = text.chars().collect();
-        for i in (c as usize + 1)..bytes.len() {
-            if bytes[i] == ch { app.copy_pos = Some((r, (i as u16).saturating_sub(1))); return; }
-        }
-    }
+    app.copy_last_jump = Some((JUMP_TO_FORWARD, ch));
+    apply_jump(app, JUMP_TO_FORWARD, ch);
 }
 
 /// Find char up to (not including) backward — T key
 pub fn find_char_to_backward(app: &mut AppState, ch: char) {
-    let (r, c) = match get_copy_pos(app) { Some(p) => p, None => return };
-    if let Some((text, _)) = read_row_text(app, r) {
-        let bytes: Vec<char> = text.chars().collect();
-        for i in (0..(c as usize)).rev() {
-            if bytes[i] == ch { app.copy_pos = Some((r, (i as u16) + 1)); return; }
-        }
+    app.copy_last_jump = Some((JUMP_TO_BACKWARD, ch));
+    apply_jump(app, JUMP_TO_BACKWARD, ch);
+}
+
+/// Repeat the last f/F/t/T in the same direction — `;` key.
+pub fn jump_again(app: &mut AppState) {
+    if let Some((kind, ch)) = app.copy_last_jump { apply_jump(app, kind, ch); }
+}
+
+/// Repeat the last f/F/t/T in the opposite direction — `,` key.
+pub fn jump_reverse(app: &mut AppState) {
+    if let Some((kind, ch)) = app.copy_last_jump {
+        let reversed = match kind {
+            JUMP_FORWARD => JUMP_BACKWARD,
+            JUMP_BACKWARD => JUMP_FORWARD,
+            JUMP_TO_FORWARD => JUMP_TO_BACKWARD,
+            JUMP_TO_BACKWARD => JUMP_TO_FORWARD,
+            _ => return,
+        };
+        apply_jump(app, reversed, ch);
+    }
+}
+
+/// Move the view to an absolute scrollback offset, keeping copy_scroll_offset
+/// in step with whatever the parser actually clamped to.
+fn set_scroll_offset(app: &mut AppState, offset: usize) {
+    let win = &mut app.windows[app.active_idx];
+    let p = match active_pane_mut(&mut win.root, &win.active_path) { Some(p) => p, None => return };
+    let mut parser = match p.term.lock() { Ok(g) => g, Err(_) => return };
+    parser.screen_mut().set_scrollback(offset);
+    app.copy_scroll_offset = parser.screen().scrollback();
+}
+
+/// Record the cursor position as the mark — X key (set-mark).
+pub fn set_mark(app: &mut AppState) {
+    if let Some((r, c)) = get_copy_pos(app) {
+        app.copy_mark = Some((app.copy_scroll_offset, r, c));
+    }
+}
+
+/// Swap the cursor with the mark — M-x (jump-to-mark).
+///
+/// tmux's window_copy_jump_to_mark() exchanges the two positions rather than
+/// just moving to the mark, so pressing it twice brings you back to where you
+/// jumped from.
+pub fn jump_to_mark(app: &mut AppState) {
+    let (mark_scroll, mark_row, mark_col) = match app.copy_mark { Some(m) => m, None => return };
+    let here = match get_copy_pos(app) {
+        Some((r, c)) => (app.copy_scroll_offset, r, c),
+        None => return,
+    };
+    set_scroll_offset(app, mark_scroll);
+    app.copy_pos = Some((mark_row, mark_col));
+    app.copy_mark = Some(here);
+}
+
+/// Toggle whether the pane keeps following live output while in copy mode —
+/// r key (refresh-from-pane / refresh-toggle).
+///
+/// psmux anchors the active pane while in copy mode (#494) so the view does
+/// not shift under the cursor. This releases that anchor so the pane tracks
+/// new output, and re-applies it on the next press.
+pub fn toggle_refresh(app: &mut AppState) {
+    app.copy_refresh_live = !app.copy_refresh_live;
+    if app.copy_refresh_live {
+        // Following live output means sitting at the bottom of the history,
+        // which is where that output lands.
+        scroll_to_bottom(app);
     }
 }
 
@@ -961,11 +1056,14 @@ pub fn capture_active_pane_range(app: &mut AppState, s: Option<i32>, e: Option<i
 
     // Restore original scrollback offset (no side effects on user view)
     parser.screen_mut().set_scrollback(saved_sb);
-    // Trim trailing all-empty lines: prevents iTerm2 from advancing its
-    // cursor past the actual content on initial attach, which would
-    // otherwise place the first prompt arriving via %output at the
-    // bottom of the window instead of the top.
-    while text.ends_with("\n\n") { text.pop(); }
+    // Do NOT trim trailing blank lines here: this function is only reached
+    // for an explicit -S/-E range (see connection.rs dispatch), and per the
+    // sibling fast-path above (no-scrollback branch), an explicit range must
+    // be honored line for line, including trailing blank rows inside the
+    // range (e.g. `-S -5` on a fresh session with no scrollback should
+    // return the full visible screen, not just the non-blank prefix).
+    // The no-range attach path (capture_active_pane_text) has its own
+    // trim for the iTerm2-initial-attach concern; it is never routed here.
     if text == "\n" { text.clear(); }
     Ok(Some(text))
 }
@@ -1268,53 +1366,114 @@ mod trim_trailing_empty_styled_lines_tests {
     }
 }
 
-/// Move to next empty line (paragraph boundary) — } key
-pub fn move_next_paragraph(app: &mut AppState) {
-    let (r, _) = match get_copy_pos(app) { Some(p) => p, None => return };
-    let rows = app.windows.get(app.active_idx)
-        .and_then(|w| active_pane(&w.root, &w.active_path))
-        .map(|p| p.last_rows).unwrap_or(24);
-    // Skip current non-blank lines, then find next blank line
-    let mut row = r + 1;
-    // Skip non-blank
-    while row < rows {
-        if let Some((text, _)) = read_row_text(app, row) {
-            if text.trim().is_empty() { break; }
-        } else { break; }
-        row += 1;
+/// Safety net for the paragraph walk. The walk normally terminates because
+/// stepping stops making progress at the top/bottom of the buffer; this only
+/// bounds a pathological history.
+const PARAGRAPH_WALK_LIMIT: usize = 100_000;
+
+/// Is the given visible row blank (whitespace only)?
+fn row_is_blank(app: &mut AppState, row: u16) -> bool {
+    match read_row_text(app, row) {
+        Some((text, _)) => text.trim().is_empty(),
+        None => true,
     }
-    // Skip blank lines to find start of next paragraph
-    while row < rows {
-        if let Some((text, _)) = read_row_text(app, row) {
-            if !text.trim().is_empty() { break; }
-        } else { break; }
-        row += 1;
-    }
-    app.copy_pos = Some((row.min(rows.saturating_sub(1)), 0));
 }
 
-/// Move to previous empty line (paragraph boundary) — { key
-pub fn move_prev_paragraph(app: &mut AppState) {
+/// Identifies the buffer line the copy cursor sits on. Comparing this before
+/// and after a step tells us whether the cursor actually moved, which is how
+/// the paragraph walk detects the top/bottom of the buffer.
+fn copy_walk_key(app: &AppState) -> (usize, u16) {
+    (app.copy_scroll_offset, app.copy_pos.map(|(r, _)| r).unwrap_or(0))
+}
+
+/// Step the copy cursor one line up or down, scrolling the view when the step
+/// crosses the edge of the visible area. Returns false when the cursor could
+/// not move (top or bottom of the buffer).
+fn step_copy_line(app: &mut AppState, down: bool) -> bool {
+    let before = copy_walk_key(app);
+    move_copy_cursor(app, 0, if down { 1 } else { -1 });
+    copy_walk_key(app) != before
+}
+
+/// Move to the blank line that ends the current paragraph — } key.
+///
+/// Mirrors tmux's window_copy_next_paragraph(): skip any blank lines under the
+/// cursor, then walk the paragraph body, landing on the following blank line.
+/// The walk steps through move_copy_cursor so it scrolls into history at the
+/// edge of the viewport instead of stopping there (tmux walks the whole
+/// buffer, not just the visible screen).
+pub fn move_next_paragraph(app: &mut AppState) {
     let (r, _) = match get_copy_pos(app) { Some(p) => p, None => return };
-    if r == 0 { return; }
-    let mut row = r.saturating_sub(1);
-    // Skip non-blank
-    loop {
-        if let Some((text, _)) = read_row_text(app, row) {
-            if text.trim().is_empty() { break; }
-        } else { break; }
-        if row == 0 { app.copy_pos = Some((0, 0)); return; }
-        row -= 1;
+    app.copy_pos = Some((r, 0));
+    let mut row = r;
+    let mut steps = 0usize;
+    // Skip the blank lines the cursor is sitting in.
+    while steps < PARAGRAPH_WALK_LIMIT && row_is_blank(app, row) {
+        if !step_copy_line(app, true) { return; }
+        row = app.copy_pos.map(|(rr, _)| rr).unwrap_or(row);
+        steps += 1;
     }
-    // Skip blank lines
-    loop {
-        if let Some((text, _)) = read_row_text(app, row) {
-            if !text.trim().is_empty() { break; }
-        } else { break; }
-        if row == 0 { app.copy_pos = Some((0, 0)); return; }
-        row -= 1;
+    // Then walk the paragraph body to the blank line that follows it.
+    while steps < PARAGRAPH_WALK_LIMIT && !row_is_blank(app, row) {
+        if !step_copy_line(app, true) { return; }
+        row = app.copy_pos.map(|(rr, _)| rr).unwrap_or(row);
+        steps += 1;
     }
     app.copy_pos = Some((row, 0));
+}
+
+/// Move to the blank line that starts the current paragraph — { key.
+///
+/// Mirrors tmux's window_copy_previous_paragraph(), the upward counterpart of
+/// move_next_paragraph().
+pub fn move_prev_paragraph(app: &mut AppState) {
+    let (r, _) = match get_copy_pos(app) { Some(p) => p, None => return };
+    app.copy_pos = Some((r, 0));
+    let mut row = r;
+    let mut steps = 0usize;
+    while steps < PARAGRAPH_WALK_LIMIT && row_is_blank(app, row) {
+        if !step_copy_line(app, false) { return; }
+        row = app.copy_pos.map(|(rr, _)| rr).unwrap_or(row);
+        steps += 1;
+    }
+    while steps < PARAGRAPH_WALK_LIMIT && !row_is_blank(app, row) {
+        if !step_copy_line(app, false) { return; }
+        row = app.copy_pos.map(|(rr, _)| rr).unwrap_or(row);
+        steps += 1;
+    }
+    app.copy_pos = Some((row, 0));
+}
+
+/// Scroll the line containing the cursor to the middle of the pane — z key.
+///
+/// Mirrors tmux's window_copy_cmd_scroll_middle(): the cursor stays on the
+/// same buffer line and the view moves under it, clamped by how much
+/// scrollback is actually available in that direction.
+pub fn scroll_middle(app: &mut AppState) {
+    let (r, c) = match get_copy_pos(app) { Some(p) => p, None => return };
+    let win = &mut app.windows[app.active_idx];
+    let p = match active_pane_mut(&mut win.root, &win.active_path) { Some(p) => p, None => return };
+    let mut parser = match p.term.lock() { Ok(g) => g, Err(_) => return };
+    let mid = p.last_rows.saturating_sub(1) / 2;
+    let current = parser.screen().scrollback();
+    // The cursor's buffer line is `base - scrollback + row`, so holding that
+    // line fixed while the row becomes `mid` means the scrollback offset has
+    // to change by `mid - row` in the same direction.
+    if r < mid {
+        // Cursor above the middle: pull older lines in above it (scroll up).
+        parser.screen_mut().set_scrollback(current.saturating_add((mid - r) as usize));
+        // set_scrollback clamps at the top of the history, so use what it
+        // actually applied rather than what we asked for.
+        let applied = parser.screen().scrollback().saturating_sub(current) as u16;
+        app.copy_scroll_offset = parser.screen().scrollback();
+        app.copy_pos = Some((r.saturating_add(applied), c));
+    } else if r > mid {
+        // Cursor below the middle: scroll down, bounded by the offset we have.
+        let applied = ((r - mid) as usize).min(current);
+        parser.screen_mut().set_scrollback(current - applied);
+        app.copy_scroll_offset = parser.screen().scrollback();
+        app.copy_pos = Some((r.saturating_sub(applied as u16), c));
+    }
 }
 
 /// Move to matching bracket — % key

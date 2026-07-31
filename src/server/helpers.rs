@@ -110,6 +110,87 @@ pub(crate) fn json_escape_string(s: &str) -> String {
     out
 }
 
+/// Every status/style format that has to be expanded to build one render frame.
+///
+/// This exists because the DumpState handler and the server auto-push block in
+/// `server/mod.rs` need the identical set of expansions, and for a while they
+/// each had their own copy of the list. One copy was wrapped in an
+/// [`crate::format::AsyncFormatGuard`] and the other was not, so `#()` in the
+/// status bar spawned a process synchronously on the server event loop — the
+/// same thread that delivers keystrokes to ConPTY — on every pane output burst.
+/// With a `cmd /c` helper measured at 88ms and a loop that targets 1ms
+/// iterations while PTY data flows, that alone was seconds of input lag per
+/// second of typing.
+///
+/// The fix is structural: one list, one guard, owned by the function. Adding a
+/// new render path can no longer reintroduce the bug, because there is nothing
+/// left to remember to do.
+pub(crate) struct StatusFormats {
+    pub status_style: String,
+    pub status_left: String,
+    pub status_right: String,
+    pub pane_border_style: String,
+    pub pane_active_border_style: String,
+    pub pane_border_hover_style: String,
+    pub window_status_separator: String,
+    pub window_status_style: String,
+    pub window_status_current_style: String,
+    pub mode_style: String,
+    pub message_style: String,
+    /// Pre-built JSON array for the multi-line status bar.
+    pub status_format_json: String,
+    /// Expanded `set-titles-string`, or `None` when `set-titles` is off. The
+    /// client turns this into an OSC 0 for its host terminal.
+    pub host_title: Option<String>,
+}
+
+/// Expand every per-frame status/style format in one guarded pass.
+///
+/// `status_style` is passed in rather than read from `app` because both callers
+/// hold it in a metadata cache that is only rebuilt on structural change.
+pub(crate) fn expand_status_formats(app: &AppState, status_style: &str) -> StatusFormats {
+    use crate::format::expand_format;
+    // The one guard. Everything below expands #() asynchronously against the
+    // TTL cache instead of blocking the event loop.
+    let _async_fmt = crate::format::AsyncFormatGuard::new();
+    StatusFormats {
+        status_style: expand_format(status_style, app),
+        status_left: expand_format(&app.status_left, app),
+        status_right: expand_format(&app.status_right, app),
+        pane_border_style: expand_format(&app.pane_border_style, app),
+        pane_active_border_style: expand_format(&app.pane_active_border_style, app),
+        pane_border_hover_style: expand_format(&app.pane_border_hover_style, app),
+        window_status_separator: expand_format(&app.window_status_separator, app),
+        window_status_style: expand_format(&app.window_status_style, app),
+        window_status_current_style: expand_format(&app.window_status_current_style, app),
+        mode_style: expand_format(&app.mode_style, app),
+        message_style: expand_format(&app.message_style, app),
+        status_format_json: {
+            let mut sf = String::from("[");
+            for (i, fmt_str) in app.status_format.iter().enumerate() {
+                if i > 0 { sf.push(','); }
+                sf.push('"');
+                sf.push_str(&json_escape_string(&expand_format(fmt_str, app)));
+                sf.push('"');
+            }
+            sf.push(']');
+            sf
+        },
+        // set-titles-string was expanded outside the guard on BOTH paths, so it
+        // blocked even where the rest of the bar did not. It belongs here.
+        host_title: if app.set_titles {
+            let fmt = if app.set_titles_string.is_empty() {
+                "#S:#I:#W"
+            } else {
+                app.set_titles_string.as_str()
+            };
+            Some(expand_format(fmt, app))
+        } else {
+            None
+        },
+    }
+}
+
 /// Inject the status-bar style options that were dropped when the monolithic
 /// `app.rs` renderer was split into the modular client (regression from the
 /// modularization refactor, issue #451). The client only ever received
@@ -120,6 +201,13 @@ pub(crate) fn json_escape_string(s: &str) -> String {
 /// `}`, add fields, re-close), so the giant format-string arg list is untouched.
 pub(crate) fn append_extra_style_json(buf: &mut String, app: &AppState) {
     if !buf.ends_with('}') { return; }
+    // Guard lives HERE, not at the call site. This runs on the per-repaint
+    // render path (both the DumpState handler and the server auto-push block),
+    // so any #() in these style options must expand async or it blocks the one
+    // event loop that also delivers keystrokes. Keeping the guard inside the
+    // function makes that impossible to forget when a new call site appears —
+    // which is exactly how the auto-push path lost it.
+    let _async_fmt = crate::format::AsyncFormatGuard::new();
     buf.pop();
     for (key, raw) in [
         ("status_left_style", &app.status_left_style),
@@ -140,6 +228,10 @@ pub(crate) fn append_extra_style_json(buf: &mut String, app: &AppState) {
 /// Build windows JSON with pre-expanded tab_text for each window.
 /// The tab_text is the fully expanded window-status-format / window-status-current-format.
 pub(crate) fn list_windows_json_with_tabs(app: &AppState) -> io::Result<String> {
+    // Async #() for the same reason as append_extra_style_json above — and this
+    // one expands window-status-format once PER WINDOW, so a synchronous #()
+    // here multiplies by the window count.
+    let _async_fmt = crate::format::AsyncFormatGuard::new();
     let mut v: Vec<WinInfo> = Vec::new();
     for (i, w) in app.windows.iter().enumerate() {
         let is_active = i == app.active_idx;
@@ -481,6 +573,87 @@ pub(crate) fn drain_cpr_pending(node: &mut crate::types::Node) {
     }
 }
 
+/// Issue #473: format an RGB triple as the xterm 16-bit-per-channel reply
+/// payload (`rgb:RRRR/GGGG/BBBB`), scaling 8-bit values by duplication.
+fn x11_rgb((r, g, b): (u8, u8, u8)) -> String {
+    format!("rgb:{r:02x}{r:02x}/{g:02x}{g:02x}/{b:02x}{b:02x}")
+}
+
+/// Issue #473: answer terminal color queries detected in a pane's output.
+///
+/// `bits` is the pane's drained `color_query_pending` bitmask.  Delivery is
+/// split by sequence type because ConPTY treats them differently on the
+/// child-input path (verified on Win11 26200, WT 1.24):
+///   * CSI replies (`?997;Nn`) pass through a normal pipe write intact — the
+///     same path the ESC[6n CPR responder uses.
+///   * Complete OSC replies written to the pseudoconsole input pipe are
+///     consumed by ConPTY before the child sees them, so they are injected
+///     as console KEY_EVENT records via WriteConsoleInputW instead
+///     (`send_vt_response`), falling back to the pipe if injection fails
+///     (e.g. no child pid, or non-Windows where the pipe is not filtered).
+///
+/// ConPTY also consumes the OSC 10;?/11;? QUERIES on the output path, so they
+/// normally never reach psmux.  Applications that need the full picture
+/// (GitHub Copilot CLI) issue fg/bg/palette queries as one burst; when the
+/// palette burst is observed (index 0 queried), the fg/bg replies they are
+/// simultaneously waiting for are included as well.
+pub(crate) fn answer_color_queries(
+    bits: u32,
+    writer: &mut dyn std::io::Write,
+    child_pid: Option<u32>,
+    colors: &crate::types::HostColors,
+) {
+    if bits == 0 { return; }
+    // Light/dark scheme query: CSI ?996n → CSI ?997;1n (dark) / ?997;2n (light).
+    if bits & crate::types::COLOR_QUERY_SCHEME != 0 {
+        let n = if colors.is_dark() { 1 } else { 2 };
+        let _ = writer.write_all(format!("\x1b[?997;{}n", n).as_bytes());
+        let _ = writer.flush();
+    }
+    let mut osc = String::new();
+    let burst = bits & 1 != 0; // palette index 0 queried → full-burst app
+    if (bits & crate::types::COLOR_QUERY_FG != 0 || burst) && colors.fg.is_some() {
+        osc.push_str(&format!("\x1b]10;{}\x1b\\", x11_rgb(colors.fg.unwrap())));
+    }
+    if (bits & crate::types::COLOR_QUERY_BG != 0 || burst) && colors.bg.is_some() {
+        osc.push_str(&format!("\x1b]11;{}\x1b\\", x11_rgb(colors.bg.unwrap())));
+    }
+    for i in 0..16usize {
+        if bits & (1u32 << i) != 0 {
+            if let Some(rgb) = colors.palette[i] {
+                osc.push_str(&format!("\x1b]4;{};{}\x1b\\", i, x11_rgb(rgb)));
+            }
+        }
+    }
+    if osc.is_empty() { return; }
+    let mut delivered = false;
+    if let Some(pid) = child_pid {
+        delivered = crate::platform::mouse_inject::send_vt_response(pid, &osc);
+    }
+    if !delivered {
+        let _ = writer.write_all(osc.as_bytes());
+        let _ = writer.flush();
+    }
+}
+
+/// Issue #473: walk a pane tree and answer any pending terminal color queries.
+/// Mirrors `drain_cpr_pending`.
+pub(crate) fn drain_color_queries(node: &mut crate::types::Node, colors: &crate::types::HostColors) {
+    match node {
+        crate::types::Node::Leaf(p) => {
+            let bits = p.color_query_pending.swap(0, std::sync::atomic::Ordering::AcqRel);
+            if bits != 0 {
+                answer_color_queries(bits, &mut *p.writer, p.child_pid, colors);
+            }
+        }
+        crate::types::Node::Split { children, .. } => {
+            for c in children {
+                drain_color_queries(c, colors);
+            }
+        }
+    }
+}
+
 /// Complete list of supported tmux-compatible commands (for list-commands).
 pub(crate) const TMUX_COMMANDS: &[&str] = &[
     "attach-session (attach)",
@@ -580,3 +753,7 @@ pub(crate) const TMUX_COMMANDS: &[&str] = &[
 #[cfg(test)]
 #[path = "../../tests-rs/test_issue451_status_styles.rs"]
 mod tests_issue451_status_styles;
+
+#[cfg(test)]
+#[path = "../../tests-rs/test_render_path_async_format.rs"]
+mod tests_render_path_async_format;

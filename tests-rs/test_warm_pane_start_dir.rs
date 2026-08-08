@@ -15,7 +15,7 @@ use super::*;
 /// with a single CR so it submits as exactly one command line.
 #[test]
 fn rehome_command_wraps_dir_and_clears() {
-    let cmd = rehome_command(r"C:\code\project");
+    let cmd = rehome_command(r"C:\code\project", "pwsh");
     assert!(cmd.starts_with(' '), "must start with a space, got {cmd:?}");
     assert!(cmd.ends_with('\r'), "must end with CR, got {cmd:?}");
     assert!(
@@ -35,7 +35,7 @@ fn rehome_command_escapes_single_quotes() {
     let input = r"C:\weird'dir";
     assert_eq!(input.matches('\'').count(), 1, "precondition: one lone quote");
 
-    let cmd = rehome_command(input);
+    let cmd = rehome_command(input, "pwsh");
     assert!(
         cmd.contains(r"cd 'C:\weird''dir'"),
         "lone quote must be doubled, got {cmd:?}"
@@ -55,7 +55,7 @@ fn rehome_command_escapes_single_quotes() {
 fn rehome_command_exact_windows_form() {
     if cfg!(windows) {
         assert_eq!(
-            rehome_command(r"C:\x"),
+            rehome_command(r"C:\x", "pwsh"),
             " cd 'C:\\x'; try { [System.IO.Directory]::SetCurrentDirectory($PWD.ProviderPath) } catch {}; cls\r"
         );
     }
@@ -67,7 +67,7 @@ fn rehome_command_exact_windows_form() {
 #[test]
 fn rehome_command_includes_current_directory_sync_on_windows() {
     if cfg!(windows) {
-        let cmd = rehome_command(r"C:\code\project");
+        let cmd = rehome_command(r"C:\code\project", "pwsh");
         assert!(
             cmd.contains("[System.IO.Directory]::SetCurrentDirectory"),
             "must sync Win32 CurrentDirectory so a PEB-walk-based cwd query \
@@ -77,6 +77,21 @@ fn rehome_command_includes_current_directory_sync_on_windows() {
         // `;`, not its own Enter, or it would submit as a separate command.
         assert_eq!(cmd.matches('\r').count(), 1, "got {cmd:?}");
     }
+}
+
+#[test]
+fn rehome_command_uses_nushell_syntax() {
+    assert_eq!(
+        rehome_command(r"E:\Tools\psmux", "nu"),
+        " cd r#'E:\\Tools\\psmux'#; clear\r"
+    );
+}
+
+#[test]
+fn rehome_command_quotes_nushell_paths_without_injection() {
+    let cmd = rehome_command("C:\\a'#; clear; echo injected", "nu.exe --login");
+    assert_eq!(cmd, " cd r##'C:\\a'#; clear; echo injected'##; clear\r");
+    assert!(!cmd.contains("$PWD.ProviderPath"));
 }
 
 // ─────────────────────────────────────────────────────────────────────────

@@ -1673,17 +1673,17 @@ pub mod mouse_inject {
             // reaching PSReadLine as a key, so only the *first* Ctrl+C cancels the
             // line and every subsequent press is silently dropped (repeated-Ctrl+C
             // regression).
-            // By the time we reach the GenerateConsoleCtrlEvent below, the
-            // foreground console is either already in cooked mode
-            // (ENABLE_PROCESSED_INPUT set) or we could not inspect it.  Both
-            // raw-mode branches (TUI and shell) detach early via `return false`
-            // above, so there is never a temporarily-flipped mode to restore.
+            // A forced interrupt is the exception: it must signal a raw-mode
+            // foreground program too.  Temporarily enable processed input so
+            // the console accepts the generated CTRL_C_EVENT, then restore the
+            // program's original raw mode after the signal has propagated.
+            let mut restore_input_mode: Option<(isize, u32)> = None;
             if handle != INVALID_HANDLE && handle != 0 {
                 let mut mode: u32 = 0;
                 if GetConsoleMode(handle as *mut c_void, &mut mode) != 0 {
                     log(&format!("console mode=0x{:04X} PROCESSED_INPUT={} fg_is_shell={}", mode, mode & ENABLE_PROCESSED_INPUT != 0, fg_is_shell));
                     if mode & ENABLE_PROCESSED_INPUT == 0 {
-                        if !fg_is_shell {
+                        if !force && !fg_is_shell {
                             // Live raw-mode TUI (Copilot CLI, vim, ...): it
                             // cleared ENABLE_PROCESSED_INPUT to read raw 0x03
                             // itself and decide copy-vs-interrupt.  The call
@@ -1713,11 +1713,25 @@ pub mod mouse_inject {
                         // are written to the PTY but never processed as a line.
                         // Skip the signal entirely and detach cleanly; the raw
                         // 0x03 byte carries the interrupt on its own.
-                        log(&format!("raw-mode shell foreground pid={}: deliver raw 0x03, skip CTRL_C_EVENT", child_pid));
-                        CloseHandle(handle);
-                        FreeConsole();
-                        if had_console { AttachConsole(ATTACH_PARENT_PROCESS); }
-                        return false;
+                        if !force {
+                            log(&format!("raw-mode shell foreground pid={}: deliver raw 0x03, skip CTRL_C_EVENT", child_pid));
+                            CloseHandle(handle);
+                            FreeConsole();
+                            if had_console { AttachConsole(ATTACH_PARENT_PROCESS); }
+                            return false;
+                        }
+
+                        let processed_mode = mode | ENABLE_PROCESSED_INPUT;
+                        if SetConsoleMode(handle as *mut c_void, processed_mode) != 0 {
+                            log(&format!("forced signal: enabled PROCESSED_INPUT for raw-mode foreground pid={}", child_pid));
+                            restore_input_mode = Some((handle, mode));
+                        } else {
+                            log(&format!(
+                                "forced signal: failed to enable PROCESSED_INPUT for pid={}",
+                                child_pid
+                            ));
+                            CloseHandle(handle);
+                        }
                     } else {
                         CloseHandle(handle);
                     }
@@ -1735,13 +1749,21 @@ pub mod mouse_inject {
             let ok = GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0);
             let err = GetLastError();
 
-            log(&format!("GenerateConsoleCtrlEvent => ok={} err={}", ok, err));
+            log(&format!(
+                "GenerateConsoleCtrlEvent => ok={} err={}",
+                ok, err
+            ));
 
             // GenerateConsoleCtrlEvent dispatches asynchronously via a system
             // thread pool.  Sleep while still attached so the signal has time
             // to propagate through the console subsystem before we detach.
             // psmux is protected by the preceding SetConsoleCtrlHandler(None, 1).
             std::thread::sleep(std::time::Duration::from_millis(5));
+
+            if let Some((handle, mode)) = restore_input_mode {
+                SetConsoleMode(handle as *mut c_void, mode);
+                CloseHandle(handle);
+            }
 
             // Detach from the child's console BEFORE restoring Ctrl+C handling.
             // If we restore the default handler while still attached, the async

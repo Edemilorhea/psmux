@@ -38,6 +38,18 @@ fn local_send_keys_parses_value_flags_repeat_and_dash_prefixed_text() {
 }
 
 #[test]
+fn local_send_keys_preserves_force_signal_for_ctrl_c_bindings() {
+    let parts = ["send-keys", "-f", "C-c"];
+
+    let (literal, force_signal, repeat, keys) = parse_local_send_keys_args(&parts);
+
+    assert!(!literal);
+    assert!(force_signal);
+    assert_eq!(repeat, 1);
+    assert_eq!(keys, ["C-c"]);
+}
+
+#[test]
 fn local_send_keys_uses_quote_aware_command_parsing() {
     let parsed = parse_command_line(r#"send-keys "ls -la" Enter"#);
     let parts: Vec<&str> = parsed.iter().map(String::as_str).collect();

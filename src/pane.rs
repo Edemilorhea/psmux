@@ -227,9 +227,8 @@ pub(crate) fn default_shell_needs_fresh_eval(default_shell: &str) -> bool {
 
 /// Build the command injected to silently re-home a pane's shell to `dir`.
 ///
-/// The trailing clear (`cls` on Windows, `clear` elsewhere) wipes the visible
-/// echo; single quotes in the path are doubled so the single-quoted string
-/// stays well-formed; the trailing `\r` submits it as one command line. The
+/// The trailing clear wipes the visible echo; the path is quoted for the
+/// configured shell; the trailing `\r` submits it as one command line. The
 /// leading space asks shells that ignore space-prefixed commands to skip the
 /// history entry (best-effort — not every shell honours it).
 ///
@@ -243,8 +242,29 @@ pub(crate) fn default_shell_needs_fresh_eval(default_shell: &str) -> bool {
 /// `Set-Location`, but that hook is skipped whenever `-NoProfile` is in
 /// effect (see `build_default_shell`). Embedding the sync directly in the
 /// injected command keeps the rehome correct regardless of whether that
-/// hook is installed.
-pub(crate) fn rehome_command(dir: &str) -> String {
+/// hook is installed. Nushell instead tracks `$env.PWD` itself and must not
+/// receive this PowerShell-only synchronization snippet.
+pub(crate) fn rehome_command(dir: &str, shell: &str) -> String {
+    let configured_shell = if shell.trim().is_empty() {
+        cached_shell().unwrap_or_default()
+    } else {
+        shell
+    };
+    let (program, _) = resolve_shell_program(configured_shell);
+    let shell_name = std::path::Path::new(&program)
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or(&program)
+        .to_ascii_lowercase();
+
+    if matches!(shell_name.as_str(), "nu" | "nushell") {
+        let mut hashes = "#".to_string();
+        while dir.contains(&format!("'{}", hashes)) {
+            hashes.push('#');
+        }
+        return format!(" cd r{}'{}'{}; clear\r", hashes, dir, hashes);
+    }
+
     let escaped = dir.replace('\'', "''");
     let clear = if cfg!(windows) { "cls" } else { "clear" };
     if cfg!(windows) {
@@ -266,9 +286,9 @@ pub(crate) fn rehome_command(dir: &str) -> String {
 /// since a running process's CWD cannot be set externally, the shell moves
 /// itself with `cd`. The shell must be at a fresh prompt so the injected line
 /// runs immediately.
-pub(crate) fn silent_rehome(pane: &mut Pane, dir: &str) {
+pub(crate) fn silent_rehome(pane: &mut Pane, dir: &str, shell: &str) {
     use std::io::Write as _;
-    let cd_cmd = rehome_command(dir);
+    let cd_cmd = rehome_command(dir, shell);
     // Tell the vt100 parser to watch for the next screen-clear (CSI 2J/3J);
     // its arrival tells the layout serialiser the clear finished (event-driven).
     if let Ok(mut parser) = pane.term.lock() {
@@ -362,7 +382,7 @@ pub fn create_window_with_env(pty_system: &dyn portable_pty::PtySystem, app: &mu
             let mut pane = Pane { master: wp.master, writer: wp.writer, child: wp.child, term: wp.term, last_rows: rows, last_cols: cols, id: wp.pane_id, title: hostname_cached(), title_locked: false, child_pid: wp.child_pid, data_version: wp.data_version, last_title_check: epoch, last_infer_title: epoch, dead: false, last_text_input: None, last_special_key: None, vt_bridge_cache: None, vti_mode_cache: None, mouse_input_cache: None, scroll_fg_cache: None, mouse_proto_owner: None, cursor_shape: wp.cursor_shape, bell_pending: wp.bell_pending, cpr_pending: wp.cpr_pending, color_query_pending: wp.color_query_pending, copy_state: None, pane_style: None, pane_options: Default::default(), squelch_until: None, output_ring: wp.output_ring, spawned_at: Some(std::time::Instant::now()) };
             // Honour `-c <dir>`: silently re-home the transplanted warm shell.
             if let Some(dir) = start_dir {
-                silent_rehome(&mut pane, dir);
+                silent_rehome(&mut pane, dir, &app.default_shell);
             }
             let win_name = default_shell_name(None, configured_shell);
             let initial_pane_id = wp.pane_id;
@@ -707,7 +727,7 @@ pub fn split_active_with_env(app: &mut AppState, kind: LayoutKind, command: Opti
             let mut new_pane = Pane { master: wp.master, writer: wp.writer, child: wp.child, term: wp.term, last_rows: rows, last_cols: cols, id: new_pane_id, title: hostname_cached(), title_locked: false, child_pid: wp.child_pid, data_version: wp.data_version, last_title_check: epoch, last_infer_title: epoch, dead: false, last_text_input: None, last_special_key: None, vt_bridge_cache: None, vti_mode_cache: None, mouse_input_cache: None, scroll_fg_cache: None, mouse_proto_owner: None, cursor_shape: wp.cursor_shape, bell_pending: wp.bell_pending, cpr_pending: wp.cpr_pending, color_query_pending: wp.color_query_pending, copy_state: None, pane_style: None, pane_options: Default::default(), squelch_until: None, output_ring: wp.output_ring, spawned_at: Some(std::time::Instant::now()) };
             // Honour `-c <dir>`: silently re-home the transplanted warm shell.
             if let Some(dir) = start_dir {
-                silent_rehome(&mut new_pane, dir);
+                silent_rehome(&mut new_pane, dir, &app.default_shell);
             }
             let new_leaf = Node::Leaf(new_pane);
             let win = &mut app.windows[app.active_idx];

@@ -3361,12 +3361,13 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
                                 .unwrap_or(true);
                             if server_cwd_differs {
                                 env::set_current_dir(cwd_path).ok();
+                                let rehome_shell = app.default_shell.clone();
                                 // Silently re-home the warm server's active pane
                                 // to the client's CWD (invisible cd + clear), so
                                 // the shell it pre-spawned adopts the right dir.
                                 if let Some(win) = app.windows.last_mut() {
                                     if let Some(p) = active_pane_mut(&mut win.root, &win.active_path) {
-                                        crate::pane::silent_rehome(p, cwd);
+                                        crate::pane::silent_rehome(p, cwd, &rehome_shell);
                                     }
                                 }
                             }

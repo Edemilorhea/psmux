@@ -1867,13 +1867,12 @@ pub mod mouse_inject {
             // line and every subsequent press is silently dropped (repeated-Ctrl+C
             // regression).
             let mut restore_mode: Option<(isize, u32)> = None;
-
             if handle != INVALID_HANDLE && handle != 0 {
                 let mut mode: u32 = 0;
                 if GetConsoleMode(handle as *mut c_void, &mut mode) != 0 {
                     log(&format!("console mode=0x{:04X} PROCESSED_INPUT={} fg_is_shell={}", mode, mode & ENABLE_PROCESSED_INPUT != 0, fg_is_shell));
                     if mode & ENABLE_PROCESSED_INPUT == 0 {
-                        if !fg_is_shell {
+                        if !force && !fg_is_shell {
                             // Live raw-mode TUI (Copilot CLI, vim, ...): it
                             // cleared ENABLE_PROCESSED_INPUT to read raw 0x03
                             // itself and decide copy-vs-interrupt.  The call
@@ -1888,7 +1887,7 @@ pub mod mouse_inject {
                             if had_console { AttachConsole(ATTACH_PARENT_PROCESS); }
                             return false;
                         }
-                        // Raw-mode shell prompt (e.g. PSReadLine).  Flip
+                        // Raw-mode shell prompt (or forced raw-mode TUI). Flip
                         // PROCESSED_INPUT on *only* for the duration of the
                         // signal, then restore the original raw mode below so the
                         // NEXT Ctrl+C is still delivered to the shell as a key
@@ -1913,7 +1912,10 @@ pub mod mouse_inject {
             let ok = GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0);
             let err = GetLastError();
 
-            log(&format!("GenerateConsoleCtrlEvent => ok={} err={}", ok, err));
+            log(&format!(
+                "GenerateConsoleCtrlEvent => ok={} err={}",
+                ok, err
+            ));
 
             // GenerateConsoleCtrlEvent dispatches asynchronously via a system
             // thread pool.  Sleep while still attached so the signal has time
@@ -1921,7 +1923,7 @@ pub mod mouse_inject {
             // psmux is protected by the preceding SetConsoleCtrlHandler(None, 1).
             std::thread::sleep(std::time::Duration::from_millis(5));
 
-            // Restore the shell's original (raw) console input mode now that the
+            // Restore the foreground program's original raw console input mode
             // signal has been delivered.  This is what keeps *repeated* Ctrl+C
             // working: PSReadLine left PROCESSED_INPUT cleared so it could read
             // Ctrl+C as a key, and the next press must still arrive that way.

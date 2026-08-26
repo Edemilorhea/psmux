@@ -2284,7 +2284,9 @@ pub fn forward_key_to_active(app: &mut AppState, key: KeyEvent) -> io::Result<()
                                 #[cfg(windows)]
                                 if is_ctrl_c {
                                     if let Some(pid) = p.child_pid {
-                                        crate::platform::mouse_inject::send_ctrl_c_event(pid, false, false);
+                                        crate::platform::mouse_inject::send_ctrl_c_event(
+                                            pid, false, false,
+                                        );
                                     }
                                 }
                                 let _ = p.writer.write_all(&[raw]);
@@ -2292,7 +2294,9 @@ pub fn forward_key_to_active(app: &mut AppState, key: KeyEvent) -> io::Result<()
                                 #[cfg(windows)]
                                 if !is_ctrl_c {
                                     if let Some(pid) = p.child_pid {
-                                        crate::platform::mouse_inject::send_modified_key_event(pid, ch, true, false, false);
+                                        crate::platform::mouse_inject::send_modified_key_event(
+                                            pid, ch, true, false, false, None,
+                                        );
                                     }
                                 }
                                 crate::debug_log::input_log("ctrl-key",
@@ -2314,7 +2318,9 @@ pub fn forward_key_to_active(app: &mut AppState, key: KeyEvent) -> io::Result<()
                             #[cfg(windows)]
                             if is_ctrl_c {
                                 if let Some(pid) = active.child_pid {
-                                    crate::platform::mouse_inject::send_ctrl_c_event(pid, false, false);
+                                    crate::platform::mouse_inject::send_ctrl_c_event(
+                                        pid, false, false,
+                                    );
                                 }
                             }
                             let _ = active.writer.write_all(&[ctrl_char]);
@@ -2322,7 +2328,14 @@ pub fn forward_key_to_active(app: &mut AppState, key: KeyEvent) -> io::Result<()
                             #[cfg(windows)]
                             if !is_ctrl_c {
                                 if let Some(pid) = active.child_pid {
-                                    crate::platform::mouse_inject::send_modified_key_event(pid, inject_char, true, false, false);
+                                    crate::platform::mouse_inject::send_modified_key_event(
+                                        pid,
+                                        inject_char,
+                                        true,
+                                        false,
+                                        false,
+                                        None,
+                                    );
                                 }
                             }
                             crate::debug_log::input_log("ctrl-key",

@@ -176,7 +176,7 @@ fn live_ctrl_p_moves_the_cursor_up_without_scrolling() {
     for mode in ["vi", "emacs"] {
         let mut app = copy_app(mode);
         let (r0, o0) = (row(&app), offset(&app));
-        crate::input::send_key_to_active(&mut app, "C-p").unwrap();
+        crate::input::send_key_to_active(&mut app, "C-p", false).unwrap();
         assert_eq!(row(&app), r0 - 1, "mode-keys={mode}: C-p must move the cursor up one row (tmux cursor-up)");
         assert_eq!(offset(&app), o0, "mode-keys={mode}: C-p must NOT scroll while the cursor is mid pane");
     }
@@ -187,7 +187,7 @@ fn live_ctrl_n_moves_the_cursor_down_without_scrolling() {
     for mode in ["vi", "emacs"] {
         let mut app = copy_app(mode);
         let (r0, o0) = (row(&app), offset(&app));
-        crate::input::send_key_to_active(&mut app, "C-n").unwrap();
+        crate::input::send_key_to_active(&mut app, "C-n", false).unwrap();
         assert_eq!(row(&app), r0 + 1, "mode-keys={mode}: C-n must move the cursor down one row (tmux cursor-down)");
         assert_eq!(offset(&app), o0, "mode-keys={mode}: C-n must NOT scroll while the cursor is mid pane");
     }
@@ -198,7 +198,7 @@ fn live_ctrl_up_scrolls_one_line_and_leaves_the_cursor_alone() {
     for mode in ["vi", "emacs"] {
         let mut app = copy_app(mode);
         let (r0, o0) = (row(&app), offset(&app));
-        crate::input::send_key_to_active(&mut app, "C-Up").unwrap();
+        crate::input::send_key_to_active(&mut app, "C-Up", false).unwrap();
         assert_eq!(offset(&app), o0 + 1, "mode-keys={mode}: C-Up must scroll the viewport up exactly one line");
         assert_eq!(row(&app), r0, "mode-keys={mode}: C-Up must not move the copy cursor");
     }
@@ -208,11 +208,11 @@ fn live_ctrl_up_scrolls_one_line_and_leaves_the_cursor_alone() {
 fn live_ctrl_down_scrolls_one_line_back() {
     for mode in ["vi", "emacs"] {
         let mut app = copy_app(mode);
-        crate::input::send_key_to_active(&mut app, "C-Up").unwrap();
-        crate::input::send_key_to_active(&mut app, "C-Up").unwrap();
+        crate::input::send_key_to_active(&mut app, "C-Up", false).unwrap();
+        crate::input::send_key_to_active(&mut app, "C-Up", false).unwrap();
         let (r0, o0) = (row(&app), offset(&app));
         assert_eq!(o0, 2, "mode-keys={mode}: two C-Up presses must scroll two lines");
-        crate::input::send_key_to_active(&mut app, "C-Down").unwrap();
+        crate::input::send_key_to_active(&mut app, "C-Down", false).unwrap();
         assert_eq!(offset(&app), o0 - 1, "mode-keys={mode}: C-Down must scroll back down exactly one line");
         assert_eq!(row(&app), r0, "mode-keys={mode}: C-Down must not move the copy cursor");
     }
@@ -222,9 +222,9 @@ fn live_ctrl_down_scrolls_one_line_back() {
 fn live_ctrl_arrow_accepts_the_lowercase_spelling_too() {
     // `send-keys -t s c-up` and a user config spelling both reach the same arm.
     let mut app = copy_app("vi");
-    crate::input::send_key_to_active(&mut app, "c-up").unwrap();
+    crate::input::send_key_to_active(&mut app, "c-up", false).unwrap();
     assert_eq!(offset(&app), 1, "lowercase c-up must scroll one line");
-    crate::input::send_key_to_active(&mut app, "c-down").unwrap();
+    crate::input::send_key_to_active(&mut app, "c-down", false).unwrap();
     assert_eq!(offset(&app), 0, "lowercase c-down must scroll back one line");
 }
 
@@ -234,7 +234,7 @@ fn live_ctrl_p_at_the_top_edge_scrolls_instead_of_stalling() {
     let mut app = copy_app("vi");
     app.copy_pos = Some((0, 0));
     let o0 = offset(&app);
-    crate::input::send_key_to_active(&mut app, "C-p").unwrap();
+    crate::input::send_key_to_active(&mut app, "C-p", false).unwrap();
     assert_eq!(row(&app), 0, "the cursor stays pinned to the top row");
     assert_eq!(offset(&app), o0 + 1, "C-p on the top row must pull one more line of scrollback in");
 }
@@ -299,11 +299,11 @@ fn col(app: &AppState) -> u16 {
 fn live_ctrl_y_scrolls_up_and_ctrl_e_scrolls_back_down_in_vi_mode() {
     let mut app = copy_app("vi");
     let (r0, c0) = (row(&app), col(&app));
-    crate::input::send_key_to_active(&mut app, "C-y").unwrap();
+    crate::input::send_key_to_active(&mut app, "C-y", false).unwrap();
     assert_eq!(offset(&app), 1, "vi C-y must scroll the viewport up one line");
     assert_eq!(row(&app), r0, "vi C-y must not move the copy cursor");
     assert_eq!(col(&app), c0, "vi C-y must not move the copy cursor to the line end");
-    crate::input::send_key_to_active(&mut app, "C-e").unwrap();
+    crate::input::send_key_to_active(&mut app, "C-e", false).unwrap();
     assert_eq!(offset(&app), 0, "vi C-e must scroll the viewport back down one line");
     assert_eq!(col(&app), c0, "vi C-e must NOT jump to the end of the line");
 }
@@ -312,7 +312,7 @@ fn live_ctrl_y_scrolls_up_and_ctrl_e_scrolls_back_down_in_vi_mode() {
 fn live_ctrl_e_still_means_end_of_line_in_emacs_mode() {
     let mut app = copy_app("emacs");
     let (r0, o0) = (row(&app), offset(&app));
-    crate::input::send_key_to_active(&mut app, "C-e").unwrap();
+    crate::input::send_key_to_active(&mut app, "C-e", false).unwrap();
     assert!(col(&app) > 0, "emacs C-e must jump to the end of the line");
     assert_eq!(offset(&app), o0, "emacs C-e must not scroll");
     assert_eq!(row(&app), r0, "emacs C-e must stay on the same row");
@@ -323,7 +323,7 @@ fn live_ctrl_y_does_nothing_in_emacs_mode() {
     // tmux leaves C-y unbound in the copy-mode table.
     let mut app = copy_app("emacs");
     let (r0, c0, o0) = (row(&app), col(&app), offset(&app));
-    crate::input::send_key_to_active(&mut app, "C-y").unwrap();
+    crate::input::send_key_to_active(&mut app, "C-y", false).unwrap();
     assert_eq!((row(&app), col(&app), offset(&app)), (r0, c0, o0), "emacs C-y must be inert");
 }
 

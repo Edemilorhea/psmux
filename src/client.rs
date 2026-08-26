@@ -2321,27 +2321,27 @@ pub fn run_remote(terminal: &mut Terminal<crate::platform::PsmuxBackend>, input:
                     paste_pend_start = None;
                     paste_stage2 = false;
                     paste_confirmed = false;
-                } else if !paste_stage2 && elapsed > Duration::from_millis(20) {
-                    // 20ms window expired
+                } else if !paste_stage2 && elapsed > PASTE_DETECTION_WINDOW {
+                    // A 5ms window distinguishes paste injection from human typing.
                     let has_non_ascii = paste_pend.chars().any(|c| !c.is_ascii());
                     if paste_pend.len() >= 3 && !has_non_ascii {
-                        // ≥3 ASCII chars in 20ms → likely paste, enter stage 2.
+                        // ≥3 ASCII chars in 5ms → likely paste, enter stage 2.
                         // Non-ASCII chars (IME composition, CJK input) are excluded
-                        // because IME routinely generates 3+ chars in <20ms and would
+                        // because IME routinely generates 3+ chars in <5ms and would
                         // trigger a false-positive 300ms delay (fixes #91).
                         paste_stage2 = true;
                         paste_stage2_last_len = paste_pend.len();
                         if input_log_enabled() {
-                            input_log("paste", &format!("stage2: {} chars in 20ms, waiting for Ctrl+V Release", paste_pend.len()));
+                            input_log("paste", &format!("stage2: {} chars in 5ms, waiting for Ctrl+V Release", paste_pend.len()));
                         }
-                    } else if paste_pend.len() >= 20 && has_non_ascii {
-                        // ≥20 non-ASCII chars in 20ms — almost certainly a paste
+                    } else if has_non_ascii && meets_unicode_paste_threshold(&paste_pend) {
+                        // ≥8 non-ASCII chars in 5ms — almost certainly a paste
                         // containing Unicode content (em-dashes, CJK, etc.), not
                         // IME composition (which rarely exceeds a few chars).
                         paste_stage2 = true;
                         paste_stage2_last_len = paste_pend.len();
                         if input_log_enabled() {
-                            input_log("paste", &format!("stage2 (large non-ASCII): {} chars in 20ms", paste_pend.len()));
+                            input_log("paste", &format!("stage2 (large non-ASCII): {} chars in 5ms", paste_pend.len()));
                         }
                     } else if paste_pend.len() >= 3 && has_non_ascii {
                         // ≥3 chars but contains non-ASCII (IME input) — flush
@@ -2369,7 +2369,7 @@ pub fn run_remote(terminal: &mut Terminal<crate::platform::PsmuxBackend>, input:
                     } else {
                         // <3 chars → normal typing, flush as send-text
                         if input_log_enabled() {
-                            input_log("paste", &format!("flush {} chars as normal (< 3 in 20ms)", paste_pend.len()));
+                            input_log("paste", &format!("flush {} chars as normal (< 3 in 5ms)", paste_pend.len()));
                         }
                         for c in paste_pend.chars() {
                             match c {
@@ -6767,6 +6767,17 @@ fn flush_paste_pend_as_text(
     paste_pend.clear();
     *paste_pend_start = None;
     *paste_stage2 = false;
+}
+
+#[cfg(windows)]
+const PASTE_DETECTION_WINDOW: Duration = Duration::from_millis(5);
+
+#[cfg(windows)]
+const PASTE_UNICODE_THRESHOLD: usize = 8;
+
+#[cfg(windows)]
+fn meets_unicode_paste_threshold(buf: &str) -> bool {
+    buf.chars().count() >= PASTE_UNICODE_THRESHOLD
 }
 
 #[cfg(windows)]

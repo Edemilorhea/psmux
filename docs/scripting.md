@@ -62,9 +62,9 @@ psmux send-keys -f C-c
 
 `send-keys -f C-c` (or `--force-signal`) is a psmux extension for Windows. It
 bypasses the raw-mode TUI heuristic and sends a CTRL_C_EVENT to the foreground
-process. This keeps normal keyboard Ctrl+C pass-through behavior unchanged while
-allowing an explicit binding such as `bind -n C-F12 send-keys -f C-c` to force an
-interrupt.
+process. WSL and SSH bridge safety guards still take precedence. This keeps
+normal keyboard Ctrl+C pass-through behavior unchanged while allowing an
+explicit binding such as `bind -n C-F12 send-keys -f C-c` to force an interrupt.
 
 ## Pane Information
 
@@ -1379,4 +1379,3 @@ psmux mouse-up 30 5
 Coordinates are client cell coordinates, zero based, the same space `#{mouse_x}` and
 `#{mouse_y}` report. These commands act on the client's view, so they need `mouse` to be on and a
 client attached to have a visible effect.
-

@@ -217,6 +217,15 @@ fn paste_states_do_not_zero_latency_flush() {
     assert!(!should_zero_latency_flush_paste_pend("abc", true, false, false));
 }
 
+#[cfg(windows)]
+#[test]
+fn paste_detection_uses_low_latency_window_and_unicode_character_count() {
+    assert_eq!(PASTE_DETECTION_WINDOW, Duration::from_millis(5));
+    assert_eq!(PASTE_UNICODE_THRESHOLD, 8);
+    assert!(meets_unicode_paste_threshold("1234567é"));
+    assert!(!meets_unicode_paste_threshold("123456é"));
+}
+
 // ── Issue #164: status-format[] must parse inline styles end-to-end ──
 
 /// Verify that status_format strings from JSON deserialization flow through

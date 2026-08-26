@@ -1565,6 +1565,13 @@ pub mod mouse_inject {
         send_bracketed_paste(child_pid, text, false)
     }
 
+    pub(crate) fn should_skip_raw_ctrl_c_signal(
+        processed_input_enabled: bool,
+        force: bool,
+    ) -> bool {
+        !processed_input_enabled && !force
+    }
+
     /// Send a CTRL_C_EVENT to all processes on the child's console.
     ///
     /// TUI applications (pstop, btop, etc.) often disable ENABLE_PROCESSED_INPUT
@@ -1591,9 +1598,8 @@ pub mod mouse_inject {
     /// See `process_info::foreground_is_shell`.
     /// `force`: when `true` (e.g. an explicit `send-keys -f C-c` command from a
     /// keybinding like `bind -n C-F12 send-keys -f C-c`), the TUI-protection
-    /// heuristic is bypassed and `CTRL_C_EVENT` is always delivered.  This
-    /// lets users assign a dedicated "kill foreground app" key that works even
-    /// when the pane is running a raw-mode TUI such as opencode or neovim.
+    /// heuristic is bypassed so raw-mode TUIs can receive `CTRL_C_EVENT`.
+    /// VT bridge safety guards still take precedence.
     ///
     /// When `force` is `false` (keyboard pass-through path), the heuristic
     /// runs normally: raw-mode TUI apps receive raw 0x03 and decide for
@@ -1632,10 +1638,7 @@ pub mod mouse_inject {
         // process-tree walk does not touch our console, so it is done before
         // the FreeConsole/AttachConsole dance below.
         //
-        // When `force=true` the caller is an explicit user command (e.g. a
-        // keybinding that runs `send-keys -f C-c` to kill the foreground app);
-        // skip the heuristic and always deliver the signal.
-        let fg_is_shell = force || crate::platform::process_info::foreground_is_shell(child_pid)
+        let fg_is_shell = crate::platform::process_info::foreground_is_shell(child_pid)
             .unwrap_or(true);
 
         // Issue #491: a VT bridge (wsl.exe, ssh.exe) reads raw bytes from its
@@ -1871,30 +1874,27 @@ pub mod mouse_inject {
                 let mut mode: u32 = 0;
                 if GetConsoleMode(handle as *mut c_void, &mut mode) != 0 {
                     log(&format!("console mode=0x{:04X} PROCESSED_INPUT={} fg_is_shell={}", mode, mode & ENABLE_PROCESSED_INPUT != 0, fg_is_shell));
-                    if mode & ENABLE_PROCESSED_INPUT == 0 {
-                        if !force && !fg_is_shell {
-                            // Live raw-mode TUI (Copilot CLI, vim, ...): it
-                            // cleared ENABLE_PROCESSED_INPUT to read raw 0x03
-                            // itself and decide copy-vs-interrupt.  The call
-                            // site writes raw 0x03 to the PTY (just before or
-                            // just after this call); firing GenerateConsoleCtrlEvent
-                            // would bypass the app and kill it.  Skip the signal
-                            // and detach cleanly.  (We have not installed the
-                            // ignore-handler yet, so there is nothing to restore.)
-                            log(&format!("raw-mode non-shell foreground pid={}: deliver raw 0x03, skip CTRL_C_EVENT", child_pid));
+                    let processed_input_enabled = mode & ENABLE_PROCESSED_INPUT != 0;
+                    if !processed_input_enabled {
+                        if should_skip_raw_ctrl_c_signal(processed_input_enabled, force) {
+                            // Raw-mode programs deliberately read Ctrl+C as 0x03.
+                            // The caller writes that byte after this router returns;
+                            // an additional asynchronous signal can double-interrupt
+                            // a TUI or wedge PSReadLine's ReadConsole loop.
+                            log(&format!("raw-mode foreground pid={}: deliver raw 0x03, skip CTRL_C_EVENT", child_pid));
                             CloseHandle(handle);
                             FreeConsole();
                             if had_console { AttachConsole(ATTACH_PARENT_PROCESS); }
                             return false;
                         }
-                        // Raw-mode shell prompt (or forced raw-mode TUI). Flip
-                        // PROCESSED_INPUT on *only* for the duration of the
-                        // signal, then restore the original raw mode below so the
-                        // NEXT Ctrl+C is still delivered to the shell as a key
-                        // event.  Keep the handle open until the restore.
-                        log(&format!("re-enabling ENABLE_PROCESSED_INPUT (temporary) for pid={}", child_pid));
-                        SetConsoleMode(handle as *mut c_void, mode | ENABLE_PROCESSED_INPUT);
-                        restore_mode = Some((handle, mode));
+                        // A forced interrupt must signal a raw-mode foreground
+                        // program. Restore its original mode after delivery.
+                        log(&format!("re-enabling ENABLE_PROCESSED_INPUT (temporary) for forced pid={}", child_pid));
+                        if SetConsoleMode(handle as *mut c_void, mode | ENABLE_PROCESSED_INPUT) != 0 {
+                            restore_mode = Some((handle, mode));
+                        } else {
+                            CloseHandle(handle);
+                        }
                     } else {
                         CloseHandle(handle);
                     }

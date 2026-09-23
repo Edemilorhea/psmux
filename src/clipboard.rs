@@ -17,7 +17,8 @@ use std::time::Duration;
 use windows_sys::Win32::Foundation::GlobalFree;
 #[cfg(windows)]
 use windows_sys::Win32::System::DataExchange::{
-    CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData,
+    CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable,
+    OpenClipboard, SetClipboardData,
 };
 #[cfg(windows)]
 use windows_sys::Win32::System::Memory::{
@@ -155,3 +156,19 @@ pub fn read_from_system_clipboard() -> Option<String> {
 
 #[cfg(not(windows))]
 pub fn read_from_system_clipboard() -> Option<String> { None }
+
+/// Return whether the Windows clipboard contains an image format understood by
+/// the standard clipboard APIs. This does not open or read the clipboard.
+#[cfg(windows)]
+pub fn system_clipboard_has_image() -> bool {
+    const CF_BITMAP: u32 = 2;
+    const CF_DIB: u32 = 8;
+    const CF_DIBV5: u32 = 17;
+
+    [CF_BITMAP, CF_DIB, CF_DIBV5]
+        .into_iter()
+        .any(|format| unsafe { IsClipboardFormatAvailable(format) != 0 })
+}
+
+#[cfg(not(windows))]
+pub fn system_clipboard_has_image() -> bool { false }

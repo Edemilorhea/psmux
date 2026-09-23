@@ -511,7 +511,7 @@ This option is independent of `mouse` (which controls whether mouse events are r
 
 ### Paste Detection (Ctrl+V Passthrough)
 
-On Windows, the console host intercepts Ctrl+V, reads the clipboard, and injects the content as character events. psmux detects this pattern and reassembles it into a single bracketed paste for child applications. This is the `paste-detection` option and it is enabled by default.
+On Windows, the console host intercepts Ctrl+V, reads the clipboard, and injects text as character events. psmux detects this pattern and reassembles it into a single bracketed paste for child applications. If the clipboard contains a bitmap or DIB image, psmux instead forwards one raw Ctrl+V so the child application can read the image itself. When both image and text formats are present, the image takes priority. This is the `paste-detection` option and it is enabled by default.
 
 If you use TUI applications like **neovim** or **vim** where Ctrl+V has a different meaning (visual block mode), the paste detection will intercept the keypress before it reaches the application. To let Ctrl+V pass through to the child app:
 
@@ -527,7 +527,7 @@ With paste detection off, you can still paste using:
 * **Prefix + ]** (psmux paste from buffer)
 * **`psmux send-keys C-v`** from another terminal
 
-> **Note:** `unbind-key -n C-v` alone is not sufficient to stop Ctrl+V interception because the paste detection operates outside the key binding system. You must use `set -g paste-detection off`.
+> **Note:** `unbind-key -n C-v` alone is not sufficient to stop Ctrl+V interception because paste detection takes priority over the root key binding system. You must use `set -g paste-detection off`.
 
 ### Live Preview in Choosers
 

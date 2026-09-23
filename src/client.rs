@@ -17,7 +17,9 @@ use crate::rendering::{
 };
 use crate::style::{map_color, parse_tmux_style_components};
 use crate::config::{parse_key_string, normalize_key_for_binding};
-use crate::clipboard::{copy_to_system_clipboard, read_from_system_clipboard};
+use crate::clipboard::{
+    copy_to_system_clipboard, read_from_system_clipboard, system_clipboard_has_image,
+};
 use crate::debug_log::{client_log, client_log_enabled, input_log, input_log_enabled,
     reconnect_log, reconnect_log_enabled};
 use crate::layout::RowRunsJson;
@@ -2860,7 +2862,6 @@ pub fn run_remote(terminal: &mut Terminal<crate::platform::PsmuxBackend>, input:
     let mut mouse_drag_enter_copy_mode: bool = false;
     // When false, Ctrl+V is forwarded to the child app instead of being
     // intercepted for paste detection.
-    #[cfg(windows)]
     let mut paste_detection_enabled: bool = true;
 
     // ── Windows paste detection state ──────────────────────────────────
@@ -2901,6 +2902,10 @@ pub fn run_remote(terminal: &mut Terminal<crate::platform::PsmuxBackend>, input:
     // Windows paths ever populate it.
     #[allow(unused_variables)]
     let mut paste_gesture = PasteGesture::default();
+    // Track an image Ctrl+V Press until Release so key repeats and the matching
+    // Release do not forward the same paste more than once.
+    #[cfg(windows)]
+    let mut image_ctrl_v_press_forwarded = false;
 
     // Track whether a modified Enter Press was already handled this keypress
     // cycle.  WezTerm sends Shift+Enter as Release-only (no Press), so we
@@ -3766,10 +3771,40 @@ pub fn run_remote(terminal: &mut Terminal<crate::platform::PsmuxBackend>, input:
                         && key.modifiers == KeyModifiers::CONTROL
                         && paste_detection_enabled =>
                     {
-                        if input_log_enabled() {
-                            input_log("paste", &format!("Ctrl+V Release detected, paste_pend len={}", paste_pend.len()));
+                        match clipboard_ctrl_v_route(
+                            system_clipboard_has_image(),
+                            image_ctrl_v_press_forwarded,
+                        ) {
+                            ClipboardCtrlVRoute::Text => {
+                                if input_log_enabled() {
+                                    input_log("paste", &format!("Ctrl+V Release detected, paste_pend len={}", paste_pend.len()));
+                                }
+                                paste_confirmed = true;
+                            }
+                            ClipboardCtrlVRoute::ForwardImage => {
+                                let pane_input_active = !srv_popup_active
+                                    && !srv_confirm_active
+                                    && !srv_menu_active
+                                    && !srv_display_panes
+                                    && !srv_customize_active
+                                    && !command_input
+                                    && !renaming
+                                    && !pane_renaming
+                                    && !tree_chooser
+                                    && !buffer_chooser
+                                    && !session_chooser
+                                    && !keys_viewer
+                                    && confirm_cmd.is_none();
+                                if pane_input_active {
+                                    if input_log_enabled() {
+                                        input_log("paste", "Ctrl+V image clipboard forwarded to child");
+                                    }
+                                    cmd_batch.push("send-key C-v\n".to_string());
+                                }
+                            }
+                            ClipboardCtrlVRoute::SuppressImageDuplicate => {}
                         }
-                        paste_confirmed = true;
+                        image_ctrl_v_press_forwarded = false;
                     }
                     // ── WezTerm: Shift+Enter arrives as Release-only ──
                     // WezTerm generates only KeyEventKind::Release for Shift+Enter
@@ -4139,6 +4174,40 @@ pub fn run_remote(terminal: &mut Terminal<crate::platform::PsmuxBackend>, input:
                             rsel_start = None;
                             rsel_end = None;
                             selection_changed = true;
+                        }
+                        // Paste detection owns Ctrl+V before root key bindings.
+                        // Text remains on the existing send-paste path. Image
+                        // clipboards are forwarded as one raw Ctrl+V so the
+                        // foreground app can read the non-text clipboard data.
+                        else if cfg!(windows)
+                            && paste_detection_enabled
+                            && matches!(key.code, KeyCode::Char('v'))
+                            && key.modifiers == KeyModifiers::CONTROL
+                            && !command_input
+                            && !renaming
+                            && !pane_renaming
+                            && !tree_chooser
+                            && !buffer_chooser
+                            && !session_chooser
+                            && !keys_viewer
+                            && confirm_cmd.is_none()
+                        {
+                            let already_forwarded = key.kind == KeyEventKind::Repeat
+                                && image_ctrl_v_press_forwarded;
+                            match clipboard_ctrl_v_route(
+                                system_clipboard_has_image(),
+                                already_forwarded,
+                            ) {
+                                ClipboardCtrlVRoute::Text => {}
+                                ClipboardCtrlVRoute::ForwardImage => {
+                                    if input_log_enabled() {
+                                        input_log("paste", "Ctrl+V image clipboard forwarded to child");
+                                    }
+                                    cmd_batch.push("send-key C-v\n".to_string());
+                                    image_ctrl_v_press_forwarded = true;
+                                }
+                                ClipboardCtrlVRoute::SuppressImageDuplicate => {}
+                            }
                         }
                         else if is_prefix && !prefix_armed {
                             // Suppress IME while in prefix mode so command keys
@@ -8701,6 +8770,23 @@ fn duplicates_recent_paste(text: &str, recent: Option<(&str, Duration)>) -> bool
             !text.is_empty() && delivered == text && age < PASTE_DUPLICATE_WINDOW
         }
         None => false,
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ClipboardCtrlVRoute {
+    Text,
+    ForwardImage,
+    SuppressImageDuplicate,
+}
+
+fn clipboard_ctrl_v_route(has_image: bool, suppressed: bool) -> ClipboardCtrlVRoute {
+    if !has_image {
+        ClipboardCtrlVRoute::Text
+    } else if suppressed {
+        ClipboardCtrlVRoute::SuppressImageDuplicate
+    } else {
+        ClipboardCtrlVRoute::ForwardImage
     }
 }
 

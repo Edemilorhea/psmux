@@ -229,6 +229,28 @@ fn paste_detection_uses_low_latency_window_and_unicode_character_count() {
     assert!(!meets_unicode_paste_threshold("123456é"));
 }
 
+#[cfg(windows)]
+#[test]
+fn ctrl_v_routes_text_through_paste_detection() {
+    assert_eq!(
+        clipboard_ctrl_v_route(false, false),
+        ClipboardCtrlVRoute::Text,
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn ctrl_v_forwards_image_once_per_keypress() {
+    assert_eq!(
+        clipboard_ctrl_v_route(true, false),
+        ClipboardCtrlVRoute::ForwardImage,
+    );
+    assert_eq!(
+        clipboard_ctrl_v_route(true, true),
+        ClipboardCtrlVRoute::SuppressImageDuplicate,
+    );
+}
+
 // ── Issue #164: status-format[] must parse inline styles end-to-end ──
 
 /// Verify that status_format strings from JSON deserialization flow through

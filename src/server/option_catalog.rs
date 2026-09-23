@@ -214,7 +214,7 @@ pub static OPTION_CATALOG: &[OptionDef] = &[
     OptionDef { name: "pwsh-mouse-selection", scope: Session, option_type: Boolean, default: "off", description: "Windows 11 PowerShell-style drag selection (pane-aware, right-click to copy, word/line multi-click)" },
     OptionDef { name: "mouse-selection", scope: Session, option_type: Boolean, default: "on", description: "Enable psmux's client-side drag-selection overlay. Set to off so apps inside a pane (opencode, etc.) can implement their own mouse selection without psmux drawing on top." },
     OptionDef { name: "mouse-selection-force", scope: Session, option_type: Boolean, default: "off", description: "Keep psmux drag selection active in mouse-aware apps; replay plain clicks while consuming drags" },
-    OptionDef { name: "paste-detection", scope: Session, option_type: Boolean, default: "on", description: "Detect Ctrl+V paste from console host and send as bracketed paste (disable to let Ctrl+V reach child apps)" },
+    OptionDef { name: "paste-detection", scope: Session, option_type: Boolean, default: "on", description: "Send Ctrl+V text as bracketed paste; forward Ctrl+V for image clipboards so child apps can read them (disable for unconditional passthrough)" },
     OptionDef { name: "mode-keys", scope: Session, option_type: UNVALIDATED_CHOICE, default: "emacs", description: "Key bindings in copy mode (vi/emacs)" },
     OptionDef { name: "copy-mode-line-numbers", scope: Window, option_type: UNVALIDATED_CHOICE, default: "off", description: "Line number mode in copy mode (off/default/absolute/relative/hybrid)" },
     OptionDef { name: "copy-mode-line-number-style", scope: Window, option_type: OptionType::String, default: "fg=brightblack", description: "Style for copy-mode line numbers" },

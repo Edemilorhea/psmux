@@ -1,5 +1,11 @@
 # Agent Instructions
 
+## Project Records
+
+- Before starting work, read the applicable records in `docs/agent-records/`.
+- Treat these records as project-specific operational constraints and lessons
+  learned from prior development work.
+
 ## Test Isolation
 
 - Never run psmux tests or commands that may create sessions in the default
@@ -11,6 +17,8 @@
   with `cargo check`.
 - Run runtime and integration checks with a unique namespace:
   `psmux -L <unique-test-namespace> ...`.
+- See `docs/agent-records/runtime-test-isolation.md` for the warm-server reason
+  that `-L` is required when testing a newly built binary.
 - Snapshot the default session list before and after runtime checks. Stop and
   investigate if it changes.
 - Clean up only the test namespace with

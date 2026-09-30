@@ -156,6 +156,9 @@ pub fn priority_from_config() -> Option<String> {
 /// so that unbind-key <key> can actually remove them.
 /// Must be called BEFORE load_config / source_file.
 pub fn populate_default_bindings(app: &mut AppState) {
+    // A re-seed restores every built-in copy-mode key, as tmux's
+    // key_bindings_init does for its copy-mode tables.
+    app.copy_mode_defaults_unbound.clear();
     let defaults = crate::help::PREFIX_DEFAULTS;
     let table = app.key_tables.entry("prefix".to_string()).or_default();
     for (key_str, cmd_str) in defaults {
@@ -183,6 +186,92 @@ pub fn populate_default_bindings(app: &mut AppState) {
             }
         }
     }
+}
+
+/// The built-in copy-mode keys of `table`, parsed once: normalised key, the
+/// key name as `list-keys` prints it, and the `send-keys -X` command. Empty
+/// for any table that is not `copy-mode` or `copy-mode-vi`.
+pub fn copy_mode_default_keys(table: &str) -> &'static [((KeyCode, KeyModifiers), &'static str, &'static str)] {
+    use std::sync::OnceLock;
+    type Parsed = Vec<((KeyCode, KeyModifiers), &'static str, &'static str)>;
+    fn parse(list: &'static [(&'static str, &'static str)]) -> Parsed {
+        list.iter()
+            .filter_map(|(k, c)| parse_key_name(k).map(|key| (normalize_key_for_binding(key), *k, *c)))
+            .collect()
+    }
+    static VI: OnceLock<Parsed> = OnceLock::new();
+    static EMACS: OnceLock<Parsed> = OnceLock::new();
+    match table {
+        "copy-mode-vi" => VI.get_or_init(|| parse(crate::help::COPY_MODE_VI_DEFAULTS)),
+        "copy-mode" => EMACS.get_or_init(|| parse(crate::help::COPY_MODE_EMACS_DEFAULTS)),
+        _ => &[],
+    }
+}
+
+/// The copy-mode table the built-in handlers follow: `copy-mode-vi` for
+/// `mode-keys vi`, `copy-mode` otherwise (tmux picks its table the same way).
+pub fn active_copy_mode_table(app: &AppState) -> &'static str {
+    if app.mode_keys == "vi" { "copy-mode-vi" } else { "copy-mode" }
+}
+
+/// True when `key` is a built-in copy-mode key of the active table that the
+/// user unbound, so the built-in handler must leave it alone. In tmux an
+/// unbound copy-mode key does nothing: the table simply has no entry for it.
+pub fn copy_mode_default_unbound(app: &AppState, key: (KeyCode, KeyModifiers)) -> bool {
+    if app.copy_mode_defaults_unbound.is_empty() { return false; }
+    let key = normalize_key_for_binding(key);
+    let table = active_copy_mode_table(app);
+    app.copy_mode_defaults_unbound.contains(&(table.to_string(), key))
+}
+
+/// `unbind-key -T <table> <key>`: drop the key from the table, and when it is
+/// a built-in copy-mode key record that, so the built-in handler stops acting
+/// on it.
+pub fn unbind_key_in_table(app: &mut AppState, table: &str, key: (KeyCode, KeyModifiers)) {
+    let key = normalize_key_for_binding(key);
+    if let Some(binds) = app.key_tables.get_mut(table) {
+        binds.retain(|b| b.key != key);
+    }
+    if copy_mode_default_keys(table).iter().any(|(k, _, _)| *k == key) {
+        app.copy_mode_defaults_unbound.insert((table.to_string(), key));
+    }
+}
+
+/// `unbind-key -a -T <table>`: empty the table. For a copy-mode table that
+/// takes the built-in keys away too, as it does in tmux.
+pub fn unbind_all_in_table(app: &mut AppState, table: &str) {
+    if let Some(binds) = app.key_tables.get_mut(table) {
+        binds.clear();
+    }
+    for (k, _, _) in copy_mode_default_keys(table) {
+        app.copy_mode_defaults_unbound.insert((table.to_string(), *k));
+    }
+}
+
+/// Every binding `list-keys` reports, as `(table, key, command, repeat)`: the
+/// key tables, then the built-in copy-mode keys that are neither rebound nor
+/// unbound.
+pub fn list_keys_entries(app: &AppState) -> Vec<(String, String, String, bool)> {
+    let mut out: Vec<(String, String, String, bool)> = Vec::new();
+    for (table_name, binds) in &app.key_tables {
+        for bind in binds {
+            out.push((
+                table_name.clone(),
+                format_key_binding(&bind.key),
+                crate::commands::format_action(&bind.action),
+                bind.repeat,
+            ));
+        }
+    }
+    for table in ["copy-mode", "copy-mode-vi"] {
+        let user = app.key_tables.get(table);
+        for (key, name, cmd) in copy_mode_default_keys(table) {
+            if user.map_or(false, |b| b.iter().any(|b| b.key == *key)) { continue; }
+            if app.copy_mode_defaults_unbound.contains(&(table.to_string(), *key)) { continue; }
+            out.push((table.to_string(), (*name).to_string(), (*cmd).to_string(), false));
+        }
+    }
+    out
 }
 
 pub fn load_config(app: &mut AppState) {
@@ -811,6 +900,15 @@ pub fn parse_config_line(app: &mut AppState, line: &str) {
         // command (a known-but-unrouted command like `new-window` stays silent
         // to match prior behavior; a genuine typo like `bnid-key` is surfaced).
         let cmd = l.split_whitespace().next().unwrap_or("");
+        // tmux runs a `copy-mode` line in a sourced file like any other
+        // command (cfg.c queues every line), so `source-file` on a file that
+        // says `copy-mode` enters copy mode. It needs a pane, and a startup
+        // load (including the reload a claimed warm server does) is left out
+        // so a config file never opens a new session in copy mode.
+        if cmd == "copy-mode" && !app.windows.is_empty() && !in_startup_load() {
+            let _ = crate::commands::execute_command_string(app, l);
+            return;
+        }
         if !cmd.is_empty() && !is_known_command(app, cmd) {
             warn_config(app, format!("unknown command: {}", cmd));
         }
@@ -1115,7 +1213,15 @@ fn parse_set_option(app: &mut AppState, line: &str, window_command: bool) {
     // Handle -a (append to current value)
     let final_value = if append_mode {
         let current = crate::format::lookup_option_pub(key, app).unwrap_or_default();
-        format!("{}{}", current, value)
+        if matches!(key, "terminal-overrides" | "codepoint-widths") {
+            // ARRAY option: `-a` adds elements, it does not glue characters
+            // onto the last one (tmux options_array_assign), so
+            // `set -ga terminal-overrides 'xterm*:Tc'` without a leading
+            // comma still lands as its own element.
+            format!("{},{}", current, value)
+        } else {
+            format!("{}{}", current, value)
+        }
     } else {
         value
     };
@@ -1384,7 +1490,11 @@ pub fn parse_option_value(app: &mut AppState, key: &str, value: &str, _is_global
         "allow-set-title" => {
             app.allow_set_title = matches!(value, "on" | "true" | "1" | "yes");
         }
-        "terminal-overrides" => { /* tmux terminfo override — accepted for compatibility, no-op on Windows */ }
+        "terminal-overrides" => {
+            // Array option (issue #700): smcup/rmcup decide whether the
+            // attach client uses the host's alternate screen.
+            app.terminal_overrides = crate::terminal_overrides::split_array(value);
+        }
         "default-terminal" => {
             // tmux sets the TERM env var from this option (#137)
             app.environment.insert("TERM".to_string(), value.to_string());
@@ -1416,6 +1526,15 @@ pub fn parse_option_value(app: &mut AppState, key: &str, value: &str, _is_global
         "status-right-style" => { app.status_right_style = value.to_string(); }
         "clock-mode-colour" | "clock-mode-style" => { app.user_options.insert(key.to_string(), value.to_string()); }
         "pane-border-format" | "pane-border-status" | "pane-border-indicators" => { app.user_options.insert(key.to_string(), value.to_string()); }
+        // Read back from user_options by the copy mode gutter and the border
+        // renderer. Without an arm here they reached the fallthrough below,
+        // which stored the value (so it worked) and reported the option as
+        // unknown (#706). The value of copy-mode-line-numbers is checked
+        // against its choices by the catalog before this match, like tmux.
+        "copy-mode-line-numbers" | "copy-mode-line-number-style"
+        | "copy-mode-current-line-number-style" | "pane-border-lines" => {
+            app.user_options.insert(key.to_string(), value.to_string());
+        }
         "popup-style" | "popup-border-style" | "popup-border-lines" => { app.user_options.insert(key.to_string(), value.to_string()); }
         "window-style" | "window-active-style" => { app.user_options.insert(key.to_string(), value.to_string()); }
         "wrap-search" => { app.user_options.insert(key.to_string(), value.to_string()); }
@@ -1484,6 +1603,24 @@ pub fn parse_option_value(app: &mut AppState, key: &str, value: &str, _is_global
                     app.status_format[idx] = value.to_string();
                     return true;
                 }
+            }
+            // A catalog option this match does not route is still a real
+            // option: hand it to the runtime setter so `set -g NAME VALUE` in
+            // a config file lands exactly where the same command typed at
+            // runtime does. Before this, such an option (alternate-screen,
+            // message-limit, history-file-limit) warned "unknown option" and
+            // was parked in user_options where nothing reads it, so
+            // `set -g alternate-screen off` in psmux.conf left the pane
+            // honouring the alternate screen. The value was already
+            // validated against the catalog at the top of this function.
+            if crate::server::option_catalog::is_known_option(key) {
+                if let Err(error) =
+                    crate::server::options::apply_set_option(app, key, value, false)
+                {
+                    warn_config(app, error);
+                    return false;
+                }
+                return true;
             }
             // Store @-prefixed user/plugin options separately from environment
             // so they don't leak into child shells (#105).
@@ -1798,9 +1935,7 @@ pub fn parse_unbind_key(app: &mut AppState, line: &str) {
     if unbind_all {
         if let Some(t) = table {
             // -a -T <table>: only clear that table
-            if let Some(binds) = app.key_tables.get_mut(&t) {
-                binds.clear();
-            }
+            unbind_all_in_table(app, &t);
         } else {
             // -a (no table): clear ALL tables + suppress defaults
             app.key_tables.clear();
@@ -1815,9 +1950,7 @@ pub fn parse_unbind_key(app: &mut AppState, line: &str) {
             // Remove from the targeted table only (tmux behavior).
             // Default is "prefix" when no -n or -T is specified.
             let target = table.unwrap_or_else(|| "prefix".to_string());
-            if let Some(binds) = app.key_tables.get_mut(&target) {
-                binds.retain(|b| b.key != key);
-            }
+            unbind_key_in_table(app, &target, key);
         } else {
             // Same reasoning as parse_bind_key: tmux's cmd-unbind-key.c reports
             // `unknown key: <name>` rather than quietly doing nothing, and the
@@ -2738,6 +2871,10 @@ mod tests_issue287_german_keyboard;
 mod tests_issue362_config_new_session;
 
 #[cfg(test)]
+#[path = "../tests-rs/test_issue706_copy_mode_line_numbers.rs"]
+mod tests_issue706_copy_mode_line_numbers;
+
+#[cfg(test)]
 #[path = "../tests-rs/test_issue370_config_warnings.rs"]
 mod tests_issue370_config_warnings;
 
@@ -2784,3 +2921,7 @@ mod tests_issue619_set_option_unset_only;
 #[cfg(test)]
 #[path = "../tests-rs/test_issue619_set_option_already_set.rs"]
 mod tests_issue619_set_option_already_set;
+
+#[cfg(test)]
+#[path = "../tests-rs/test_config_option_parity.rs"]
+mod tests_config_option_parity;

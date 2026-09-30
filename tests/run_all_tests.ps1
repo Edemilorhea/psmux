@@ -292,6 +292,54 @@ public static class PsmuxTestJob {
 }
 '@ -ErrorAction SilentlyContinue
 
+# ── Desktop access witness ──
+# Sweep 2026-09-24_12-19-22: from 13:50 to about 14:40 every process in the
+# runner's lineage was refused OpenClipboard (ERROR_ACCESS_DENIED, even on a
+# freshly created private window station, so no process was holding the
+# clipboard) and could not take the foreground, while a process started by the
+# Task Scheduler at the same time could do both. Six paste/focus suites scored
+# FAIL on it. psmux was not the cause (its clipboard calls are paired, and the
+# refusal outlived every psmux process). The refusal lifted on its own.
+# Whatever imposes it, the sweep must SAY it happened on the result line, and
+# record when it began and ended, instead of scoring it as six product bugs.
+# The probe is one OpenClipboard(NULL)/CloseClipboard pair and one
+# GetForegroundWindow: no side effects, microseconds, safe between suites.
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class PsmuxUiAccess {
+    [DllImport("user32.dll", SetLastError=true)] static extern bool OpenClipboard(IntPtr h);
+    [DllImport("user32.dll")] static extern bool CloseClipboard();
+    [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+    // "" when the desktop is usable, otherwise a short reason.
+    public static string Probe() {
+        bool ok = OpenClipboard(IntPtr.Zero);
+        int err = ok ? 0 : Marshal.GetLastWin32Error();
+        if (ok) CloseClipboard();
+        string r = "";
+        if (!ok) r += "clipboard-denied(err=" + err + ")";
+        if (GetForegroundWindow() == IntPtr.Zero) r += (r.Length > 0 ? " " : "") + "no-foreground";
+        return r;
+    }
+}
+'@ -ErrorAction SilentlyContinue
+
+$script:UiAccessLog   = Join-Path $script:RunDir "ui_access.log"
+$script:UiAccessState = ""
+function Test-UiAccess {
+    param([string]$When)
+    $r = ""
+    try { $r = [PsmuxUiAccess]::Probe() } catch { return "" }
+    if ($r -ne $script:UiAccessState) {
+        $line = "[{0}] {1}: {2}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff'), $When, $(if ($r) { "DESKTOP REFUSED $r" } else { "desktop usable again" })
+        try { [System.IO.File]::AppendAllText($script:UiAccessLog, "$line`r`n") } catch { }
+        if ($r) { Write-Log "UI-ACCESS $When $r (this lineage cannot use the clipboard or take focus; paste and focus suites will fail for it)" }
+        else    { Write-Log "UI-ACCESS $When restored" }
+        $script:UiAccessState = $r
+    }
+    return $r
+}
+
 # ── Desktop hygiene: console windows a suite leaves behind ───────────────────
 #
 # THE FAILURE THIS EXISTS FOR
@@ -695,7 +743,7 @@ function Invoke-LeftoverAudit {
 function Get-SuiteTimeout {
     param([string]$Name)
     # Perf/stress/latency suites legitimately run long; everything else gets the default.
-    if ($Name -match 'perf|stress|latency|benchmark|extreme|battle|install_speed|e2e|sustained|exhaustive|nsis|installer|realistic_typing|robust_|win32_tui_flag_parity|issue615_wsl_pane_path') { return $LongTimeoutSec }
+    if ($Name -match 'perf|stress|latency|benchmark|extreme|battle|install_speed|e2e|sustained|exhaustive|nsis|installer|realistic_typing|robust_|win32_tui_flag_parity|issue615_wsl_pane_path|issue684_paste_route|issue647_git_commit_in_version|issue693_targets') { return $LongTimeoutSec }
     return $DefaultTimeoutSec
 }
 
@@ -979,8 +1027,29 @@ function Clean-Server {
                     -RedirectStandardError  (Join-Path $script:RunDir "ks_err.tmp")
             if (-not $ks.WaitForExit(5000)) { try { $ks.Kill() } catch {} }
         } catch {}
+        # A server killed by image name leaves every pane shell it spawned alive
+        # with no parent: 24 `pwsh -NoLogo -NoProfile -NoExit ...` orphans sat
+        # on the machine after sweep 2026-09-23_13-54-30, each with a conhost.
+        # Record the children of every surviving server BY PID before the kill,
+        # and stop them afterwards. Only direct children of a psmux server, and
+        # only pwsh/cmd/conhost images, so nothing unrelated is ever touched.
+        $orphanCandidates = @()
+        foreach ($srv in @(Get-Process psmux -ErrorAction SilentlyContinue)) {
+            try {
+                $orphanCandidates += @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$($srv.Id)" -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Name -match '^(pwsh|powershell|cmd|conhost)\.exe$' } |
+                    ForEach-Object { $_.ProcessId })
+            } catch {}
+        }
         # Force-kill any lingering processes, then poll (up to 3s) instead of fixed sleeps
         Get-Process psmux -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        foreach ($childPid in $orphanCandidates) {
+            $c = Get-Process -Id $childPid -ErrorAction SilentlyContinue
+            if ($c -and $c.ProcessName -match '^(pwsh|powershell|cmd|conhost)$') {
+                Stop-Process -Id $childPid -Force -ErrorAction SilentlyContinue
+            }
+        }
+        if ($orphanCandidates.Count -gt 0) { Write-KillNote ("CLEAN-SERVER reaped {0} pane shell(s) of the killed server(s) by pid: {1}" -f $orphanCandidates.Count, ($orphanCandidates -join ',')) }
         $deadline = [DateTime]::Now.AddSeconds(3)
         while ([DateTime]::Now -lt $deadline) {
             if (-not (Get-Process psmux -ErrorAction SilentlyContinue)) { break }
@@ -1022,6 +1091,7 @@ function Run-TestFile {
 
     Clean-Server
 
+    $uiBefore = Test-UiAccess "before $baseName"
     Write-Log "START $baseName"
 
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
@@ -1205,7 +1275,14 @@ function Run-TestFile {
                   elseif ($exitCode -eq 0 -and $failCount -eq 0) { "PASS" }
                   else { "FAIL" }
 
-        Write-Log ("{0,-7} {1,-45} {2}P/{3}F  exit={4}  {5}s{6}" -f $status, $baseName, $passCount, $failCount, $exitCode, [math]::Round($sw.Elapsed.TotalSeconds,1), $(if ($leftovers -gt 0) { "  LEFTOVERS=$leftovers" } else { '' }))
+        # A refusal seen either side of the suite is stamped on its result line,
+        # so a FAIL that happened while the desktop was unusable is never read
+        # as a product bug, and a PASS under it is not mistaken for coverage.
+        $uiAfter = Test-UiAccess "after $baseName"
+        $uiNote = ''
+        if ($uiBefore -or $uiAfter) { $uiNote = "  UI-ACCESS-DENIED(" + $(if ($uiBefore) { "before" } else { "after" }) + ")" }
+
+        Write-Log ("{0,-7} {1,-45} {2}P/{3}F  exit={4}  {5}s{6}{7}" -f $status, $baseName, $passCount, $failCount, $exitCode, [math]::Round($sw.Elapsed.TotalSeconds,1), $(if ($leftovers -gt 0) { "  LEFTOVERS=$leftovers" } else { '' }), $uiNote)
 
         return @{
             Name = $baseName

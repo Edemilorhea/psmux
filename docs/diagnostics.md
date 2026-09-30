@@ -46,6 +46,13 @@ Two more details worth knowing:
 
 - `PSMUX_SESSION_DEBUG` appends rather than truncates. Registry cleanup runs in every short-lived
   `psmux` CLI process, so truncating on open would erase the log before you could read it.
+- `PSMUX_INPUT_DEBUG` appends too, for the same reason. Two processes write it: the attached client
+  (which decides whether a burst of characters is a paste) and the server (which decides which
+  channel carries that paste into the pane). Each opens the file on its first line, so while it
+  truncated, whichever wrote second erased the other's evidence, and the first one's next write
+  landed at its old offset and left a hole of NUL bytes behind it. Each process writes a banner
+  naming itself when it opens the file, so the two halves stay attributable, and the file holds
+  more than one run: delete it before a reproduction if you want only that run in it.
 - `PSMUX_LATENCY_LOG=1` also enables a server side companion at
   `%USERPROFILE%\psmux_server_latency.log` holding dump-state build times. Read the two together
   to tell a slow server from a slow client.
@@ -197,6 +204,81 @@ No setting of this variable can ask for that.
 
 Set it on the **server** process, with `$env:PSMUX_NO_WARM = "1"` and a killed server first,
 reproduce, then clear it.
+
+### The Console Host Seam
+
+| Variable | What it does |
+|---|---|
+| `PSMUX_CONPTY_DIR=<dir>` | Loads `<dir>\conpty.dll` and uses the `OpenConsole.exe` next to it as every pane's console host |
+| unset (the default) | The system ConPTY in `kernel32.dll`, driving the inbox `conhost.exe` |
+
+Every psmux pane is a pseudoconsole, and the process that owns that pseudoconsole is a console
+host. By default that host is the `conhost.exe` shipped in the Windows you are running, reached
+through the `CreatePseudoConsole` export in `kernel32.dll`. Microsoft also publishes the same
+component out of band, as a `conpty.dll` plus an `OpenConsole.exe`, so an application can carry a
+newer console host than the one in the box. That is how Windows Terminal and WezTerm work.
+
+psmux does not ship either file and never loads one on its own. Nothing but `kernel32.dll` is
+touched unless you name a directory yourself, which is the point of this variable: it is an
+escape hatch for a host whose inbox `conhost.exe` has a defect you are stuck with, not a
+supported configuration. The DLL is loaded by absolute path with
+`LOAD_WITH_ALTERED_SEARCH_PATH`, so the `OpenConsole.exe` that gets spawned is the one beside the
+DLL you named and not something else off the search path. If the directory does not exist, holds
+no `conpty.dll`, or holds one that will not load or does not export the three ConPTY entry
+points, psmux logs the reason and falls back to `kernel32.dll`, so a bad value costs you nothing
+but the default behaviour.
+
+Where to get the files: the `Microsoft.Windows.Console.ConPTY` package on nuget.org, which is
+MIT licensed and carries `runtimes\win-x64\native\conpty.dll` and
+`build\native\runtimes\x64\OpenConsole.exe`. Put the two side by side in one directory and point
+the variable at it.
+
+On Windows 10 19045 this is the one setting that repairs the whole family of inbox conhost
+defects at once, measured by a reporter on #597 and #684 with the package at 1.24.2607.10001:
+device queries (DA1, DA2, DSR, DECRQM) are answered while a program waits on them instead of
+being held until the next paint, bracketed pastes keep their `ESC[200~` / `ESC[201~` markers on
+the ConPTY input pipe, and non ASCII pastes (Latin 1, CJK) arrive byte exact where the inbox
+host on that build mangles them. Under it psmux also takes the cheaper pipe route for a
+bracketed paste rather than the `WriteConsoleInputW` injection it uses on the inbox host below
+build 22523; `PSMUX_PASTE_INJECT=1` still forces injection if you need it.
+
+Measured on Windows 11 26200 with that package at 1.24.2607.10001, against the inbox host, three
+runs each:
+
+```
+                              inbox conhost      OpenConsole 1.24.2607.10001
+launch to prompt, median      596 ms             711 ms    (bare pwsh 415 / 457 ms)
+keystroke to screen, pwsh     16.74 ms median    2.19 to 2.47 ms median
+DA1 / DA2 / DSR / DECRQM      answered by host   answered by psmux
+XTVERSION                     answered by psmux  answered by psmux
+```
+
+#### Who answers the terminal's round trip questions
+
+A program in a pane can ask the terminal what it is and what modes it has on. psmux answers
+**DA1** (`ESC[c`), **DA2** (`ESC[>c`), **DSR** (`ESC[5n` and `ESC[6n`) and **DECRQM**
+(`ESC[?<mode>$p`) itself, with the same bytes tmux sends: `ESC[?1;2c`, `ESC[>84;0;0c`, `ESC[0n`,
+`ESC[<row>;<col>R` and `ESC[?<mode>;<value>$y` with 1 set, 2 reset, 0 not recognised
+(`input.c`, `INPUT_CSI_DA`, `INPUT_CSI_DA_TWO`, `INPUT_CSI_DSR`, `INPUT_CSI_QUERY_PRIVATE`).
+`ESC[>q` (XTVERSION) is answered too, and `ESC[1t` is ignored, again like tmux.
+
+On the inbox `conhost.exe` none of that is visible, because that host answers those four itself
+and never forwards them to psmux. A host that forwards them instead, which is what recent
+OpenConsole builds do, used to leave them unanswered, and that cost two things at once: a program
+in the pane got zero bytes back for DA1, DA2 and DECRQM, and **every pane launch stalled about
+three seconds**, because OpenConsole opens a pane by writing `ESC[1t ESC[c` toward psmux and
+parks the child inside its console connect until the DA1 reply arrives. psmux answering the
+queries removes both: prompt at 616 / 617 / 615 ms where it used to be 3777 / 3747 / 3799 ms.
+
+One deliberate difference from tmux: DECRQM for mode **2026** (synchronized output) reports `0`,
+not recognised, rather than tmux's `2`. psmux has no synchronized output to offer, and `0` is
+byte for byte what the inbox host already answers on this build, so a pane sees the same reply
+whichever console host is under it.
+
+The keystroke win is real and large. Set this when you want it, knowing you are also taking on a
+console host that Windows Update does not patch for you.
+
+`PSMUX_NO_PASSTHROUGH=1` is independent of this and does not change either number.
 
 ## Always On Diagnostic Files
 

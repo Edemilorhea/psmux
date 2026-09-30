@@ -70,11 +70,25 @@ pub enum ChoiceKind {
     Priority,
     Unvalidated,
     PaneBorderIndicators,
+    /// tmux `options_table_copy_mode_line_numbers_list`: a CHOICE option, so
+    /// tmux refuses anything else with `unknown value` (#706).
+    CopyModeLineNumbers,
 }
 
 impl ChoiceKind {
     fn validate_value(self, value: &str) -> Result<(), String> {
         match self {
+            Self::CopyModeLineNumbers => {
+                if crate::copy_line_numbers::CHOICES.contains(&value.trim()) {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "value for 'copy-mode-line-numbers' must be one of {}, got '{}'",
+                        crate::copy_line_numbers::CHOICES.join(", "),
+                        value,
+                    ))
+                }
+            }
             Self::Priority if crate::platform::normalize_priority(value).is_none() => Err(format!(
                 "value for 'priority' must be one of {}, got '{}'",
                 crate::platform::PRIORITY_VALUES.join(", "),
@@ -89,14 +103,14 @@ impl ChoiceKind {
 
     const fn allows_append(self) -> bool {
         match self {
-            Self::Priority | Self::Unvalidated => true,
+            Self::Priority | Self::Unvalidated | Self::CopyModeLineNumbers => true,
             Self::PaneBorderIndicators => false,
         }
     }
 
     const fn allows_local_window_override(self) -> bool {
         match self {
-            Self::Priority | Self::Unvalidated => true,
+            Self::Priority | Self::Unvalidated | Self::CopyModeLineNumbers => true,
             Self::PaneBorderIndicators => false,
         }
     }
@@ -198,6 +212,7 @@ pub static OPTION_CATALOG: &[OptionDef] = &[
     OptionDef { name: "default-terminal", scope: Server, option_type: OptionType::String, default: "xterm-256color", description: "TERM value for new panes" },
     OptionDef { name: "copy-command", scope: Server, option_type: OptionType::String, default: "", description: "External copy command (pipe selection)" },
     OptionDef { name: "codepoint-widths", scope: Server, option_type: OptionType::String, default: "", description: "Array of override widths for Unicode codepoints, e.g. U+2500-U+257F=2 (comma separated; widths 0, 1 or 2)" },
+    OptionDef { name: "terminal-overrides", scope: Server, option_type: OptionType::String, default: "", description: "Array of pattern:cap overrides matched against the client TERM; smcup@/rmcup@ keep the attached client off the host's alternate screen (#700)" },
     OptionDef { name: "exit-empty", scope: Server, option_type: Boolean, default: "on", description: "Exit server when no sessions remain" },
     OptionDef { name: "priority", scope: Server, option_type: Choice(Priority), default: "above-normal", description: "Scheduling class for psmux's own server and client processes (normal/above-normal/high). Pane children are never raised" },
     // ── Session options ──
@@ -216,7 +231,7 @@ pub static OPTION_CATALOG: &[OptionDef] = &[
     OptionDef { name: "mouse-selection-force", scope: Session, option_type: Boolean, default: "off", description: "Keep psmux drag selection active in mouse-aware apps; replay plain clicks while consuming drags" },
     OptionDef { name: "paste-detection", scope: Session, option_type: Boolean, default: "on", description: "Send Ctrl+V text as bracketed paste; forward Ctrl+V for image clipboards so child apps can read them (disable for unconditional passthrough)" },
     OptionDef { name: "mode-keys", scope: Session, option_type: UNVALIDATED_CHOICE, default: "emacs", description: "Key bindings in copy mode (vi/emacs)" },
-    OptionDef { name: "copy-mode-line-numbers", scope: Window, option_type: UNVALIDATED_CHOICE, default: "off", description: "Line number mode in copy mode (off/default/absolute/relative/hybrid)" },
+    OptionDef { name: "copy-mode-line-numbers", scope: Window, option_type: Choice(ChoiceKind::CopyModeLineNumbers), default: "off", description: "Line number mode in copy mode (off/default/absolute/relative/hybrid)" },
     OptionDef { name: "copy-mode-line-number-style", scope: Window, option_type: OptionType::String, default: "fg=brightblack", description: "Style for copy-mode line numbers" },
     OptionDef { name: "copy-mode-current-line-number-style", scope: Window, option_type: OptionType::String, default: "fg=yellow,bold", description: "Style for the current copy-mode line number" },
     OptionDef { name: "status", scope: Session, option_type: Boolean, default: "on", description: "Show/hide the status bar" },
@@ -338,6 +353,14 @@ pub fn validate_option_value(name: &str, value: &str) -> Result<(), String> {
         return definition.validate_value(value);
     }
     Ok(())
+}
+
+/// True for every name psmux recognises as an option: a catalog entry or a
+/// validation only name. The config parser uses it to tell an option its own
+/// match does not route (hand it to the runtime setter) from a genuine typo.
+pub fn is_known_option(name: &str) -> bool {
+    option_definition(name).is_some()
+        || VALIDATION_ONLY_OPTIONS.iter().any(|definition| definition.name == name)
 }
 
 pub fn validate_option_append(name: &str) -> Result<(), String> {

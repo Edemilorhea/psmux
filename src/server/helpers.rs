@@ -83,18 +83,32 @@ pub(crate) fn serialize_bindings_json(app: &AppState) -> String {
 /// currently ends with `}`. Emits nothing when the option is unset or `off`.
 /// Ships the option value, the active pane's scrollback size (for absolute /
 /// hybrid numbering), and the optional gutter styles.
+///
+/// The scrollback size also ships whenever the client is in copy mode with the
+/// option off, because the position indicator needs it as
+/// `copy_position_limit` (tmux `window_copy_formats`, #702).
+///
+/// `copy_hide_position` rides along on the same condition, and only when it is
+/// set, so an ordinary copy-mode frame carries no extra bytes for it (#704).
 pub(crate) fn append_copy_ln_json(app: &AppState, buf: &mut String) {
-    let Some(cln) = app.user_options.get("copy-mode-line-numbers") else { return; };
-    if cln == "off" || !buf.ends_with('}') { return; }
+    if !buf.ends_with('}') { return; }
+    let cln = app.user_options.get("copy-mode-line-numbers").filter(|v| v.as_str() != "off");
+    let in_copy = matches!(app.mode, crate::types::Mode::CopyMode | crate::types::Mode::CopySearch { .. });
+    if cln.is_none() && !in_copy { return; }
     let hsize = app.windows.get(app.active_idx)
         .and_then(|win| crate::tree::active_pane(&win.root, &win.active_path))
         .and_then(|p| p.term.lock().ok().map(|g| g.screen().scrollback_filled()))
         .unwrap_or(0);
     buf.pop();
+    buf.push_str(",\"copy_hsize\":");
+    buf.push_str(&hsize.to_string());
+    if app.copy_hide_position && in_copy {
+        buf.push_str(",\"copy_hide_position\":true");
+    }
+    let Some(cln) = cln else { buf.push('}'); return; };
     buf.push_str(",\"copy_mode_line_numbers\":\"");
     buf.push_str(&json_escape_string(cln));
-    buf.push_str("\",\"copy_hsize\":");
-    buf.push_str(&hsize.to_string());
+    buf.push('"');
     if let Some(st) = app.user_options.get("copy-mode-line-number-style") {
         buf.push_str(",\"copy_mode_line_number_style\":\"");
         buf.push_str(&json_escape_string(st));
@@ -259,6 +273,11 @@ pub(crate) fn expand_status_formats(
                 None
             } else {
                 Some(app.codepoint_widths.clone())
+            },
+            terminal_overrides: if app.terminal_overrides.is_empty() {
+                None
+            } else {
+                Some(app.terminal_overrides.clone())
             },
         },
         status_format_json: {
@@ -760,6 +779,32 @@ pub(crate) fn drain_cpr_pending(node: &mut crate::types::Node) {
     }
 }
 
+/// Issue #597: write any DA1/DA2/DSR/DECRQM answers this pane's parser thread
+/// composed into the pane's PTY input.
+///
+/// The PTY writer, not `mouse_inject::send_vt_response`: at pane startup the
+/// party waiting for the DA1 answer is the console host itself (OpenConsole
+/// opens with `ESC[1t ESC[c` and parks the child's console connect until the
+/// answer arrives on the input pipe), and a console input record would never
+/// reach it.  It is the same path `drain_cpr_pending` above uses for ESC[6n,
+/// which is measured working under both the inbox host and OpenConsole.
+pub(crate) fn drain_device_replies(node: &mut crate::types::Node) {
+    use std::io::Write as _;
+    match node {
+        crate::types::Node::Leaf(p) => {
+            if let Some(bytes) = crate::types::take_device_replies(p.id) {
+                let _ = p.writer.write_all(&bytes);
+                let _ = p.writer.flush();
+            }
+        }
+        crate::types::Node::Split { children, .. } => {
+            for c in children {
+                drain_device_replies(c);
+            }
+        }
+    }
+}
+
 /// Issue #473: format an RGB triple as the xterm 16-bit-per-channel reply
 /// payload (`rgb:RRRR/GGGG/BBBB`), scaling 8-bit values by duplication.
 fn x11_rgb((r, g, b): (u8, u8, u8)) -> String {
@@ -802,8 +847,21 @@ pub(crate) fn answer_color_queries(
     child_pid: Option<u32>,
     colors: &crate::types::HostColors,
 ) {
+    answer_color_queries_for_pane(bits, writer, child_pid, colors, None);
+}
+
+/// Issue #685: as [`answer_color_queries`], with the asking pane's own OSC 4
+/// palette taking precedence over the host terminal's, the way tmux answers
+/// from `wp->palette` first.
+pub(crate) fn answer_color_queries_for_pane(
+    bits: u32,
+    writer: &mut dyn std::io::Write,
+    child_pid: Option<u32>,
+    colors: &crate::types::HostColors,
+    pane_palette: Option<[Option<(u8, u8, u8)>; 16]>,
+) {
     if bits == 0 { return; }
-    let (scheme, osc) = build_color_replies(bits, colors);
+    let (scheme, osc) = build_color_replies_for_pane(bits, colors, pane_palette);
     if let Some(scheme) = scheme {
         let _ = writer.write_all(scheme.as_bytes());
         let _ = writer.flush();
@@ -811,7 +869,7 @@ pub(crate) fn answer_color_queries(
     if osc.is_empty() { return; }
     let mut delivered = false;
     if let Some(pid) = child_pid {
-        delivered = crate::platform::mouse_inject::send_vt_response(pid, &osc);
+        delivered = crate::platform::mouse_inject::send_vt_reply(pid, &osc);
     }
     if delivered { return; }
     match osc_delivery_fallback(child_pid.is_some()) {
@@ -852,6 +910,23 @@ pub(crate) fn build_color_replies(
     bits: u32,
     colors: &crate::types::HostColors,
 ) -> (Option<String>, String) {
+    build_color_replies_for_pane(bits, colors, None)
+}
+
+/// Issue #685: the same reply, but answering palette queries from the asking
+/// pane's OWN OSC 4 palette when it has an entry for that index.
+///
+/// tmux does exactly this: `input_osc_4` (`input.c:2947`) calls
+/// `colour_palette_get` on the pane's palette and replies from it, and only
+/// when the pane has no entry does it forward the question to the real
+/// terminal (`input_add_request`, `INPUT_REQUEST_PALETTE`).  Without the
+/// override a pane that had just set index 4 to `#000080` would be told the
+/// outer terminal's `#0037DA`, which is the same mismatch #685 is about.
+pub(crate) fn build_color_replies_for_pane(
+    bits: u32,
+    colors: &crate::types::HostColors,
+    pane_palette: Option<[Option<(u8, u8, u8)>; 16]>,
+) -> (Option<String>, String) {
     // Light/dark scheme query: CSI ?996n → CSI ?997;1n (dark) / ?997;2n (light).
     let scheme = if bits & crate::types::COLOR_QUERY_SCHEME != 0 {
         Some(format!("\x1b[?997;{}n", if colors.is_dark() { 1 } else { 2 }))
@@ -868,7 +943,9 @@ pub(crate) fn build_color_replies(
     }
     for i in 0..16usize {
         if bits & (1u32 << i) != 0 {
-            if let Some(rgb) = colors.palette[i] {
+            // The pane's own entry wins; the host's is the fallback.
+            let own = pane_palette.and_then(|p| p[i]);
+            if let Some(rgb) = own.or(colors.palette[i]) {
                 osc.push_str(&format!("\x1b]4;{};{}\x1b\\", i, x11_rgb(rgb)));
             }
         }
@@ -894,13 +971,15 @@ pub(crate) fn answer_color_queries_sync(
     bits: u32,
     child_pid: Option<u32>,
     colors: &crate::types::HostColors,
+    pane_id: usize,
 ) -> bool {
     if bits == 0 { return true; }
-    let (scheme, osc) = build_color_replies(bits, colors);
+    let (scheme, osc) =
+        build_color_replies_for_pane(bits, colors, crate::types::pane_palette(pane_id));
     let combined = format!("{}{}", scheme.as_deref().unwrap_or(""), osc);
     if combined.is_empty() { return true; }
     match child_pid {
-        Some(pid) => crate::platform::mouse_inject::send_vt_response(pid, &combined),
+        Some(pid) => crate::platform::mouse_inject::send_vt_reply(pid, &combined),
         None => false,
     }
 }
@@ -912,7 +991,8 @@ pub(crate) fn drain_color_queries(node: &mut crate::types::Node, colors: &crate:
         crate::types::Node::Leaf(p) => {
             let bits = p.color_query_pending.swap(0, std::sync::atomic::Ordering::AcqRel);
             if bits != 0 {
-                answer_color_queries(bits, &mut *p.writer, p.child_pid, colors);
+                let own = crate::types::pane_palette(p.id);
+                answer_color_queries_for_pane(bits, &mut *p.writer, p.child_pid, colors, own);
             }
         }
         crate::types::Node::Split { children, .. } => {

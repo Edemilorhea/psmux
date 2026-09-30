@@ -197,6 +197,7 @@ Details worth knowing:
 | `warm` | Bool | `on` | Pre-spawn shells for instant window/pane creation (see [warm-sessions.md](warm-sessions.md)) |
 | `copy-command` | Str | | Shell command for clipboard pipe |
 | `codepoint-widths` | Str | | Comma separated overrides for how many columns Unicode codepoints occupy (see [Codepoint widths](#codepoint-widths)) |
+| `terminal-overrides` | Str | | Array of `pattern:cap:cap` entries matched against the client's `TERM`. `smcup@` and `rmcup@` keep the attached client off the host terminal's alternate screen (see [Terminal overrides](#terminal-overrides)) |
 | `set-clipboard` | Str | `on` | Clipboard interaction (`on`/`off`/`external`) |
 | `main-pane-width` | Int | `0` | Main pane width in main-vertical layout |
 | `main-pane-height` | Int | `0` | Main pane height in main-horizontal layout |
@@ -830,7 +831,6 @@ setting that was never wired up.
 
 | Option | Status |
 |---|---|
-| `terminal-overrides` | An explicit no-op. The config file path parses it and throws the value away; the runtime `set-option` path keeps it in the user options map. Neither is ever read, because terminfo overrides have no meaning on Windows, where psmux talks to ConPTY rather than to a terminfo database. Use `default-terminal` to control the `TERM` value panes see |
 | `lock-after-time` | Accepted and stored. Session locking is not implemented, so the timer never runs. `lock-client`, `lock-server` and `lock-session` exist as commands but nothing locks on a timer |
 | `lock-command` | Accepted and stored. Never read, for the same reason |
 | `popup-style` | Accepted and stored. Popup borders are styled by `popup-border-style`; the popup body itself is not styled yet |
@@ -881,6 +881,7 @@ hatch you want for one invocation rather than forever.
 | Variable | Effect |
 |---|---|
 | `PSMUX_NO_PASSTHROUGH` | Set to `1` to disable the experimental ConPTY passthrough flag on Windows build 22621 and newer. Use this if pane creation fails with `ERROR_INVALID_PARAMETER` |
+| `PSMUX_CONPTY_DIR` | Point at a directory holding a `conpty.dll` and the `OpenConsole.exe` beside it, and every pane is hosted by that console host instead of the inbox `conhost.exe`. psmux ships neither file and loads nothing unless you name the directory. A directory that does not exist, or a DLL that will not load, falls back to the system ConPTY with a logged reason. This is an escape hatch for a host whose inbox console has a defect you cannot otherwise get around, and it has costs of its own: see the console host seam in `docs/diagnostics.md` for the measurements |
 | `PSMUX_PIPE_VT` | Forces pipe mode VT handling for Cygwin and MSYS style PTYs. `1` forces it on, `0` forces it off. Left unset, psmux detects the pipe itself |
 | `PSMUX_BARE_ENV` | Spawn panes with a bare environment instead of inheriting yours. Useful when a broken inherited variable stops shells from starting |
 | `PSMUX_FORCE_MOUSE` | Overrides the ConPTY mouse safety gate. On Windows builds below 22523 psmux refuses to enable mouse reporting, because on Windows 10 era conhost the first click could fast fail the console host and take the pane down with it. Some later builds under that threshold, Windows Server 2022 (20348) among them, handle mouse perfectly well but still need psmux to write the enable sequence itself. Set to `1` there to get the mouse back. Set to `0` to force it off on a newer build whose console host misbehaves. Accepts `1`, `on`, `true`, `yes` and their negatives. If your session dies the moment you click, unset it |
@@ -1107,9 +1108,14 @@ psmux respawn-pane -c "C:\Projects"
 
 # Respawn with a specific command
 psmux respawn-pane -- python app.py
+
+# Give the new process extra environment (repeatable, this process only)
+psmux respawn-pane -k -e AGENT_ID=bob -e ROLE=review -- claude
 ```
 
 This is useful for monitoring: if a long-running process crashes, you can see its final output and restart it without losing the pane layout.
+
+A respawn behaves like tmux's: the pane keeps its id and its scrollback history, so the new process starts below everything its predecessor printed (`capture-pane -S -` and copy mode still reach it). The rows that were on screen when the old process died are cleared rather than moved into history, the cursor goes back to the top left, copy mode is left, and a process that died on the alternate screen leaves the pane on the normal one. Use `clear-history` after the respawn when you want a clean slate.
 
 ### Background Processes and `@kill-descendants`
 
@@ -1256,3 +1262,55 @@ If you are unsure whether your terminal treats a character as one column or
 two, print a row of them and see where it wraps: in an 80 column window, 80 of
 them filling exactly one line means one column each, and wrapping after 40
 means two.
+
+## Terminal overrides
+
+`terminal-overrides` is the tmux option for adjusting what psmux assumes about
+the terminal a client is attached from. psmux has no terminfo database: the
+client writes VT sequences directly. So of all the capabilities tmux knows,
+psmux honours the two that change what the client sends on its own account:
+
+| Capability | Effect |
+|---|---|
+| `smcup` | Entering the host terminal's alternate screen (`ESC[?1049h`) when a client attaches |
+| `rmcup` | Leaving it again (`ESC[?1049l`) when the client detaches or exits |
+
+Every other capability is accepted, kept, shown by `show-options`, and ignored.
+
+The common use is keeping the client on the host terminal's main screen, for
+example an SSH client on a phone where the alternate screen cannot be scrolled:
+
+```tmux
+set -ga terminal-overrides ',*:smcup@:rmcup@'
+```
+
+With that set the client never sends `ESC[?1049h` or `ESC[?1049l`. Like tmux,
+it clears the screen when it starts drawing and again when it detaches, so the
+prompt comes back on a clean screen. psmux redraws the screen in place, so
+pane output does not pile up in the host terminal's scrollback; use copy mode
+for a pane's history.
+
+How entries are read, the same way tmux reads them:
+
+- It is an array option. Each element is `pattern:cap:cap...`. `set -g`
+  replaces the whole array, `set -ga` adds elements (a leading comma is
+  optional), and `set -gu` empties it.
+- The pattern is matched against the `TERM` of the attaching client with
+  shell style wildcards (`*`, `?`, `[...]`). Elements are applied in order, so
+  a later element wins over an earlier one.
+- `cap@` removes a capability, `cap=value` sets it, and `::` is a literal colon
+  inside a field. A capability set to an empty value counts as removed.
+- Native Windows consoles usually have no `TERM` at all. An unset `TERM` is
+  matched as the empty string, which is what tmux's own client sends, so `*`
+  applies to it and a pattern such as `xterm*` does not.
+
+The option is read by the server, from the config file or from a `set` at
+runtime, and each client decides when it attaches. A change made while a
+client is attached applies from the next attach.
+
+Read it back with:
+
+```powershell
+psmux show-options -g terminal-overrides
+# terminal-overrides[0] *:smcup@:rmcup@
+```

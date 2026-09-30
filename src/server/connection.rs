@@ -276,6 +276,16 @@ fn respawn_positional_command(args: &[&str]) -> Option<String> {
     None
 }
 
+/// Every `-e KEY=VALUE` of a spawning command, in order. Like tmux's
+/// `environ_put`, a value without `=` is ignored. Used by respawn-pane and
+/// respawn-window (#708); new-window and split-window collect theirs inline.
+pub(crate) fn env_flag_values(args: &[&str]) -> Vec<(String, String)> {
+    args.windows(2)
+        .filter(|w| w[0] == "-e")
+        .filter_map(|w| w[1].trim_matches('"').split_once('=').map(|(k, v)| (k.to_string(), v.to_string())))
+        .collect()
+}
+
 fn without_outer_target<'a>(cmd: &str, args: &[&'a str]) -> Vec<&'a str> {
     let scan_end = crate::cli::outer_target_scan_end(cmd, args);
     let mut filtered = Vec::with_capacity(args.len());
@@ -289,6 +299,172 @@ fn without_outer_target<'a>(cmd: &str, args: &[&'a str]) -> Vec<&'a str> {
         }
     }
     filtered
+}
+
+/// The window selecting control requests one `select-window` emits, decided in
+/// ONE place (issue #690).
+///
+/// The bug was two places deciding: the generic `-t` focus block sent a
+/// permanent `FocusWindow` for the target, and this command's own arm sent a
+/// `SelectWindow` for the same window right after it.  Every request carries
+/// its own hook slot in the server loop, so a single `select-window` ran
+/// `after-select-window` twice, and a hook that pasted landed its text twice.
+/// tmux fires a command's after hook once, from the command queue:
+/// cmd-queue.c `cmdq_fire_command` calls
+/// `cmdq_insert_hook(s, item, &fs, "after-%s", name)` once, after the command's
+/// exec returns.
+///
+/// The choice between the forms is tmux's, from cmd-select-window.c: `-n`,
+/// then `-p`, then `-l` are each the whole operation, and only when none of
+/// them is given does the `-t` target decide.  A plain index goes through
+/// `SelectWindow`, which is also the request that fires
+/// `before-select-window`, and fires it before the switch.  An `@id` and a
+/// window name keep the focus requests they have always used.
+///
+/// `args` must already have had the outer `-t` removed by
+/// `without_outer_target`, so the only positional left is tmux's window
+/// number.
+pub(crate) fn select_window_requests(
+    args: &[&str],
+    raw_target: Option<&str>,
+    target_win: Option<usize>,
+    target_win_is_id: bool,
+    target_win_name: Option<&str>,
+) -> (Vec<CtrlReq>, Option<mpsc::Receiver<Result<(), String>>>) {
+    if args.iter().any(|a| *a == "-n") {
+        return (vec![CtrlReq::NextWindow], None);
+    }
+    if args.iter().any(|a| *a == "-p") {
+        return (vec![CtrlReq::PrevWindow], None);
+    }
+    if args.iter().any(|a| *a == "-l") {
+        return (vec![CtrlReq::LastWindow], None);
+    }
+    // Issue #693 item 4: everything the `-t` can name goes through the ONE
+    // resolver move-window and swap-window have used since #602, which is
+    // tmux's `cmd_find_get_window_with_session` in the same order: `@id`, the
+    // `+N`/`-N` offsets, the `!`/`^`/`$` symbols and their braced spellings,
+    // a display index, then an exact window name. `select-window` never
+    // called it, so `-t +1` was read as the literal index 1 and `-t !`,
+    // `-t {end}`, `-t -` and `-t +` died on the CLI as session names.
+    if let Some(spec) = select_window_spec(raw_target) {
+        let (s, r) = mpsc::channel();
+        return (vec![CtrlReq::SelectWindowSpec { spec, resp: s }], Some(r));
+    }
+    if target_win_is_id {
+        // #497: an @id target must never be re-sent as an INDEX.
+        return (match target_win {
+            Some(id) => vec![CtrlReq::FocusWindowById(id)],
+            None => Vec::new(),
+        }, None);
+    }
+    let idx = args
+        .iter()
+        .find(|a| !a.starts_with('-'))
+        .and_then(|s| s.parse::<usize>().ok())
+        .or(target_win);
+    if let Some(idx) = idx {
+        return (vec![CtrlReq::SelectWindow(idx)], None);
+    }
+    (match target_win_name {
+        Some(name) => vec![CtrlReq::FocusWindowByName(name.to_string())],
+        None => Vec::new(),
+    }, None)
+}
+
+/// The raw `-t` of a `select-window` that names a WINDOW, so the server side
+/// resolver decides what it means; None when it names a session (or nothing),
+/// which psmux has always routed by session name and which #693 does not
+/// change.
+///
+/// tmux tries the token as a window first and only falls back to a session
+/// (cmd-find.c:344-350); psmux runs one server per session, so the session
+/// fallback is the CLI's routing step and a bare NAME never reaches here as a
+/// window.
+pub(crate) fn select_window_spec(raw_target: Option<&str>) -> Option<String> {
+    let t = raw_target?.trim();
+    if t.is_empty() { return None; }
+    // A `.pane` component belongs to the pane focus, not to the window
+    // resolver: `select-window -t @2.0` and `-t sess:1.0` both name window
+    // @2 / window 1 (#497).  Only an UNAMBIGUOUS suffix is split off, because
+    // a window NAME may legitimately contain a dot, which is the same rule
+    // `cli_validate_window_pane_target` uses.
+    let (prefix, rest) = match t.find(':') {
+        Some(c) => (&t[..=c], &t[c + 1..]),
+        None => ("", t),
+    };
+    let rest = rest.trim();
+    let window_part = match rest.rfind('.') {
+        Some(d) => {
+            let pane = &rest[d + 1..];
+            let unambiguous = !pane.is_empty()
+                && (pane.starts_with('%')
+                    || pane.chars().all(|c| c.is_ascii_digit())
+                    || matches!(pane, "+" | "-"));
+            if unambiguous { &rest[..d] } else { rest }
+        }
+        None => rest,
+    };
+    let window_part = window_part.trim();
+    // `sess:` with nothing after it means that session's current window,
+    // which is where we already are.
+    if window_part.is_empty() { return None; }
+    if !prefix.is_empty() {
+        return Some(format!("{}{}", prefix, window_part));
+    }
+    if window_part.starts_with('@') || crate::cli::bare_target_names_a_window(window_part) {
+        return Some(window_part.to_string());
+    }
+    None
+}
+
+/// Does this `select-pane` carry an operation of its own, one that
+/// `CtrlReq::SelectPane` will perform and whose `after-select-pane` it will
+/// fire?
+///
+/// tmux's cmd-select-pane.c runs exactly one of these per command and returns
+/// before the generic target activation: `-l`/last-pane at :164, `-m`/`-M` at
+/// :100, `-e`/`-d` at :180, `-T`/`-P` at :247. The relative `:.+` / `:.-`
+/// forms and `-U/-D/-L/-R` fall through to the activation at :274. Either way
+/// the command is ONE operation and fires its after hook at most once (#690,
+/// cmd-queue.c `cmdq_fire_command`), so when this is true the `-t` request
+/// must not fire it as well.
+pub(crate) fn select_pane_has_own_operation(args: &[&str], raw_target: Option<&str>) -> bool {
+    let relative = raw_target.map_or(false, |t| {
+        t.contains(".+") || t.contains(".-") || t == "+" || t == "-" || t == ":.+" || t == ":.-"
+    });
+    relative
+        || args.iter().any(|a| {
+            matches!(*a, "-U" | "-D" | "-L" | "-R" | "-l" | "-m" | "-M" | "-e" | "-d")
+        })
+}
+
+/// The single request a `select-pane`'s `-t` emits (issue #691).
+///
+/// One place decides, the way `select_window_requests` does for #690: the
+/// generic `-t` focus block no longer sends a `FocusWindow` (which names
+/// `after-select-window`, the wrong hook: tmux's cmd-select-pane.c never fires
+/// it) plus a pane focus that names no hook at all.
+pub(crate) fn select_pane_requests(
+    args: &[&str],
+    raw_target: Option<&str>,
+    target_win: Option<usize>,
+    target_win_is_id: bool,
+    target_win_name: Option<&str>,
+    target_pane: Option<usize>,
+    pane_is_id: bool,
+) -> Vec<CtrlReq> {
+    if target_win.is_none() && target_win_name.is_none() && target_pane.is_none() {
+        return Vec::new();
+    }
+    vec![CtrlReq::SelectPaneTarget {
+        win: target_win,
+        win_is_id: target_win_is_id,
+        win_name: target_win_name.map(|s| s.to_string()),
+        pane: target_pane,
+        pane_is_id,
+        fire_hook: !select_pane_has_own_operation(args, raw_target),
+    }]
 }
 
 /// Walk the sub-commands produced by `split_top_level_semicolons` and merge
@@ -336,6 +512,112 @@ fn coalesce_send_commands(parts: Vec<String>) -> Vec<String> {
     }
     flush(&mut out, &mut acc, &mut acc_target);
     out
+}
+
+/// tmux's `break-pane` template when `-P` is given without `-F`
+/// (cmd-break-pane.c:29, BREAK_PANE_TEMPLATE).
+pub const BREAK_PANE_TEMPLATE: &str = "#{session_name}:#{window_index}.#{pane_index}";
+
+/// Split a `break-pane` command line into the request the server applies and
+/// the `-P` format, if any.
+///
+/// tmux's flag set is `"abdPF:n:s:t:"` (cmd-break-pane.c:37). psmux parsed NONE
+/// of it: the whole command reached the server as a bare `BreakPane`, so `-d`
+/// did nothing and `-s` silently broke the ACTIVE pane (issue #689). Shared by
+/// the plain CLI route and the control / in-TUI route so both agree.
+///
+/// `outer_target` is the `-t` value the generic target parser already peeled
+/// off the command line; for break-pane it is a DESTINATION window, never a
+/// pane to operate on.
+pub fn parse_break_pane_args(
+    args: &[&str],
+    outer_target: Option<&str>,
+) -> (crate::window_ops::BreakPaneRequest, Option<String>) {
+    let mut req = crate::window_ops::BreakPaneRequest::default();
+    req.dst = outer_target.map(|t| t.to_string());
+    let mut print = false;
+    let mut format: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i] {
+            "-d" => { req.detach = true; }
+            "-a" => { req.after = true; }
+            "-b" => { req.before = true; }
+            "-P" => { print = true; }
+            "-s" => { if let Some(v) = args.get(i + 1) { req.src = Some(v.trim_matches('"').to_string()); i += 1; } }
+            "-t" => { if let Some(v) = args.get(i + 1) { req.dst = Some(v.trim_matches('"').to_string()); i += 1; } }
+            "-n" => { if let Some(v) = args.get(i + 1) { req.name = Some(v.trim_matches('"').to_string()); i += 1; } }
+            "-F" => { if let Some(v) = args.get(i + 1) { format = Some(v.trim_matches('"').to_string()); i += 1; } }
+            _ => {}
+        }
+        i += 1;
+    }
+    let print = if print {
+        Some(format.unwrap_or_else(|| BREAK_PANE_TEMPLATE.to_string()))
+    } else {
+        None
+    };
+    (req, print)
+}
+
+/// A `link-window` command line, shared by the plain CLI route and the
+/// control / in-TUI route so both agree (issue #693 item 1).
+///
+/// tmux's flag set is `"abdks:t:"` (cmd-move-window.c:49), `-s` is
+/// `CMD_FIND_WINDOW` and `-t` is the `CMD_FIND_WINDOW / CMD_FIND_WINDOW_INDEX`
+/// destination (:83), so the destination need not exist yet. psmux read both
+/// as `trim_start_matches(':').parse::<usize>()`, which could not read a
+/// session qualified `-s sess:0` at all.
+///
+/// `outer_target` is the `-t` value the generic target parser already peeled
+/// off the command line.
+pub struct LinkWindowArgs {
+    pub src: Option<String>,
+    pub dst: Option<String>,
+    pub detach: bool,
+    pub kill: bool,
+    pub after: bool,
+    pub before: bool,
+}
+
+pub fn parse_link_window_args(args: &[&str], outer_target: Option<&str>) -> LinkWindowArgs {
+    let mut out = LinkWindowArgs {
+        src: None,
+        dst: outer_target.map(|t| t.to_string()),
+        detach: false,
+        kill: false,
+        after: false,
+        before: false,
+    };
+    let mut i = 0;
+    while i < args.len() {
+        match args[i] {
+            "-d" => out.detach = true,
+            "-k" => out.kill = true,
+            "-a" => out.after = true,
+            "-b" => out.before = true,
+            "-s" => { if let Some(v) = args.get(i + 1) { out.src = Some(v.trim_matches('"').to_string()); i += 1; } }
+            "-t" => { if let Some(v) = args.get(i + 1) { out.dst = Some(v.trim_matches('"').to_string()); i += 1; } }
+            _ => {}
+        }
+        i += 1;
+    }
+    out
+}
+
+/// The `-t` of an `unlink-window` (tmux flag set `"kt:"`,
+/// cmd-kill-window.c:51). It never reached the arm before, so the command
+/// always unlinked the ACTIVE window (issue #693 item 2).
+pub fn parse_unlink_window_target(args: &[&str], outer_target: Option<&str>) -> Option<String> {
+    let mut target = outer_target.map(|t| t.to_string());
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "-t" {
+            if let Some(v) = args.get(i + 1) { target = Some(v.trim_matches('"').to_string()); i += 1; }
+        }
+        i += 1;
+    }
+    target
 }
 
 /// Parsed `new-pane` flags. Semantics match tmux `cmd-split-window.c`:
@@ -843,6 +1125,10 @@ if control_echo || control_noecho {
                     if let Some(v) = cmd_args.get(i+1) {
                         // Issue #558: drop the '=' exact-match marker (see TARGET capture).
                         ctrl_raw_target = Some(crate::cli::strip_exact_match_prefix(v).to_string());
+                        // Issue #692: a window command's bare `-t 0` is a window
+                        // index in the current session (tmux cmd-find.c:443),
+                        // not a session name.
+                        let v = &crate::cli::coerce_bare_window_target(cmd_name, v);
                         let pt = parse_target(v);
                         if pt.window.is_some() { ctrl_target_win = pt.window; ctrl_target_win_is_id = pt.window_is_id; ctrl_target_win_name = None; }
                         else if pt.window_name.is_some() { ctrl_target_win_name = pt.window_name; ctrl_target_win = None; ctrl_target_win_is_id = false; }
@@ -877,8 +1163,19 @@ if control_echo || control_noecho {
         // destination that need not exist yet), so temp-focusing here would
         // either undo the change (#483) or misdirect it (#442) for
         // control-mode clients exactly as it did for one-shot ones.
+        // break-pane's -t is a DESTINATION window index that need not exist
+        // yet (cmd-break-pane.c:43, CMD_FIND_WINDOW_INDEX), and its own parser
+        // owns it. Temp-focusing it used to be the only reason `break-pane -t`
+        // preserved the current window (#689).
+        // link-window's -t is a DESTINATION window index that need not exist
+        // yet either (cmd-move-window.c:83, the CMD_FIND_WINDOW_INDEX shared
+        // with move-window), and unlink-window's -t names the window to
+        // unlink; both now own their target, so the temp focus must not eat it
+        // (issue #693 items 1 and 2).
         let skip_target_focus = matches!(cmd_name, "join-pane" | "joinp" | "move-pane" | "movep"
             | "move-window" | "movew" | "swap-window" | "swapw"
+            | "break-pane" | "breakp"
+            | "link-window" | "linkw" | "unlink-window" | "unlinkw"
             | "switch-client" | "switchc" | "resize-window" | "resizew"
             | "kill-window" | "killw" | "detach-client" | "detach");
         // capture-pane -t %N resolves the pane id inside the capture itself;
@@ -899,15 +1196,44 @@ if control_echo || control_noecho {
                 })
             });
         if focus_err.is_none() {
-            if is_focus_cmd {
-                if let Some(wid) = ctrl_target_win {
-                    if ctrl_target_win_is_id {
-                        let _ = tx_ctrl.send(CtrlReq::FocusWindowById(wid));
-                    } else {
-                        let _ = tx_ctrl.send(CtrlReq::FocusWindow(wid));
+            if is_focus_cmd && matches!(cmd_name, "select-pane" | "selectp") {
+                // Issue #691: one request for the whole target, so the command
+                // fires its own hook (`after-select-pane`) once and never
+                // `after-select-window`.
+                for req in select_pane_requests(
+                    &cmd_args,
+                    ctrl_raw_target.as_deref(), ctrl_target_win, ctrl_target_win_is_id,
+                    ctrl_target_win_name.as_deref(), ctrl_target_pane, ctrl_pane_is_id,
+                ) {
+                    let _ = tx_ctrl.send(req);
+                }
+            } else if is_focus_cmd {
+                // #693 item 4: select-window resolves its whole `-t` through
+                // the one shared resolver on this route too, so `-t +1`,
+                // `-t !` and `-t {end}` mean the same thing from a control
+                // client as they do from move-window.
+                let (reqs, resp_r) = select_window_requests(
+                    &filtered_args, ctrl_raw_target.as_deref(), ctrl_target_win,
+                    ctrl_target_win_is_id, ctrl_target_win_name.as_deref());
+                let decided = !reqs.is_empty();
+                for req in reqs {
+                    let _ = tx_ctrl.send(req);
+                }
+                if let Some(r) = resp_r {
+                    if let Ok(Err(e)) = r.recv_timeout(Duration::from_secs(5)) {
+                        focus_err = Some(e);
                     }
-                } else if let Some(ref wname) = ctrl_target_win_name {
-                    let _ = tx_ctrl.send(CtrlReq::FocusWindowByName(wname.clone()));
+                }
+                if !decided {
+                    if let Some(wid) = ctrl_target_win {
+                        if ctrl_target_win_is_id {
+                            let _ = tx_ctrl.send(CtrlReq::FocusWindowById(wid));
+                        } else {
+                            let _ = tx_ctrl.send(CtrlReq::FocusWindow(wid));
+                        }
+                    } else if let Some(ref wname) = ctrl_target_win_name {
+                        let _ = tx_ctrl.send(CtrlReq::FocusWindowByName(wname.clone()));
+                    }
                 }
                 if let Some(pid) = ctrl_target_pane {
                     if ctrl_pane_is_id {
@@ -1058,10 +1384,19 @@ loop {
         line.clear();
         match r.read_line(&mut line) {
             Ok(0) => {
-                // EOF - client disconnected
+                // EOF - client disconnected. A zero byte read is EOF here, but
+                // it is also how a timed out socket read surfaces on some
+                // Windows stacks, so log which one we think we saw: this line
+                // is the only witness that separates a real disconnect from a
+                // client that goes on receiving frames while losing its input.
+                crate::debug_log::server_log(
+                    "client-reader",
+                    &format!("client {client_id}: batching read EOF (attached_sent={attached_sent}), closing the connection"),
+                );
                 if attached_sent {
                     let _ = tx.send(CtrlReq::ClientDetach(client_id));
                 }
+                crate::types::teardown_client_connection(client_id);
                 break;
             }
             Err(e) => {
@@ -1070,9 +1405,14 @@ loop {
                     line.clear(); // Clear any partial data from interrupted read
                     continue;
                 }
+                crate::debug_log::server_log(
+                    "client-reader",
+                    &format!("client {client_id}: batching read error {e:?} (attached_sent={attached_sent}), closing the connection"),
+                );
                 if attached_sent {
                     let _ = tx.send(CtrlReq::ClientDetach(client_id));
                 }
+                crate::types::teardown_client_connection(client_id);
                 break; // Real error or non-persistent timeout
             }
             Ok(_) => {
@@ -1169,6 +1509,10 @@ if set_option_command {
             if let Some(v) = args.get(i+1) {
             // Issue #558: drop the '=' exact-match marker (see TARGET capture).
                 raw_target = Some(crate::cli::strip_exact_match_prefix(v).to_string());
+                // Issue #692: a window command's bare `-t 0` is a window index
+                // in the current session (tmux cmd-find.c:443), not a session
+                // name, so put the colon back before the generic parse.
+                let v = &crate::cli::coerce_bare_window_target(cmd, v);
                 // Parse the -t value using parse_target for consistent handling
                 let pt = parse_target(v);
                 if pt.window.is_some() { target_win = pt.window; target_win_is_id = pt.window_is_id; target_win_name = None; }
@@ -1218,8 +1562,17 @@ let is_focus_cmd = matches!(cmd, "select-window" | "selectw" | "select-pane" | "
 // its handler resolves itself — it must never be validated as a pane/window
 // target (a client id shaped like %N would be rejected whenever no pane %N
 // exists, and a nonexistent client is that command's documented safe no-op).
+// break-pane's -t is a DESTINATION window index that need not exist yet
+// (cmd-break-pane.c:43, CMD_FIND_WINDOW_INDEX), and break-pane's own parser
+// owns it. The temporary focus was the ONLY reason `break-pane -t` left the
+// current window alone, which is why bare `break-pane -d` still switched (#689).
+// link-window's -t is the same CMD_FIND_WINDOW_INDEX destination
+// (cmd-move-window.c:83) and unlink-window's -t names the window to unlink
+// (cmd-kill-window.c:75-83); both own their target now (#693 items 1 and 2).
 let skip_target_focus = matches!(cmd, "join-pane" | "joinp" | "move-pane" | "movep"
     | "move-window" | "movew" | "swap-window" | "swapw"
+    | "break-pane" | "breakp"
+    | "link-window" | "linkw" | "unlink-window" | "unlinkw"
     | "switch-client" | "switchc" | "resize-window" | "resizew"
     | "kill-window" | "killw" | "detach-client" | "detach");
 let targeted_kill_pane_id = if matches!(cmd, "kill-pane" | "killp") && pane_is_id {
@@ -1235,21 +1588,43 @@ let capture_pane_by_id = matches!(cmd, "capture-pane" | "capturep") && pane_is_i
 // swap-pane swaps the target with the *current* active pane; focusing the
 // target first would make active == target and turn the swap into a no-op.
 let skip_pane_focus = matches!(cmd, "display-message" | "display" | "swap-pane" | "swapp") || skip_target_focus || capture_pane_by_id;
+// Issue #690: `select-window` decides its own window target, in
+// `select_window_requests`, and this block does not touch it.  Both used
+// to act on it, a permanent FocusWindow here and a SelectWindow from the
+// command's arm below, and since every request carries its own hook slot
+// in the server loop, one `select-window` ran `after-select-window`
+// twice.  A pane part on a select-window target is still focused here.
+let selectw_owns_window_target = matches!(cmd, "select-window" | "selectw");
+// Issue #691: and `select-pane` owns its WHOLE target, window part
+// included, for the same reason. Focusing the window part here fired
+// `after-select-window` for a command tmux gives `after-select-pane`.
+let selectp_owns_target = matches!(cmd, "select-pane" | "selectp");
 if is_focus_cmd {
-    if let Some(wid) = target_win {
-        if target_win_is_id {
-            let _ = tx.send(CtrlReq::FocusWindowById(wid));
-        } else {
-            let _ = tx.send(CtrlReq::FocusWindow(wid));
+    if selectp_owns_target {
+        for req in select_pane_requests(
+            &args, raw_target.as_deref(), target_win, target_win_is_id,
+            target_win_name.as_deref(), target_pane, pane_is_id,
+        ) {
+            let _ = tx.send(req);
         }
-    } else if let Some(ref wname) = target_win_name {
-        let _ = tx.send(CtrlReq::FocusWindowByName(wname.clone()));
-    }
-    if let Some(pid) = target_pane {
-        if pane_is_id {
-            let _ = tx.send(CtrlReq::FocusPane(pid));
-        } else {
-            let _ = tx.send(CtrlReq::FocusPaneByIndex(pid));
+    } else {
+        if !selectw_owns_window_target {
+            if let Some(wid) = target_win {
+                if target_win_is_id {
+                    let _ = tx.send(CtrlReq::FocusWindowById(wid));
+                } else {
+                    let _ = tx.send(CtrlReq::FocusWindow(wid));
+                }
+            } else if let Some(ref wname) = target_win_name {
+                let _ = tx.send(CtrlReq::FocusWindowByName(wname.clone()));
+            }
+        }
+        if let Some(pid) = target_pane {
+            if pane_is_id {
+                let _ = tx.send(CtrlReq::FocusPane(pid));
+            } else {
+                let _ = tx.send(CtrlReq::FocusPaneByIndex(pid));
+            }
         }
     }
 } else {
@@ -1788,8 +2163,20 @@ match cmd {
             let cmd_parts: Vec<&str> = args.iter().enumerate()
                 .filter(|(i, a)| is_operand(*i, a))
                 .map(|(_, a)| *a).collect();
-            for _ in 0..repeat_count {
-                let _ = tx.send(CtrlReq::SendKeysX(cmd_parts.join(" ")));
+            // One request carrying the count: tmux hands -N to the copy
+            // command as its repeat (`wme->prefix`), and refuses -X outside
+            // a mode with "not in a mode" (cmd-send-keys.c).
+            let (rtx, rrx) = mpsc::channel();
+            let _ = tx.send(CtrlReq::SendKeysXRun {
+                cmd: cmd_parts.join(" "),
+                count: repeat_count,
+                resp: Some(rtx),
+            });
+            if let Ok(Err(e)) = rrx.recv_timeout(Duration::from_secs(5)) {
+                if !persistent {
+                    let _ = writeln!(write_stream, "ERROR: {}", e);
+                    let _ = write_stream.flush();
+                }
             }
         } else {
             let keys: Vec<String> = args.iter()
@@ -1861,28 +2248,41 @@ match cmd {
         if title.is_some() || pane_style.is_some() {
             let _ = tx.send(CtrlReq::SetPaneAttrs { title, style: pane_style });
         }
-        if !dir.is_empty() {
+        if dir == "last" {
+            // #693 item 5: `select-pane -l` with no last pane is tmux's
+            // "no last pane" at exit 1 (cmd-select-pane.c:176), not a silent
+            // success. It is the same operation as `last-pane`, so it takes
+            // the same request.
+            let (resp_s, resp_r) = mpsc::channel();
+            let _ = tx.send(CtrlReq::LastPane { resp: resp_s });
+            if let Ok(Err(e)) = resp_r.recv_timeout(Duration::from_secs(5)) {
+                if !persistent {
+                    let _ = writeln!(write_stream, "ERROR: {}", e);
+                    let _ = write_stream.flush();
+                }
+            }
+        } else if !dir.is_empty() {
             let keep_zoom = args.iter().any(|a| *a == "-Z");
             let _ = tx.send(CtrlReq::SelectPane(dir.to_string(), keep_zoom));
         }
     }
     "select-window" | "selectw" => {
-        // An @id target was already focused permanently by the generic target
-        // focus block above (FocusWindowById). Re-sending it here as an INDEX
-        // via SelectWindow would override that with the wrong window (#497).
-        let idx = args.iter().find(|a| !a.starts_with('-')).and_then(|s| s.parse::<usize>().ok())
-            .or(if target_win_is_id { None } else { target_win });
-        if let Some(idx) = idx {
-            let _ = tx.send(CtrlReq::SelectWindow(idx));
+        // Exactly one window request per command, chosen in one place (#690).
+        let (reqs, resp_r) = select_window_requests(
+            &args, raw_target.as_deref(), target_win, target_win_is_id,
+            target_win_name.as_deref());
+        for req in reqs {
+            let _ = tx.send(req);
         }
-        if args.iter().any(|a| *a == "-l") {
-            let _ = tx.send(CtrlReq::LastWindow);
-        }
-        if args.iter().any(|a| *a == "-n") {
-            let _ = tx.send(CtrlReq::NextWindow);
-        }
-        if args.iter().any(|a| *a == "-p") {
-            let _ = tx.send(CtrlReq::PrevWindow);
+        // #693 item 4: a spec that resolves to no window is tmux's
+        // "can't find window: N" at exit 1, not a silent no-op.
+        if let Some(r) = resp_r {
+            if let Ok(Err(e)) = r.recv_timeout(Duration::from_secs(5)) {
+                if !persistent {
+                    let _ = writeln!(write_stream, "ERROR: {}", e);
+                    let _ = write_stream.flush();
+                }
+            }
         }
     }
     "list-panes" | "lsp" => {
@@ -2019,19 +2419,31 @@ match cmd {
         let raw_t = args.iter().position(|a| *a == "-t")
             .and_then(|i| args.get(i + 1).copied())
             .or_else(|| raw_target.as_deref());
-        // -s <src> -t <dst>: swap two explicit panes (#442). Only when BOTH
-        // resolve to a concrete pane (id or index); a `{position}` token is not
-        // a valid source. Otherwise fall through to the -t / directional forms.
-        let src = raw_s.map(parse_target).and_then(|pt| pt.pane.map(|p| (p, pt.pane_is_id)));
-        let dst = raw_t.filter(|t| !t.starts_with('{')).map(parse_target)
-            .and_then(|pt| pt.pane.map(|p| (p, pt.pane_is_id)));
-        if let (Some((sv, sid)), Some((dv, did))) = (src, dst) {
-            let _ = tx.send(CtrlReq::SwapPaneSrcDst { src: sv, src_is_id: sid, dst: dv, dst_is_id: did, detach });
+        // `-t <pane>` (with or without `-s`) is resolved session wide, so
+        // either half may name a pane in another window (#689). A `{position}`
+        // token stays on the layout-token path; anything that names no pane at
+        // all falls through to the directional -U/-D form.
+        let names_pane = |s: &str| {
+            let pt = parse_target(s);
+            pt.pane.is_some() || pt.window.is_some() || pt.window_name.is_some()
+        };
+        if let Some(t) = raw_t.filter(|t| !t.starts_with('{') && (names_pane(t) || raw_s.is_some())) {
+            let (resp_s, resp_r) = mpsc::channel();
+            let _ = tx.send(CtrlReq::SwapPaneSrcDst {
+                src: raw_s.map(|s| s.to_string()),
+                dst: t.to_string(),
+                detach,
+                resp: resp_s,
+            });
+            if let Ok(Err(e)) = resp_r.recv_timeout(Duration::from_secs(5)) {
+                if !persistent {
+                    let _ = writeln!(write_stream, "ERROR: {}", e);
+                    let _ = write_stream.flush();
+                }
+            }
         } else if let Some(tok) = raw_t.filter(|t| t.starts_with('{')) {
             // Layout position token like {top-right} — layout-independent.
             let _ = tx.send(CtrlReq::SwapPanePosition(tok.to_string()));
-        } else if let Some((p, is_id)) = raw_t.map(parse_target).and_then(|pt| pt.pane.map(|p| (p, pt.pane_is_id))) {
-            let _ = tx.send(CtrlReq::SwapPaneTarget(p, is_id));
         } else {
             let dir = if args.iter().any(|a| *a == "-U") { "U" }
                 else if args.iter().any(|a| *a == "-L") { "L" }
@@ -2135,77 +2547,32 @@ match cmd {
         }
     }
     "paste-buffer" | "pasteb" => {
-        // Issue #684: one parser for both dispatches, so -d and -s reach the
-        // CLI route as well and the in server route (commands.rs) cannot drift
-        // from it again.
-        let pb_args = crate::commands::parse_paste_buffer_args(&args);
-        let buf_name: Option<String> = pb_args.buffer.clone();
-        let paste_mode = pb_args.bracket;
-        let separator = pb_args.separator.clone();
-        let delete_after = pb_args.delete;
-        let send_text = |tx: &mpsc::Sender<CtrlReq>, text: String| {
-            let text = match &separator {
-                Some(sep) => crate::commands::apply_separator(&text, sep),
-                None => text,
-            };
-            if text.is_empty() { return; }
-            if paste_mode {
-                let _ = tx.send(CtrlReq::SendPaste(text));
+        // Issue #684: one parser AND one executor for both dispatches, so -d,
+        // -s and -t reach the CLI route as well and the in server route
+        // (commands.rs) cannot drift from it again.
+        //
+        // This used to be a buffer lookup (ShowNamedBuffer, a round trip) and
+        // then a separate SendPaste.  The lookup is a non-focus request, so it
+        // spent the validated `-t` focus the dispatcher had just applied and
+        // the paste that followed landed in whatever pane the user was looking
+        // at (gabri-ns on #684).  One request now carries the whole command and
+        // the target with it, which is also what tmux does: cmd-paste-buffer.c
+        // resolves the pane with cmd_find_pane and writes to it.
+        //
+        // `-t` here keeps its `without_outer_target` stripping, so re-read it
+        // from the raw target the dispatcher parsed.
+        let mut pb_args = crate::commands::parse_paste_buffer_args(&args);
+        if pb_args.target.is_none() {
+            pb_args.target = raw_target.clone();
+        }
+        let (rtx, rrx) = mpsc::channel::<Option<String>>();
+        let _ = tx.send(CtrlReq::PasteBuffer(pb_args, rtx));
+        if let Ok(Some(msg)) = rrx.recv() {
+            if persistent {
+                let _ = tx.send(CtrlReq::ShowTextPopup("paste-buffer".to_string(), format!("ERROR: {}", msg)));
             } else {
-                let _ = tx.send(CtrlReq::SendText(text));
-            }
-        };
-        let delete_buffer = |tx: &mpsc::Sender<CtrlReq>| {
-            if !delete_after { return; }
-            match &buf_name {
-                Some(name) => match name.parse::<usize>() {
-                    Ok(idx) => { let _ = tx.send(CtrlReq::DeleteBufferAt(idx)); }
-                    Err(_) => { let _ = tx.send(CtrlReq::DeleteNamedBuffer(name.clone())); }
-                },
-                None => { let _ = tx.send(CtrlReq::DeleteBuffer); }
-            }
-        };
-        if let Some(ref name) = buf_name {
-            // Issue #264: an explicitly-named/-indexed buffer that does not
-            // exist must error (matching real tmux's "no buffer <name>"),
-            // not silently no-op. ShowBufferAt/ShowNamedBuffer return `None`
-            // when the buffer is missing, distinct from an empty-but-present
-            // buffer's `Some(String::new())`.
-            let (rtx, rrx) = mpsc::channel::<Option<String>>();
-            if let Ok(idx) = name.parse::<usize>() {
-                let _ = tx.send(CtrlReq::ShowBufferAt(rtx, idx));
-            } else {
-                let _ = tx.send(CtrlReq::ShowNamedBuffer(rtx, name.clone()));
-            }
-            match rrx.recv() {
-                Ok(Some(text)) => {
-                    send_text(&tx, text);
-                    delete_buffer(&tx);
-                }
-                _ => {
-                    let err = format!("no buffer {}\n", name);
-                    if persistent {
-                        let _ = tx.send(CtrlReq::ShowTextPopup("paste-buffer".to_string(), format!("ERROR: {}", err.trim_end())));
-                    } else {
-                        let _ = write!(write_stream, "ERROR: {}", err);
-                        let _ = write_stream.flush();
-                    }
-                }
-            }
-        } else {
-            let (rtx, rrx) = mpsc::channel::<String>();
-            let _ = tx.send(CtrlReq::ShowBuffer(rtx));
-            if let Ok(mut text) = rrx.recv() {
-                // Issue #428: when no explicit buffer is named and the internal
-                // paste-buffer stack is empty, fall back to the OS clipboard so
-                // prefix+] pastes externally-copied text (matching Ctrl+Shift+V).
-                if text.is_empty() {
-                    if let Some(clip) = crate::clipboard::read_from_system_clipboard() {
-                        text = clip;
-                    }
-                }
-                send_text(&tx, text);
-                delete_buffer(&tx);
+                let _ = write!(write_stream, "ERROR: {}\n", msg);
+                let _ = write_stream.flush();
             }
         }
     }
@@ -2356,7 +2723,18 @@ match cmd {
         if !persistent { break; }
     }
     "last-window" | "last" => { let _ = tx.send(CtrlReq::LastWindow); }
-    "last-pane" | "lastp" => { let _ = tx.send(CtrlReq::LastPane); }
+    "last-pane" | "lastp" => {
+        // tmux's last-pane shares cmd_select_pane_exec with `select-pane -l`,
+        // so it owes the same `no last pane` at exit 1 (cmd-select-pane.c:176).
+        let (resp_s, resp_r) = mpsc::channel();
+        let _ = tx.send(CtrlReq::LastPane { resp: resp_s });
+        if let Ok(Err(e)) = resp_r.recv_timeout(Duration::from_secs(5)) {
+            if !persistent {
+                let _ = writeln!(write_stream, "ERROR: {}", e);
+                let _ = write_stream.flush();
+            }
+        }
+    }
     "rotate-window" | "rotatew" => {
         // tmux tests for -D alone and falls through to the -U branch for
         // everything else, so bare `rotate-window` is `-U`.  This arm used to
@@ -2366,7 +2744,26 @@ match cmd {
         let _ = tx.send(CtrlReq::RotateWindow(upward));
     }
     "display-panes" | "displayp" => { let _ = tx.send(CtrlReq::DisplayPanes); }
-    "break-pane" | "breakp" => { let _ = tx.send(CtrlReq::BreakPane); }
+    "break-pane" | "breakp" => {
+        let (req, print) = parse_break_pane_args(&args, raw_target.as_deref());
+        let (resp_s, resp_r) = mpsc::channel();
+        let _ = tx.send(CtrlReq::BreakPaneReq { req, print, resp: resp_s });
+        match resp_r.recv_timeout(Duration::from_secs(5)) {
+            Ok(Ok(text)) => {
+                if !text.is_empty() {
+                    let _ = writeln!(write_stream, "{}", text);
+                    let _ = write_stream.flush();
+                }
+            }
+            Ok(Err(e)) => {
+                if !persistent {
+                    let _ = writeln!(write_stream, "ERROR: {}", e);
+                    let _ = write_stream.flush();
+                }
+            }
+            Err(_) => {}
+        }
+    }
     "join-pane" | "joinp" | "move-pane" | "movep" => {
         // Parse -s source and -h/-v direction.
         // -t target is already parsed by the global -t handler above into target_win / target_pane.
@@ -2401,6 +2798,10 @@ match cmd {
             target_win: tgt_win,
             target_pane: target_pane,
             horizontal,
+            // -d: graft the pane without switching to the target window
+            // (cmd-join-pane.c:515). It was parsed nowhere, so join-pane
+            // always switched, the same defect break-pane had (#689).
+            detach: args.iter().any(|a| *a == "-d"),
         });
     }
     "respawn-pane" | "respawnp" => {
@@ -2439,7 +2840,10 @@ match cmd {
         // command). Fire-and-forget here meant the CLI exited 0 with empty
         // output for a refusal that had just taken the whole server down.
         let (resp_s, resp_r) = mpsc::channel();
-        let _ = tx.send(CtrlReq::RespawnPane(workdir, kill, command, empty, resp_s));
+        // -e KEY=VALUE for the new process (#708). It was parsed (and kept
+        // out of the command operand) but never sent, so it was dropped.
+        let env_sets = env_flag_values(&args);
+        let _ = tx.send(CtrlReq::RespawnPane(workdir, kill, command, empty, resp_s, env_sets));
         if let Ok(Err(e)) = resp_r.recv_timeout(Duration::from_secs(5)) {
             if !persistent {
                 let _ = writeln!(write_stream, "ERROR: {}", e);
@@ -2915,7 +3319,9 @@ match cmd {
                 let (rtx, rrx) = mpsc::channel::<String>();
                 let _ = tx.send(CtrlReq::ShowOptionValue(rtx, name.to_string()));
                 if let Ok(v) = rrx.recv_timeout(Duration::from_millis(2000)) {
-                    if values_only {
+                    if let Some(text) = crate::terminal_overrides::show_array_lines(name, &v, values_only) {
+                        out.push_str(&text);
+                    } else if values_only {
                         out.push_str(&format!("{}\n", v));
                     } else {
                         out.push_str(&format!("{} {}\n", name, v));
@@ -3018,7 +3424,14 @@ match cmd {
                         text
                     };
                     if !(has_q && resolved.is_empty()) {
-                        let output = if has_v {
+                        let array_text = if window_scope {
+                            None
+                        } else {
+                            crate::terminal_overrides::show_array_lines(name, &resolved, has_v)
+                        };
+                        let output = if let Some(text) = array_text {
+                            text
+                        } else if has_v {
                             format!("{}\n", resolved)
                         } else {
                             format!("{} {}\n", name, resolved)
@@ -3203,15 +3616,32 @@ match cmd {
         }
     }
     "link-window" | "linkw" => {
-        // Parse -s source_window and -t target_index
-        let src_idx = args.windows(2).find(|w| w[0] == "-s")
-            .and_then(|w| w[1].trim_start_matches(':').parse::<usize>().ok());
-        let dst_idx = args.windows(2).find(|w| w[0] == "-t")
-            .and_then(|w| w[1].trim_start_matches(':').parse::<usize>().ok());
-        let _ = tx.send(CtrlReq::LinkWindow(src_idx, dst_idx));
+        // `-s` and `-t` are RAW specs now (#693 item 1): a session qualified
+        // source reads, and the destination need not exist yet.
+        let la = parse_link_window_args(&args, raw_target.as_deref());
+        let (resp_s, resp_r) = mpsc::channel();
+        let _ = tx.send(CtrlReq::LinkWindowReq {
+            src: la.src, dst: la.dst, detach: la.detach,
+            kill: la.kill, after: la.after, before: la.before,
+            resp: resp_s,
+        });
+        if let Ok(Err(e)) = resp_r.recv_timeout(Duration::from_secs(5)) {
+            if !persistent {
+                let _ = writeln!(write_stream, "ERROR: {}", e);
+                let _ = write_stream.flush();
+            }
+        }
     }
     "unlink-window" | "unlinkw" => {
-        let _ = tx.send(CtrlReq::UnlinkWindow);
+        let target = parse_unlink_window_target(&args, raw_target.as_deref());
+        let (resp_s, resp_r) = mpsc::channel();
+        let _ = tx.send(CtrlReq::UnlinkWindowReq { target, resp: resp_s });
+        if let Ok(Err(e)) = resp_r.recv_timeout(Duration::from_secs(5)) {
+            if !persistent {
+                let _ = writeln!(write_stream, "ERROR: {}", e);
+                let _ = write_stream.flush();
+            }
+        }
     }
     "find-window" | "findw" => {
         let pattern = args.iter().find(|a| !a.starts_with('-')).unwrap_or(&"").to_string();
@@ -3627,6 +4057,11 @@ match cmd {
             let _ = tx.send(CtrlReq::KillServerScoped(all));
         } else {
             let _ = tx.send(CtrlReq::KillServer);
+            // Hold this one-shot connection open until the server exits: the
+            // caller reads it until EOF and force-kills the pid 50ms after,
+            // so an early close makes the force-kill land in the middle of
+            // the shutdown and orphan whatever it had not killed yet (#686).
+            std::thread::sleep(Duration::from_millis(1500));
         }
     }
     "choose-tree" | "choose-window" | "choose-session" => {
@@ -3644,11 +4079,11 @@ match cmd {
         if !persistent { break; }
     }
     "copy-mode" => {
-        if args.iter().any(|a| *a == "-u") {
-            let _ = tx.send(CtrlReq::CopyEnterPageUp);
-        } else {
-            let _ = tx.send(CtrlReq::CopyEnter);
-        }
+        // `-q` leaves, `-H` hides the position indicator for this entry only
+        // (`window-copy.c` `window_copy_init` reads the flag), `-u` pages up,
+        // and they combine the way tmux's `cmd_copy_mode_exec` combines them
+        // (#704).
+        let _ = tx.send(CtrlReq::CopyModeCmd(crate::copy_mode::CopyModeFlags::parse(&args)));
     }
     "clock-mode" => { let _ = tx.send(CtrlReq::ClockMode); }
     // Overlay interaction commands (sent by client during active overlays)
@@ -3709,6 +4144,17 @@ match cmd {
     "customize-filter" => {
         let text = args.join(" ");
         let _ = tx.send(CtrlReq::CustomizeFilter(text));
+    }
+    "__config-warnings" => {
+        // Internal: the client that just started or claimed this server asks
+        // for the warnings its config load recorded (#706). Not a tmux command
+        // and not in the command table.
+        let (rtx, rrx) = mpsc::channel::<String>();
+        let _ = tx.send(CtrlReq::ConfigWarnings(rtx));
+        if let Ok(text) = rrx.recv_timeout(Duration::from_secs(5)) {
+            let _ = write!(write_stream, "{}", text); let _ = write_stream.flush();
+        }
+        if !persistent { break; }
     }
     "show-messages" | "showmsgs" => {
         let (rtx, rrx) = mpsc::channel::<String>();
@@ -4176,7 +4622,8 @@ match cmd {
             .or_else(|| respawn_positional_command(&args));
         let workdir = args.windows(2).find(|w| w[0] == "-c").map(|w| w[1].to_string());
         let (resp_s, resp_r) = mpsc::channel();
-        let _ = tx.send(CtrlReq::RespawnWindow(workdir, command, resp_s));
+        let env_sets = env_flag_values(&args);
+        let _ = tx.send(CtrlReq::RespawnWindow(workdir, command, resp_s, env_sets));
         if let Ok(Err(e)) = resp_r.recv_timeout(Duration::from_secs(5)) {
             if !persistent {
                 let _ = writeln!(write_stream, "ERROR: {}", e);
@@ -4243,10 +4690,18 @@ match cmd {
     line.clear();
     match r.read_line(&mut line) {
         Ok(0) => {
-            // EOF - client disconnected
+            // EOF - client disconnected. Logged for the same reason as the
+            // batching read above, and closed for real: a client whose reader
+            // ends but whose writer and stream stay alive keeps painting frames
+            // while nothing can reach the server from its keyboard or mouse.
+            crate::debug_log::server_log(
+                "client-reader",
+                &format!("client {client_id}: read EOF (attached_sent={attached_sent}), closing the connection"),
+            );
             if attached_sent {
                 let _ = tx.send(CtrlReq::ClientDetach(client_id));
             }
+            crate::types::teardown_client_connection(client_id);
             break;
         }
         Err(e) => {
@@ -4254,9 +4709,14 @@ match cmd {
                 line.clear(); // Clear any partial data from interrupted read
                 continue; // Persistent mode - keep waiting
             }
+            crate::debug_log::server_log(
+                "client-reader",
+                &format!("client {client_id}: read error {e:?} (attached_sent={attached_sent}), closing the connection"),
+            );
             if attached_sent {
                 let _ = tx.send(CtrlReq::ClientDetach(client_id));
             }
+            crate::types::teardown_client_connection(client_id);
             break; // Non-persistent timeout or real error
         }
         Ok(_) => {
@@ -4583,9 +5043,28 @@ fn dispatch_control_command(
             }
             true
         }
+        "link-window" | "linkw" => {
+            let la = parse_link_window_args(args, raw_target);
+            let (resp_s, resp_r) = mpsc::channel();
+            let _ = tx.send(CtrlReq::LinkWindowReq {
+                src: la.src, dst: la.dst, detach: la.detach,
+                kill: la.kill, after: la.after, before: la.before,
+                resp: resp_s,
+            });
+            match resp_r.recv_timeout(Duration::from_secs(5)) {
+                Ok(Err(e)) => { let _ = resp_tx.send(format!("\u{0001}ERR\u{0001}{}", e)); }
+                _ => { let _ = resp_tx.send(String::new()); }
+            }
+            true
+        }
         "unlink-window" | "unlinkw" => {
-            let _ = tx.send(CtrlReq::UnlinkWindow);
-            let _ = resp_tx.send(String::new());
+            let target = parse_unlink_window_target(args, raw_target);
+            let (resp_s, resp_r) = mpsc::channel();
+            let _ = tx.send(CtrlReq::UnlinkWindowReq { target, resp: resp_s });
+            match resp_r.recv_timeout(Duration::from_secs(5)) {
+                Ok(Err(e)) => { let _ = resp_tx.send(format!("\u{0001}ERR\u{0001}{}", e)); }
+                _ => { let _ = resp_tx.send(String::new()); }
+            }
             true
         }
         "select-window" | "selectw" => {
@@ -4809,7 +5288,9 @@ fn dispatch_control_command(
                     let (srtx, srrx) = mpsc::channel::<String>();
                     let _ = tx.send(CtrlReq::ShowOptionValue(srtx, name.to_string()));
                     if let Ok(v) = srrx.recv_timeout(Duration::from_millis(2000)) {
-                        if value_only {
+                        if let Some(t) = crate::terminal_overrides::show_array_lines(name, &v, value_only) {
+                            text.push_str(&t);
+                        } else if value_only {
                             text.push_str(&format!("{}\n", v));
                         } else {
                             text.push_str(&format!("{} {}\n", name, v));
@@ -4819,6 +5300,8 @@ fn dispatch_control_command(
                 let _ = resp_tx.send(text);
                 return true;
             }
+            // Array options print one `name[i] value` line per element (#700).
+            let array_name = opt_name.clone().filter(|n| !window_scope2 && n == "terminal-overrides");
             if let Some(name) = opt_name {
                 // #648: `-wv <name>` used to fall into the plain
                 // ShowOptionValue arm because `value_only` was tested first,
@@ -4865,6 +5348,11 @@ fn dispatch_control_command(
                         .collect::<Vec<_>>()
                         .join("\n");
                     let _ = resp_tx.send(values_only);
+                } else if let Some(t) = array_name
+                    .as_deref()
+                    .and_then(|n| crate::terminal_overrides::show_array_lines(n, &text, value_only))
+                {
+                    let _ = resp_tx.send(t.trim_end_matches('\n').to_string());
                 } else {
                     let _ = resp_tx.send(text);
                 }
@@ -4982,6 +5470,17 @@ fn dispatch_control_command(
         }
         "kill-server" => {
             let _ = tx.send(CtrlReq::KillServer);
+            // Deliberately NOT answered here (#686). The caller
+            // (`session::kill_servers_in_scope`) reads this socket until EOF
+            // because "EOF means the server is gone", then force-kills the pid
+            // 50ms later. Answering straight away closes the socket while the
+            // shutdown has barely started, so the force-kill lands in the
+            // middle of it and every pane shell and pool spare it had not
+            // reached yet is orphaned. The server's own exit is what closes
+            // this socket, which is the EOF the caller actually wants. The
+            // sleep is the wedged-server fallback: if the shutdown never
+            // happens, answer late rather than never.
+            std::thread::sleep(Duration::from_millis(1500));
             let _ = resp_tx.send(String::new());
             true
         }
@@ -5032,30 +5531,47 @@ fn dispatch_control_command(
             // -s <src> -t <dst>: swap two explicit panes (#442). Only when both
             // resolve to a concrete pane; otherwise fall through.
             let detach = args.iter().any(|a| *a == "-d");
-            let src = args.iter().position(|a| *a == "-s")
+            let raw_s = args.iter().position(|a| *a == "-s")
+                .and_then(|i| args.get(i + 1).copied());
+            let raw_t = args.iter().position(|a| *a == "-t")
                 .and_then(|i| args.get(i + 1).copied())
-                .map(parse_target)
-                .and_then(|pt| pt.pane.map(|p| (p, pt.pane_is_id)));
-            let dst_inline = args.iter().position(|a| *a == "-t")
-                .and_then(|i| args.get(i + 1).copied())
-                .map(parse_target)
-                .and_then(|pt| pt.pane.map(|p| (p, pt.pane_is_id)));
-            let dst = dst_inline.or_else(|| target_pane.map(|p| (p, pane_is_id)));
-            if let (Some((sv, sid)), Some((dv, did))) = (src, dst) {
-                let _ = tx.send(CtrlReq::SwapPaneSrcDst { src: sv, src_is_id: sid, dst: dv, dst_is_id: did, detach });
-            } else if let Some(tok) = raw_target.filter(|t| t.starts_with('{')) {
-                let _ = tx.send(CtrlReq::SwapPanePosition(tok.to_string()));
-            } else {
-                let resolved = dst;
-                if let Some((p, is_id)) = resolved {
-                    let _ = tx.send(CtrlReq::SwapPaneTarget(p, is_id));
-                } else {
-                    let direction = if args.iter().any(|a| *a == "-U") { "U".to_string() }
-                                   else if args.iter().any(|a| *a == "-L") { "L".to_string() }
-                                   else if args.iter().any(|a| *a == "-R") { "R".to_string() }
-                                   else { "D".to_string() };
-                    let _ = tx.send(CtrlReq::SwapPane(direction));
+                .or(raw_target);
+            // Both halves are resolved session wide by the server, so either
+            // may name a pane in another window (#689).
+            let names_pane = |s: &str| {
+                let pt = parse_target(s);
+                pt.pane.is_some() || pt.window.is_some() || pt.window_name.is_some()
+            };
+            if let Some(t) = raw_t.filter(|t| !t.starts_with('{') && (names_pane(t) || raw_s.is_some())) {
+                let (sw_s, sw_r) = mpsc::channel();
+                let _ = tx.send(CtrlReq::SwapPaneSrcDst {
+                    src: raw_s.map(|s| s.to_string()),
+                    dst: t.to_string(),
+                    detach,
+                    resp: sw_s,
+                });
+                match sw_r.recv_timeout(Duration::from_secs(5)) {
+                    Ok(Err(e)) => { let _ = resp_tx.send(format!("\u{0001}ERR\u{0001}{}", e)); }
+                    _ => { let _ = resp_tx.send(String::new()); }
                 }
+                return true;
+            } else if let Some(tok) = raw_t.filter(|t| t.starts_with('{')) {
+                let _ = tx.send(CtrlReq::SwapPanePosition(tok.to_string()));
+            } else if let Some(p) = target_pane {
+                let (sw_s, sw_r) = mpsc::channel();
+                let dst = if pane_is_id { format!("%{}", p) } else { format!(".{}", p) };
+                let _ = tx.send(CtrlReq::SwapPaneSrcDst { src: None, dst, detach, resp: sw_s });
+                match sw_r.recv_timeout(Duration::from_secs(5)) {
+                    Ok(Err(e)) => { let _ = resp_tx.send(format!("\u{0001}ERR\u{0001}{}", e)); }
+                    _ => { let _ = resp_tx.send(String::new()); }
+                }
+                return true;
+            } else {
+                let direction = if args.iter().any(|a| *a == "-U") { "U".to_string() }
+                               else if args.iter().any(|a| *a == "-L") { "L".to_string() }
+                               else if args.iter().any(|a| *a == "-R") { "R".to_string() }
+                               else { "D".to_string() };
+                let _ = tx.send(CtrlReq::SwapPane(direction));
             }
             let _ = resp_tx.send(String::new());
             true
@@ -5218,8 +5734,12 @@ fn dispatch_control_command(
             true
         }
         "last-pane" | "lastp" => {
-            let _ = tx.send(CtrlReq::LastPane);
-            let _ = resp_tx.send(String::new());
+            let (resp_s, resp_r) = mpsc::channel();
+            let _ = tx.send(CtrlReq::LastPane { resp: resp_s });
+            match resp_r.recv_timeout(Duration::from_secs(5)) {
+                Ok(Err(e)) => { let _ = resp_tx.send(format!("\u{0001}ERR\u{0001}{}", e)); }
+                _ => { let _ = resp_tx.send(String::new()); }
+            }
             true
         }
         "next-window" | "next" => {
@@ -5241,8 +5761,16 @@ fn dispatch_control_command(
             true
         }
         "break-pane" | "breakp" => {
-            let _ = tx.send(CtrlReq::BreakPane);
-            let _ = resp_tx.send(String::new());
+            // Control-mode / in-TUI path: same parser, so `-d`, `-s`, `-n`,
+            // `-a`, `-b`, `-P` and `-F` mean the same thing on every route.
+            let (req, print) = parse_break_pane_args(args, raw_target);
+            let (bp_s, bp_r) = mpsc::channel();
+            let _ = tx.send(CtrlReq::BreakPaneReq { req, print, resp: bp_s });
+            match bp_r.recv_timeout(Duration::from_secs(5)) {
+                Ok(Ok(text)) => { let _ = resp_tx.send(text); }
+                Ok(Err(e)) => { let _ = resp_tx.send(format!("\u{0001}ERR\u{0001}{}", e)); }
+                Err(_) => { let _ = resp_tx.send(String::new()); }
+            }
             true
         }
         "respawn-pane" | "respawnp" => {
@@ -5257,7 +5785,8 @@ fn dispatch_control_command(
             // Control mode: a refused respawn must come back as %error, not as
             // a successful %end (the refusal used to kill the server outright).
             let (resp_s, resp_r) = mpsc::channel();
-            let _ = tx.send(CtrlReq::RespawnPane(workdir, kill, command, empty, resp_s));
+            let env_sets = env_flag_values(&args);
+            let _ = tx.send(CtrlReq::RespawnPane(workdir, kill, command, empty, resp_s, env_sets));
             match resp_r.recv_timeout(Duration::from_secs(5)) {
                 Ok(Err(e)) => { let _ = resp_tx.send(format!("\u{0001}ERR\u{0001}{}", e)); }
                 _ => { let _ = resp_tx.send(String::new()); }
@@ -5462,3 +5991,15 @@ mod tests_pane_border_indicator_control;
 #[cfg(test)]
 #[path = "../../tests-rs/test_issue583_pane_scope_target.rs"]
 mod tests_issue583_pane_scope_target;
+
+#[cfg(test)]
+#[path = "../../tests-rs/test_issue690_hook_once.rs"]
+mod tests_issue690_hook_once;
+
+#[cfg(test)]
+#[path = "../../tests-rs/test_issue691_hook_table.rs"]
+mod tests_issue691_hook_table;
+
+#[cfg(test)]
+#[path = "../../tests-rs/test_issue693_targets.rs"]
+mod tests_issue693_targets;

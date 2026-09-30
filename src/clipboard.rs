@@ -172,3 +172,18 @@ pub fn system_clipboard_has_image() -> bool {
 
 #[cfg(not(windows))]
 pub fn system_clipboard_has_image() -> bool { false }
+
+/// The system clipboard's change counter.
+///
+/// `GetClipboardSequenceNumber` is a read of one shared value: it does not open
+/// the clipboard, cannot fail and cannot block behind another process that is
+/// holding it.  That is what makes it usable from the client's input loop,
+/// where an `OpenClipboard` per keystroke would not be: the head of the
+/// clipboard can be cached and only re-read when this number moves.
+#[cfg(windows)]
+pub fn clipboard_sequence_number() -> u32 {
+    unsafe { windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber() }
+}
+
+#[cfg(not(windows))]
+pub fn clipboard_sequence_number() -> u32 { 0 }

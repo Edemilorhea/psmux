@@ -29,7 +29,7 @@ This is the reference for the commands **psmux itself** accepts and the flags **
 |---|---|---|---|
 | `attach-session` | `attach`, `a`, `at` | `t:` | CLI, SRV, CFG |
 | `bind-key` | `bind` | `nrT:` | CLI, SRV, CFG, CTL |
-| `break-pane` | `breakp` | `dt:` | CLI, SRV, CFG, CTL |
+| `break-pane` | `breakp` | `abdPF:n:s:t:` | CLI, SRV, CFG, CTL |
 | `capture-pane` | `capturep` | `eJpb:E:S:t:` | CLI, SRV, CFG, CTL |
 | `choose-buffer` | `chooseb` | none | CLI, SRV, CFG |
 | `choose-client` | *(none)* | none | CLI, SRV, CFG |
@@ -61,7 +61,7 @@ This is the reference for the commands **psmux itself** accepts and the flags **
 | `kill-window` | `killw` | `at:` | CLI, SRV, CFG, CTL |
 | `last-pane` | `lastp` | none | CLI, SRV, CFG, CTL |
 | `last-window` | `last` | none | CLI, SRV, CFG, CTL |
-| `link-window` | `linkw` | `s:t:` | CLI, SRV, CFG |
+| `link-window` | `linkw` | `abdks:t:` | CLI, SRV, CFG, CTL |
 | `list-buffers` | `lsb` | `F:t:` | CLI, SRV, CFG, CTL |
 | `list-clients` | `lsc` | `F:` (SRV and CTL only) | CLI, SRV, CFG, CTL |
 | `list-commands` | `lscm` | none | CLI, SRV, CFG, CTL |
@@ -90,8 +90,8 @@ This is the reference for the commands **psmux itself** accepts and the flags **
 | `rename-window` | `renamew` | none, takes the new name as a positional argument | CLI, SRV, CFG, CTL |
 | `resize-pane` | `resizep` | `UDLRZx:y:t:` | CLI, SRV, CFG, CTL |
 | `resize-window` | `resizew` | `aADLRUx:y:t:` | CLI, SRV, CFG, CTL |
-| `respawn-pane` | `respawnp`, `resp` | `kc:t:` plus `-- <command>` | CLI, SRV, CFG, CTL |
-| `respawn-window` | `respawnw` | none | CLI, SRV, CFG |
+| `respawn-pane` | `respawnp`, `resp` | `Ekc:e:t:` plus `-- <command>` | CLI, SRV, CFG, CTL |
+| `respawn-window` | `respawnw` | `kc:e:t:` plus a command | CLI, SRV, CFG |
 | `rotate-window` | `rotatew` | `UDt:` | CLI, SRV, CFG, CTL |
 | `run-command` | `runcmd` | none, takes the command line as positional arguments | SRV, CTL |
 | `run-shell` | `run` | `b` | CLI, SRV, CFG |
@@ -126,7 +126,7 @@ This is the reference for the commands **psmux itself** accepts and the flags **
 | `switch-client` | `switchc` | `lnprc:t:` plus `T:` on SRV | CLI, SRV, CFG |
 | `toggle-sync` | *(none)* | none | SRV, CFG |
 | `unbind-key` | `unbind` | `anT:t:` | CLI, SRV, CFG, CTL |
-| `unlink-window` | `unlinkw` | none, acts on the active window | CLI, SRV, CFG, CTL |
+| `unlink-window` | `unlinkw` | `kt:` | CLI, SRV, CFG, CTL |
 | `wait-for` | `wait` | `LSU` | CLI, SRV, CFG |
 | `zoom-pane` | *(none)* | none | CLI, SRV, CFG, CTL |
 
@@ -226,15 +226,18 @@ Five mouse wire commands are an exception and are genuinely usable for scripting
 - Value: `-t` (target window)
 
 **unlink-window** (`unlinkw`)
-- No flags. Acts on the active window.
-- Not accepted: `-k`
+- Value: `-t` (the window to unlink, defaults to the current window)
+- Boolean: `-k` (accepted; psmux runs one server per session, so a window is never linked into a second session and the refusal tmux gives without `-k` cannot arise)
+- The `-t` names the window that goes, which is tmux's `target->wl` (cmd-kill-window.c:75-83). Before #693 it carried nothing to the server and the ACTIVE window was always removed; that only looked right because the generic temporary focus had moved the active window onto the target first, and a `-t` that named no window exited 0 having done nothing. It is now resolved by the same window resolver `move-window` uses, so `-t sess:9` is `can't find window: 9` at exit 1.
 
 **rename-window** (`renamew`)
 - No flags. The first positional argument is the new name.
 
 **select-window** (`selectw`)
 - Boolean: `-l` (last), `-n` (next), `-p` (previous)
-- Value: `-t` (target window, `session:@id` form is honored)
+- Value: `-t` (target window)
+- `-t` goes through the same resolver `move-window` and `swap-window` use (#602), on every route, since #693: an `@id`, the `+N` / `-N` offsets, the symbols `^` `!` `$` `+` `-` and their `{start}` `{last}` `{end}` `{next}` `{previous}` spellings, a window index, then an exact window name. `+N` / `-N` step through the session's window list and wrap, so `-t +1` from window 1 is window 2; before #693 it was read as the literal index 1 from every starting window, and `-t !`, `-t {end}`, `-t -` and `-t +` died on the CLI as session names without a byte reaching the server.
+- A bare NUMBER is a window index (#692), a bare NAME is still a session, and a `-t` that names no window is `can't find window: N` at exit 1.
 - Not accepted: `-T`
 
 **next-window** (`next`), **previous-window** (`prev`), **last-window** (`last`)
@@ -247,8 +250,11 @@ Five mouse wire commands are an exception and are genuinely usable for scripting
 - An attached client sees the new window list immediately (#601).
 
 **link-window** (`linkw`)
-- Value: `-s` (source window index), `-t` (destination window index)
-- Not accepted: `-a`, `-b`, `-d`, `-k`
+- Boolean: `-a` (after), `-b` (before), `-d` (do not select the linked window), `-k` (kill whatever holds the destination index)
+- Value: `-s` (source window, defaults to the current window), `-t` (destination window index)
+- Both values go through the same resolver as `move-window` (#602), so `-s sess:0`, `-s @3` and `-s {last}` all read. Before #693 `-s` was parsed as a plain number after a leading colon, so any session qualified source silently became the ACTIVE window, and `-t` never reached the command at all: the generic temporary focus ate it and refused a destination index that no window held yet, which is why `link-window -s sess:0 -t sess:5` did nothing at exit 0.
+- `-t` is tmux's `CMD_FIND_WINDOW_INDEX` (cmd-move-window.c:83, the branch link-window shares with move-window), so the index need NOT exist yet, exactly like `break-pane`'s. An index that is already in use is `index in use: N` at exit 1 unless `-k` is given. An unresolvable `-s` is `can't find window: N` at exit 1.
+- Without `-d` the linked window becomes the current one; with `-d` the current window stays where it is.
 
 **swap-window** (`swapw`)
 - Boolean: `-d` (keep the current window current: the active window follows the swap to its new index)
@@ -271,7 +277,9 @@ Five mouse wire commands are an exception and are genuinely usable for scripting
 - Accepted but ignored: `-C`, `-N`, `-T`, `-i`, `-r`, `-Z`, `-t`
 
 **respawn-window** (`respawnw`)
-- No flags. Respawns the active pane of the window.
+- Boolean: `-k`
+- Value: `-c` (start directory), `-e` (`KEY=VALUE`, repeatable), `-t` (target window)
+- Respawns the active pane of the window, keeping its history like `respawn-pane`.
 
 **list-windows** (`lsw`)
 - Boolean: `-a` (all sessions), `-J` (JSON output, a psmux extension)
@@ -296,10 +304,12 @@ A psmux extension that creates a pane floating above the tiled layout.
 - Value: `-T` (set and lock the pane title), `-P` (pane style), `-t` (target pane)
 - `-T` and `-P` without a direction flag are attribute only (#592): `select-pane -t %7 -T logs` titles pane `%7` and leaves the active window and pane exactly where they were, as tmux does. Combine with `-U`/`-D`/`-L`/`-R`/`-l` if you also want to move.
 - `-t` also accepts positional targets: `{top}`, `{bottom}`, `{left}`, `{right}`, `{top-left}`, `{top-right}`, `{bottom-left}`, `{bottom-right}`
+- A `-t` naming a pane in ANOTHER window sets that window's active pane and leaves the session's current window alone, which is what tmux does: cmd-select-pane.c:274 calls `window_set_active_pane` on the target window and the file never calls `session_select`. Before #693 psmux switched to the target window as a side effect, so `select-pane -t sess:1.0` moved the user off their window. Use `select-window` to change windows. A bare `%id` in another window follows the same rule.
+- `-l` (and `last-pane`) takes the window's last pane, falls back to the sibling when the window has exactly two panes and neither was ever visited, and otherwise fails with `no last pane` at exit 1, which is cmd-select-pane.c:165-177. Before #693 it exited 0 in silence for both of the last two.
 - Not accepted: `-g`
 
 **last-pane** (`lastp`)
-- No flags.
+- No flags. Same operation, and the same `no last pane` at exit 1, as `select-pane -l`.
 
 **kill-pane** (`killp`)
 - Value: `-t` (target pane, via the global `-t` handler)
@@ -316,24 +326,35 @@ A psmux extension that creates a pane floating above the tiled layout.
 **swap-pane** (`swapp`)
 - Boolean: `-U` (swap up), `-D` (swap down), `-d` (do not move the active pane)
 - Value: `-s` (source pane), `-t` (destination pane)
+- `-s` and `-t` may name panes in two DIFFERENT windows; the two panes trade window and layout slot, and both windows are re laid out. Without `-s` the source is the current pane. A spec that names no pane is `can't find pane: X` at exit 1.
+- psmux extension: `-t` also accepts a layout position token such as `{top-right}`, and `-L`/`-R` swap with the spatial neighbour (tmux has only `-U`/`-D`).
 - Not accepted: `-Z`
 
 **join-pane** (`joinp`) and **move-pane** (`movep`)
-- Boolean: `-h` (horizontal), `-v` (vertical, the default), `-d` (do not switch)
+- Boolean: `-h` (horizontal), `-v` (vertical, the default), `-d` (graft the pane without switching to the destination window)
 - Value: `-s` (source pane), `-t` (destination pane)
 - A `-s <other-session>:...` source moves a live pane between independent servers.
 - Not accepted: `-b`, `-f`, `-p`, `-l`
 
 **break-pane** (`breakp`)
-- Boolean: `-d` (do not switch to the new window)
-- Value: `-t` (target)
-- Not accepted: `-a`, `-b`, `-P`, `-F`, `-n`, `-s`
+- Boolean: `-d` (do not switch to the new window), `-a` (insert after the destination window), `-b` (insert before it), `-P` (print where the pane landed)
+- Value: `-s` (source pane), `-t` (destination window), `-n` (window name), `-F` (format for `-P`)
+- `-s` is the pane to break out and is resolved across the whole session, so `-s other:0.2` and `-s %7` reach a pane in another window. Without `-s` the current pane is used.
+- `-t` is a DESTINATION window index, not a pane. `-t 6` puts the new window at index 6, `-t <session>` takes the next free index, and an index another window already holds is refused with `index in use: N` at exit 1. Naming a pane in it (`-t sess:0.1`, `-t %3`) is refused with `can't specify pane here` at exit 1, the way tmux refuses a pane where it wants an index. Use `-s` to choose the pane.
+- `-P` prints `#{session_name}:#{window_index}.#{pane_index}` unless `-F` supplies a template.
+- `-n` also pins the name, so the window keeps it instead of following the pane title.
+- Not accepted: `-W`, `-x`, `-y`, `-X`, `-Y` (floating panes)
 
 **respawn-pane** (`respawnp`, `resp`)
 - Boolean: `-k` (kill the existing process first)
-- Value: `-c` (start directory), `-t` (target pane)
+- Boolean: `-E` (respawn as an empty pane with no process)
+- Value: `-c` (start directory), `-e` (`KEY=VALUE` for the new process, repeatable,
+  applied over the global and session environment; later respawns do not
+  inherit it), `-t` (target pane)
 - `-- <command>` is honored and replaces the pane command.
-- Not accepted: `-e`
+- The pane keeps its history. As in tmux (`screen_reinit`), only the visible
+  rows are cleared, the cursor is homed, and copy mode and the alternate screen
+  are left.
 - Without `-k`, a pane whose process is still running is refused, like tmux:
   `respawn pane failed: pane <session>:<window>.<pane> still active` on stderr
   at exit 1. The session and the pane are left exactly as they were.
@@ -378,7 +399,8 @@ A psmux extension that creates a pane floating above the tiled layout.
 ### Copy and paste commands
 
 **copy-mode**
-- Boolean: `-u` (scroll up one page on entry), `-d` (scroll down), `-e` (exit at the bottom), `-H` (hide the position indicator), `-q` (quit copy mode)
+- Boolean: `-u` (scroll up one page on entry), `-H` (hide the position indicator on a fresh entry; `P` or `send-keys -X toggle-position` flips it inside copy mode), `-q` (leave copy mode or clock mode instead of entering)
+- Accepted but ignored: `-d`, `-e`
 - Value: `-t` (target pane)
 - Not accepted: `-M`, `-S`, `-s`
 - In control mode `copy-mode` is a success returning no-op, because iTerm2 implements copy mode locally on captured content.

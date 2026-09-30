@@ -1499,6 +1499,9 @@ pub(crate) fn render_float_overlays(
 pub struct CopyLnRender {
     pub mode: crate::copy_line_numbers::CopyLnMode,
     pub hsize: usize,
+    /// `toggle-position` / `copy-mode -H`: the position indicator is not drawn
+    /// while this is set (#704).
+    pub hide_position: bool,
     pub num_style: Style,
     pub cur_style: Style,
 }
@@ -2094,8 +2097,20 @@ pub fn render_layout_json(
                 }
             }
 
-            if *copy_mode && *active && *scroll_offset > 0 {
-                let indicator = format!("[{}/{}]", scroll_offset, scroll_offset);
+            // tmux draws `[#{copy_position}/#{copy_position_limit}]` on every
+            // copy mode frame, the live bottom included (window-copy.c
+            // `window_copy_write_line`, pair from `window_copy_formats`).
+            // This used to print the scroll offset on both sides of the slash
+            // and skip offset 0 (#702).
+            // `toggle-position` (P) and `copy-mode -H` hide it, the way
+            // `window_copy_write_line` skips the draw on `data->hide_position`
+            // (#704).
+            if *copy_mode && *active && !copy_ln.map(|cfg| cfg.hide_position).unwrap_or(false) {
+                let (mode, hsize) = copy_ln
+                    .map(|cfg| (cfg.mode, cfg.hsize))
+                    .unwrap_or((crate::copy_line_numbers::CopyLnMode::Off, 0));
+                let indicator = crate::copy_line_numbers::position_indicator(
+                    mode, *scroll_offset, hsize, *src_rows as usize);
                 let indicator_width = indicator.len() as u16;
                 if area.width > indicator_width + 2 {
                     let indicator_x = area.x + area.width - indicator_width - 1;
@@ -2906,6 +2921,15 @@ pub fn run_remote(terminal: &mut Terminal<crate::platform::PsmuxBackend>, input:
     // Release do not forward the same paste more than once.
     #[cfg(windows)]
     let mut image_ctrl_v_press_forwarded = false;
+    // The clipboard's first characters, re-read only when the system's
+    // clipboard sequence number moves.  Consulted before a 1 to 2 character
+    // burst is committed as typing: if it is the start of what is on the
+    // clipboard it is the head of a paste, not a keystroke (#684 follow up).
+    #[cfg(windows)]
+    let mut paste_clip_head = ClipboardHeadCache::default();
+    // One log line per held group, not one per loop turn.
+    #[cfg(windows)]
+    let mut paste_head_logged = false;
 
     // Track whether a modified Enter Press was already handled this keypress
     // cycle.  WezTerm sends Shift+Enter as Release-only (no Press), so we
@@ -3089,6 +3113,9 @@ pub fn run_remote(terminal: &mut Terminal<crate::platform::PsmuxBackend>, input:
         /// Active pane scrollback size, for absolute/hybrid line numbers.
         #[serde(default)]
         copy_hsize: usize,
+        /// toggle-position / copy-mode -H: hide the position indicator.
+        #[serde(default)]
+        copy_hide_position: bool,
         #[serde(default)]
         copy_mode_line_number_style: Option<String>,
         #[serde(default)]
@@ -4241,13 +4268,13 @@ pub fn run_remote(terminal: &mut Terminal<crate::platform::PsmuxBackend>, input:
                             synced_bindings.iter().any(|b| {
                                 b.t == "root" && parse_key_string(&b.k).map_or(false, |k| normalize_key_for_binding(k) == key_tuple)
                                 // Skip scroll-triggered copy mode bindings when option is off (#284)
-                                && !(b.c.starts_with("copy-mode") && b.c.contains("-u") && !scroll_enter_copy_mode)
+                                && !(!scroll_enter_copy_mode && crate::copy_mode::is_page_up_copy_mode_command(&b.c))
                             })
                         } {
                             let key_tuple = normalize_key_for_binding((key.code, key.modifiers));
                             if let Some(entry) = synced_bindings.iter().find(|b| {
                                 b.t == "root" && parse_key_string(&b.k).map_or(false, |k| normalize_key_for_binding(k) == key_tuple)
-                                && !(b.c.starts_with("copy-mode") && b.c.contains("-u") && !scroll_enter_copy_mode)
+                                && !(!scroll_enter_copy_mode && crate::copy_mode::is_page_up_copy_mode_command(&b.c))
                             }) {
                                 if entry.c == "detach-client" || entry.c == "detach" {
                                     quit = true;
@@ -5713,12 +5740,15 @@ pub fn run_remote(terminal: &mut Terminal<crate::platform::PsmuxBackend>, input:
                             pane_renaming, &mut pane_title_buf,
                             window_idx_input, &mut window_idx_buf,
                         );
-                        let duplicate = !consumed && paste_gesture.blocks(&data);
+                        let duplicate = !consumed && paste_event_is_duplicate(&paste_gesture, &data);
                         if duplicate {
                             // Windows crossterm can emit Event::Paste *and* the
                             // per-character key events for one Ctrl+V.  When the
                             // characters were delivered first, forwarding this
-                            // event too pastes the same text twice.
+                            // event too pastes the same text twice.  Only the
+                            // text itself decides that: a paste after a key the
+                            // user typed, or after an earlier paste, is a new
+                            // paste (issue #598).
                             if input_log_enabled() {
                                 input_log("paste", &format!(
                                     "Event::Paste: dropping duplicate of {} char(s) already sent as characters",
@@ -6500,11 +6530,29 @@ pub fn run_remote(terminal: &mut Terminal<crate::platform::PsmuxBackend>, input:
         // paste even though the user explicitly disabled paste detection.
         #[cfg(windows)]
         {
+            // The clipboard head is only consulted for a buffer that is still
+            // short enough to be a candidate, so an ordinary keystroke costs
+            // one GetClipboardSequenceNumber and a prefix compare.
+            let evidence = if paste_detection_enabled
+                && !paste_pend.is_empty()
+                && paste_pend.len() <= 2
+                && !paste_confirmed
+                && !paste_stage2
+            {
+                PasteHeadEvidence {
+                    gesture_open: paste_gesture.is_open(),
+                    clip_head: paste_clip_head.get(),
+                    held_for: paste_pend_start.map(|s| s.elapsed()).unwrap_or_default(),
+                }
+            } else {
+                PasteHeadEvidence::default()
+            };
             if should_zero_latency_flush_paste_pend(
                 &paste_pend,
                 paste_detection_enabled,
                 paste_confirmed,
                 paste_stage2,
+                evidence,
             ) {
                 if input_log_enabled() {
                     input_log("paste", &format!(
@@ -6529,6 +6577,31 @@ pub fn run_remote(terminal: &mut Terminal<crate::platform::PsmuxBackend>, input:
                 }
                 paste_pend.clear();
                 paste_pend_start = None;
+                paste_head_logged = false;
+            } else if !paste_pend.is_empty()
+                && paste_pend.len() <= 2
+                && paste_detection_enabled
+                && !paste_confirmed
+                && !paste_stage2
+            {
+                if !paste_head_logged && input_log_enabled() {
+                    // Name the rule that held it.  A newline or tab is held by
+                    // the rule that predates the paste head (they never take
+                    // the zero latency path); calling that "head of a paste"
+                    // with two falses after it read as a contradiction (#684).
+                    let gesture = evidence.gesture_open;
+                    let prefix = evidence.clipboard_starts_with(&paste_pend);
+                    let why = if gesture || prefix {
+                        format!("head of a paste (ctrl-v gesture={}, clipboard prefix={})", gesture, prefix)
+                    } else {
+                        "newline or tab never takes the zero latency path".to_string()
+                    };
+                    input_log("paste", &format!(
+                        "holding {} char(s): {}", paste_pend.len(), why));
+                    paste_head_logged = true;
+                }
+            } else {
+                paste_head_logged = false;
             }
         }
 
@@ -6960,6 +7033,13 @@ pub fn run_remote(terminal: &mut Terminal<crate::platform::PsmuxBackend>, input:
             vt100::set_codepoint_widths(codepoint_widths);
             last_codepoint_widths = codepoint_widths.to_vec();
         }
+        // Issue #700: the first frame decides the host screen. The server's
+        // `terminal-overrides` ride on it, and `smcup@` for this client's TERM
+        // keeps the host terminal on its main screen. A no-op after the first.
+        crate::terminal_overrides::client_screen_start(
+            terminal.backend_mut(),
+            state.client_render_options.terminal_overrides.as_deref().unwrap_or(&[]),
+        );
         // Update status-left / status-right from server (already format-expanded)
         if let Some(sl) = state.status_left {
             // Pass full string — visual truncation is handled by ratatui
@@ -7037,6 +7117,8 @@ pub fn run_remote(terminal: &mut Terminal<crate::platform::PsmuxBackend>, input:
         // this closure returns, so once it has run this is exactly what the
         // user saw — the value a release must re-report.
         let drawn_copy_sel = active_copy_sel_end(&root);
+        // Hold the frame's output until the cursor is settled (#697).
+        terminal.backend_mut().begin_frame();
         terminal.draw(|f| {
             client_drawn_sel = drawn_copy_sel;
             let area = f.area();
@@ -7081,16 +7163,25 @@ pub fn run_remote(terminal: &mut Terminal<crate::platform::PsmuxBackend>, input:
                 state.pane_border_lines.as_deref().unwrap_or(crate::border_lines::DEFAULT));
             // copy-mode-line-numbers: build the gutter render config from the
             // option value + active pane scrollback size shipped in state.
+            // Built even with the option off: the copy mode position
+            // indicator reads the mode and the scrollback size from it too
+            // (#702). An `Off` mode keeps the gutter at width 0.
             let copy_ln = {
                 let mode = crate::copy_line_numbers::CopyLnMode::parse(
                     state.copy_mode_line_numbers.as_deref().unwrap_or(crate::copy_line_numbers::DEFAULT));
-                if mode.is_active() {
-                    let num_style = state.copy_mode_line_number_style.as_deref()
-                        .map(crate::style::parse_tmux_style).unwrap_or_else(|| Style::default().fg(Color::DarkGray));
-                    let cur_style = state.copy_mode_current_line_number_style.as_deref()
-                        .map(crate::style::parse_tmux_style).unwrap_or_else(|| Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
-                    Some(CopyLnRender { mode, hsize: state.copy_hsize, num_style, cur_style })
-                } else { None }
+                let (num_style, cur_style) = if mode.is_active() {
+                    (state.copy_mode_line_number_style.as_deref()
+                        .map(crate::style::parse_tmux_style).unwrap_or_else(|| Style::default().fg(Color::DarkGray)),
+                     state.copy_mode_current_line_number_style.as_deref()
+                        .map(crate::style::parse_tmux_style).unwrap_or_else(|| Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)))
+                } else { (Style::default(), Style::default()) };
+                Some(CopyLnRender {
+                    mode,
+                    hsize: state.copy_hsize,
+                    hide_position: state.copy_hide_position,
+                    num_style,
+                    cur_style,
+                })
             };
             let window_styles = WindowContentStyles {
                 inactive: state.client_render_options.window_style.as_deref()
@@ -8343,10 +8434,86 @@ pub fn run_remote(terminal: &mut Terminal<crate::platform::PsmuxBackend>, input:
         {
             let runs = frame_hyperlinks_take();
             if !runs.is_empty() {
+                // Part of the frame (#697): queued behind the cells, with the
+                // cursor hidden, and written in the frame's single write.
                 let overlay = build_osc8_overlay(&runs);
-                let mut out = std::io::stdout().lock();
-                let _ = std::io::Write::write_all(&mut out, overlay.as_bytes());
-                let _ = std::io::Write::flush(&mut out);
+                let _ = terminal.backend_mut().queue_drawing(overlay.as_bytes());
+            }
+        }
+
+        // ── Post-draw: atomic cursor write ──────────────────────────
+        // The frame's cells, the OSC 8 overlay, the cursor visibility,
+        // position and style all leave in ONE write (end_frame below).
+        // Separate console writes create intermediate states visible to WT
+        // between vsync frames, causing rapid cursor flicker (#697: the
+        // cells used to go out with the cursor still visible).
+        {
+            fn find_active_cursor_shape(node: &LayoutJson) -> Option<u8> {
+                match node {
+                    LayoutJson::Leaf { active, cursor_shape, .. } => {
+                        if *active && *cursor_shape >= 1 && *cursor_shape <= 6 { Some(*cursor_shape) } else { None }
+                    }
+                    LayoutJson::Split { children, .. } => {
+                        children.iter().find_map(find_active_cursor_shape)
+                    }
+                }
+            }
+            let effective = find_active_cursor_shape(&root)
+                .unwrap_or_else(|| state_cursor_style_code.unwrap_or_else(crate::rendering::configured_cursor_code));
+            let content_chunk = {
+                let sz = terminal.size().unwrap_or_default();
+                let constraints = if status_at_top {
+                    vec![Constraint::Length(status_lines as u16), Constraint::Min(1)]
+                } else {
+                    vec![Constraint::Min(1), Constraint::Length(status_lines as u16)]
+                };
+                let chunks = Layout::default().direction(Direction::Vertical)
+                    .constraints(constraints).split(sz.into());
+                if status_at_top { chunks[1] } else { chunks[0] }
+            };
+            let active_pane_area: Option<Rect> =
+                compute_active_rect_json_zoom_aware(&root, content_chunk, client_zoomed);
+            // Compute screen-global cursor position from pane-local coords.
+            //
+            // A PTY popup is modal and takes the keystrokes, so while it is up
+            // the cursor belongs to the process inside it, not to the pane
+            // underneath (tmux does the same in server_client_reset_state by
+            // taking both the cursor and the cursor mode from the overlay).
+            // Leaving it on the pane underneath is what made the popup look
+            // like it had no cursor at all (#507).
+            let cursor_visible = if srv_popup_active && srv_popup_has_pty {
+                srv_popup_cursor.and_then(|c| {
+                    popup_cursor_screen_pos(content_chunk, srv_popup_width, srv_popup_height, srv_popup_scroll, c)
+                })
+            } else if let (Some((cc, cr)), Some(outer)) = (post_draw_cursor, active_pane_area) {
+                // Content lives inside the border-label reservation; use the render's inner rect.
+                let inner = pane_content_inner(outer, &client_border_status, &client_border_format);
+                let cy = inner.y + cr.min(inner.height.saturating_sub(1));
+                let cx = inner.x + cc.min(inner.width.saturating_sub(1));
+                Some((cx, cy))
+            } else {
+                None
+            };
+            // The backend settles the cursor for this frame (#697): the cells
+            // were drawn with the cursor hidden, and the cursor is shown only
+            // once it is back where it belongs.  An unchanged frame writes
+            // nothing, so the host never sees a ?25l/?25h pair it did not need.
+            terminal.backend_mut().request_cursor(cursor_visible);
+            // DECSCUSR only when style actually changes (avoids blink
+            // timer resets in WT).
+            if effective != last_cursor_style {
+                last_cursor_style = effective;
+                let _ = terminal.backend_mut().queue_raw(format!("\x1b[{} q", effective).as_bytes());
+            }
+            let _ = terminal.backend_mut().end_frame();
+
+            // Update Win32 system caret for accessibility / speech-to-text
+            // tools (e.g. Wispr Flow).  Skip for SSH sessions — no local
+            // console window.
+            if !is_ssh_mode {
+                if let Some((cx, cy)) = cursor_visible {
+                    crate::platform::caret::update(cx, cy);
+                }
             }
         }
 
@@ -8431,93 +8598,6 @@ pub fn run_remote(terminal: &mut Terminal<crate::platform::PsmuxBackend>, input:
         {
             crate::ssh_input::request_pipe_terminal_size();
             last_pipe_size_query = Instant::now();
-        }
-
-        // ── Post-draw: atomic cursor write ──────────────────────────
-        // Write cursor visibility + position + style as ONE batch to
-        // avoid the separate execute!() flushes that ratatui's normal
-        // show_cursor()/set_cursor_position() would produce.  Multiple
-        // separate console writes create intermediate states visible
-        // to WT between vsync frames, causing rapid cursor flicker.
-        {
-            use std::io::Write;
-            fn find_active_cursor_shape(node: &LayoutJson) -> Option<u8> {
-                match node {
-                    LayoutJson::Leaf { active, cursor_shape, .. } => {
-                        if *active && *cursor_shape >= 1 && *cursor_shape <= 6 { Some(*cursor_shape) } else { None }
-                    }
-                    LayoutJson::Split { children, .. } => {
-                        children.iter().find_map(find_active_cursor_shape)
-                    }
-                }
-            }
-            let effective = find_active_cursor_shape(&root)
-                .unwrap_or_else(|| state_cursor_style_code.unwrap_or_else(crate::rendering::configured_cursor_code));
-            let content_chunk = {
-                let sz = terminal.size().unwrap_or_default();
-                let constraints = if status_at_top {
-                    vec![Constraint::Length(status_lines as u16), Constraint::Min(1)]
-                } else {
-                    vec![Constraint::Min(1), Constraint::Length(status_lines as u16)]
-                };
-                let chunks = Layout::default().direction(Direction::Vertical)
-                    .constraints(constraints).split(sz.into());
-                if status_at_top { chunks[1] } else { chunks[0] }
-            };
-            let active_pane_area: Option<Rect> =
-                compute_active_rect_json_zoom_aware(&root, content_chunk, client_zoomed);
-            // Compute screen-global cursor position from pane-local coords.
-            //
-            // A PTY popup is modal and takes the keystrokes, so while it is up
-            // the cursor belongs to the process inside it, not to the pane
-            // underneath (tmux does the same in server_client_reset_state by
-            // taking both the cursor and the cursor mode from the overlay).
-            // Leaving it on the pane underneath is what made the popup look
-            // like it had no cursor at all (#507).
-            let cursor_visible = if srv_popup_active && srv_popup_has_pty {
-                srv_popup_cursor.and_then(|c| {
-                    popup_cursor_screen_pos(content_chunk, srv_popup_width, srv_popup_height, srv_popup_scroll, c)
-                })
-            } else if let (Some((cc, cr)), Some(outer)) = (post_draw_cursor, active_pane_area) {
-                // Content lives inside the border-label reservation; use the render's inner rect.
-                let inner = pane_content_inner(outer, &client_border_status, &client_border_format);
-                let cy = inner.y + cr.min(inner.height.saturating_sub(1));
-                let cx = inner.x + cc.min(inner.width.saturating_sub(1));
-                Some((cx, cy))
-            } else {
-                None
-            };
-            // Build a single VT string with: ?25h + CUP + DECSCUSR
-            // ratatui's draw() always emits ?25l (since we never call
-            // f.set_cursor_position), so we must re-emit ?25h + CUP
-            // every frame when the cursor should be visible.
-            let mut buf = String::with_capacity(32);
-            if let Some((cx, cy)) = cursor_visible {
-                buf.push_str("\x1b[?25h");
-                use std::fmt::Write as FmtWrite;
-                let _ = write!(buf, "\x1b[{};{}H", cy + 1, cx + 1);
-            }
-            // DECSCUSR only when style actually changes (avoids blink
-            // timer resets in WT).
-            if effective != last_cursor_style {
-                last_cursor_style = effective;
-                use std::fmt::Write as FmtWrite;
-                let _ = write!(buf, "\x1b[{} q", effective);
-            }
-            if !buf.is_empty() {
-                let mut out = std::io::stdout().lock();
-                let _ = out.write_all(buf.as_bytes());
-                let _ = out.flush();
-            }
-
-            // Update Win32 system caret for accessibility / speech-to-text
-            // tools (e.g. Wispr Flow).  Skip for SSH sessions — no local
-            // console window.
-            if !is_ssh_mode {
-                if let Some((cx, cy)) = cursor_visible {
-                    crate::platform::caret::update(cx, cy);
-                }
-            }
         }
 
         let _render_us = _t_parse.elapsed().as_micros().saturating_sub(_parse_us as u128);
@@ -8680,23 +8760,145 @@ fn should_buffer_leading_paste_control(
     true
 }
 
+/// The two pieces of evidence that the character in hand is the HEAD of a
+/// paste rather than a keystroke, checked before it is committed as typing.
+///
+/// The zero latency flush exists because a typed character must not wait out
+/// the 20 ms detection window, and its original comment assumed the console
+/// host hands the whole clipboard to the input buffer in one write, so a paste
+/// would always have three or more characters pending by the time the client
+/// drained the batch.  gabri-ns measured a host where that is not true
+/// (Windows 10 19045, #684 follow up): the first batch held ONE character, it
+/// went out as `send-text`, and the child saw `M` `ESC[200~` `icrosoft...`,
+/// with the head of the paste on the wrong side of the marker.  A 490 byte
+/// clipboard leaked 32 characters the same way.  Emulated here with a 2 ms
+/// drip (tests/paste_host_injector.cs `drip`), all 43 characters escaped.
+///
+/// tmux never faces this: its host brackets the paste in the byte stream and
+/// `tty_keys_paste` (tty-keys.c:838) returns 1 for "partial" while the closing
+/// `ESC[201~` has not arrived, so the whole thing is held in the input buffer
+/// and nothing is dispatched as keys.  The console input buffer carries no such
+/// marker, so psmux has to recognise the head some other way.
+#[cfg(windows)]
+#[derive(Clone, Copy, Default)]
+struct PasteHeadEvidence<'a> {
+    /// A Ctrl+V press is still in flight: whatever arrives now belongs to it.
+    /// Absent on hosts that bind Ctrl+V themselves and swallow the press.
+    gesture_open: bool,
+    /// The beginning of the system clipboard, cached by sequence number.
+    /// A paste IS the clipboard, whichever gesture started it (Ctrl+V,
+    /// Shift+Insert, the right click menu), so a pending buffer that is a
+    /// prefix of it is the strongest evidence available at the first
+    /// character.
+    clip_head: Option<&'a str>,
+    /// How long the pending buffer has been held so far.
+    held_for: Duration,
+}
+
+/// How long a lone character that matches the clipboard's first character is
+/// held before it is committed as typing.
+///
+/// The clipboard prefix is evidence at the FIRST character, and it needs only
+/// as long as the second character of a real paste takes to arrive. On the
+/// host that drips (Windows 10 19045, #684 follow up) that is under a
+/// millisecond: 70 characters in 20 ms measured by the reporter, 2 ms in the
+/// drip harness. A typed character never has a follow up inside 3 ms, so the
+/// hold ends there and the keystroke goes out as typing 3 ms late instead of
+/// 20. The keystroke gate measured the 20 ms version as one sample in forty
+/// waiting out the whole window (p99 23 ms against an 8 ms bar, and 32 ms
+/// against the 25 ms absolute bar in test_perf_vs_terminals) whenever the
+/// clipboard happened to start with a character the bench typed, which is
+/// exactly the shape a user hits after copying a command and typing its first
+/// letter. 3 ms is ten times the measured gap and still inside the 6 ms
+/// "over the ConPTY floor" p99 budget. Once a second character has arrived
+/// the ordinary 20 ms window applies, since that is a burst and no longer a
+/// keystroke.
+#[cfg(windows)]
+const PASTE_HEAD_PREFIX_HOLD: Duration = Duration::from_millis(3);
+
+#[cfg(windows)]
+impl<'a> PasteHeadEvidence<'a> {
+    /// True when `pend` could be the start of the clipboard's text.
+    ///
+    /// The clipboard must have at least 3 characters: at or below 2 the paste
+    /// and the typing paths are the same code (both flush as `send-text`), so
+    /// holding would cost latency and change nothing.
+    fn clipboard_starts_with(&self, pend: &str) -> bool {
+        match self.clip_head {
+            Some(head) => head.chars().count() >= 3 && head.starts_with(pend),
+            None => false,
+        }
+    }
+
+    fn head_of_paste(&self, pend: &str) -> bool {
+        if self.gesture_open {
+            return true;
+        }
+        if !self.clipboard_starts_with(pend) {
+            return false;
+        }
+        // One character on prefix evidence alone: hold it for
+        // PASTE_HEAD_PREFIX_HOLD and no longer. Two characters is a burst
+        // shape and keeps the full window.
+        pend.chars().count() >= 2 || self.held_for < PASTE_HEAD_PREFIX_HOLD
+    }
+}
+
 #[cfg(windows)]
 fn should_zero_latency_flush_paste_pend(
     paste_pend: &str,
     paste_detection_enabled: bool,
     paste_confirmed: bool,
     paste_stage2: bool,
+    evidence: PasteHeadEvidence<'_>,
 ) -> bool {
     if paste_confirmed || paste_stage2 || paste_pend.is_empty() {
         return false;
     }
     if !paste_detection_enabled {
+        // The user asked for no paste detection at all: never hold.
         return true;
     }
     if paste_pend.starts_with('\n') || paste_pend.starts_with('\t') {
         return false;
     }
-    paste_pend.len() <= 2
+    if paste_pend.len() > 2 {
+        return false;
+    }
+    // Hold the head of a paste for the ordinary 20 ms window, which is what
+    // decides whether this becomes a bracketed `send-paste`.  Typing is
+    // unaffected unless the character typed is the clipboard's first
+    // character, and that case simply takes the path every character took
+    // before the zero latency flush existed.
+    !evidence.head_of_paste(paste_pend)
+}
+
+/// The clipboard's first characters, re-read only when the system's clipboard
+/// sequence number moves.
+///
+/// 64 characters is far more than the check needs (the pending buffer is at
+/// most 2 characters when the flush decision is made) and keeps the cache
+/// cheap for a multi megabyte clipboard.
+#[cfg(windows)]
+#[derive(Default)]
+struct ClipboardHeadCache {
+    seq: Option<u32>,
+    head: Option<String>,
+}
+
+#[cfg(windows)]
+impl ClipboardHeadCache {
+    const HEAD_CHARS: usize = 64;
+
+    fn get(&mut self) -> Option<&str> {
+        let seq = crate::clipboard::clipboard_sequence_number();
+        if self.seq != Some(seq) {
+            self.seq = Some(seq);
+            self.head = read_from_system_clipboard()
+                .map(|t| t.chars().take(Self::HEAD_CHARS).collect::<String>());
+        }
+        self.head.as_deref()
+    }
 }
 
 /// What the client has already forwarded for the paste gesture in flight.
@@ -8713,28 +8915,110 @@ fn should_zero_latency_flush_paste_pend(
 struct PasteGesture {
     /// Text of the bursts forwarded so far, with the time the last one went out.
     delivered: Option<(String, Instant)>,
+    /// Every character forwarded in the current run of bursts, a run being
+    /// bursts that follow each other within [`PASTE_GESTURE_WINDOW`].  This is
+    /// what a bracketed paste event is compared against (issue #598): the
+    /// event repeats the characters only when its whole text is what just
+    /// went out, never merely because some key was typed a moment earlier.
+    forwarded: String,
     /// True once any of this gesture's characters have been forwarded.
     injected: bool,
+    /// When the Ctrl+V press that opened this gesture was seen.  The host's
+    /// characters follow it within a few milliseconds, so a burst arriving
+    /// inside [`PASTE_GESTURE_WINDOW`] of it is that paste and must not be
+    /// committed as typing (issue #684 follow up).
+    opened_at: Option<Instant>,
 }
+
+/// How long after a Ctrl+V press an arriving character still counts as part of
+/// that paste.  The host injects within a few milliseconds of the press; this
+/// is generous enough for a slow one and short enough that a key held down and
+/// released has no lasting effect on typing.
+const PASTE_GESTURE_WINDOW: Duration = Duration::from_millis(300);
+
+/// The decision the `Event::Paste` arm makes: drop a bracketed paste event only
+/// when it repeats characters this client has just forwarded for the same
+/// paste.  Before issue #598 this asked [`PasteGesture::blocks`], whose
+/// "already forwarded" latch was set by the paste event's own `send-paste` and
+/// by every typed key, and only a Ctrl+V press or release cleared it.  A client
+/// behind ssh never sees that keystroke, so after its first paste every later
+/// one was dropped as "a duplicate of N char(s) already sent as characters".
+fn paste_event_is_duplicate(gesture: &PasteGesture, text: &str) -> bool {
+    gesture.repeats_forwarded(text)
+}
+
+/// Upper bound on [`PasteGesture::forwarded`], so a long run of fast typing
+/// cannot grow it without limit.  Far above any paste the host splits.
+const PASTE_FORWARDED_MAX: usize = 1 << 20;
 
 impl PasteGesture {
     /// A new Ctrl+V started: nothing of this gesture has been forwarded yet.
     fn start(&mut self) {
         self.delivered = None;
+        self.forwarded.clear();
         self.injected = false;
+        self.opened_at = Some(Instant::now());
     }
 
     /// The gesture is over, however it ended.
     fn finish(&mut self) {
-        self.start();
+        self.delivered = None;
+        self.forwarded.clear();
+        self.injected = false;
+        self.opened_at = None;
+    }
+
+    /// True while a Ctrl+V press is recent enough that the characters arriving
+    /// now are its paste.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    fn is_open(&self) -> bool {
+        self.opened_at
+            .map_or(false, |at| at.elapsed() < PASTE_GESTURE_WINDOW)
     }
 
     /// Remember `text` as forwarded on behalf of this gesture.
     fn record(&mut self, text: &str) {
         if !text.is_empty() {
+            let same_run = self
+                .recent()
+                .map_or(false, |(_, age)| age < PASTE_GESTURE_WINDOW);
+            if !same_run {
+                self.forwarded.clear();
+            }
+            self.forwarded.push_str(text);
+            if self.forwarded.len() > PASTE_FORWARDED_MAX {
+                let mut cut = self.forwarded.len() - PASTE_FORWARDED_MAX;
+                while !self.forwarded.is_char_boundary(cut) {
+                    cut += 1;
+                }
+                self.forwarded.drain(..cut);
+            }
             self.injected = true;
             self.delivered = Some((text.to_string(), Instant::now()));
         }
+    }
+
+    /// True when a bracketed paste event carrying `text` repeats characters
+    /// this client has just forwarded: the host delivered the same paste as
+    /// key events first, so sending the event too would paste it twice.
+    ///
+    /// Unlike [`PasteGesture::blocks`], which guards the clipboard read-back of
+    /// a Ctrl+V the client saw, this looks at the content.  A terminal that
+    /// pastes without a Ctrl+V keystroke (iTerm2 over ssh, issue #598) sends
+    /// ordinary typing right before its pastes, and a key typed a moment
+    /// earlier must never swallow the paste that follows it.  Line endings are
+    /// ignored because a forwarded CR or LF and the event's CRLF are the same
+    /// paste.
+    fn repeats_forwarded(&self, text: &str) -> bool {
+        let recent = self
+            .recent()
+            .map_or(false, |(_, age)| age < PASTE_GESTURE_WINDOW);
+        if !recent {
+            return false;
+        }
+        let strip = |s: &str| s.chars().filter(|c| *c != '\r' && *c != '\n').collect::<String>();
+        let pasted = strip(text);
+        !pasted.is_empty() && strip(&self.forwarded).ends_with(&pasted)
     }
 
     /// The last forwarded burst and how long ago it went out.
@@ -8748,7 +9032,25 @@ impl PasteGesture {
     /// characters were already forwarded (whatever they were split into), or
     /// the same text went out a moment ago.
     fn blocks(&self, text: &str) -> bool {
-        self.injected || duplicates_recent_paste(text, self.recent())
+        // "Already forwarded" covers the read-back of a paste whose characters
+        // went out as typing in pieces (`C2` then the CJK part), where the text
+        // no longer compares equal even though it is the whole paste: whatever
+        // comes back right after a burst of this gesture's characters is that
+        // paste, not typing the user did.
+        //
+        // The window runs from that burst, not from the Ctrl+V press, and it
+        // expires.  A client that pastes without a Ctrl+V keystroke (a mobile
+        // terminal, a paste button) sets `injected` too, and the old unbounded
+        // latch -- cleared only by `start()` / `finish()`, a press and its
+        // release -- made it drop every paste after the first as a duplicate of
+        // it, whatever the content.
+        let injected_recently = self.injected
+            && self
+                .recent()
+                .map_or(false, |(_, age)| age < PASTE_GESTURE_WINDOW);
+        injected_recently
+            || (self.is_open() && self.injected)
+            || duplicates_recent_paste(text, self.recent())
     }
 }
 

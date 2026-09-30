@@ -206,11 +206,29 @@ fn powershell_rehome_form_is_unchanged() {
     );
 }
 
+/// Exact Nushell wire form: a raw string keeps backslashes literal, and the
+/// `#` count grows when the path itself contains the closing delimiter.
+#[test]
+fn nu_rehome_exact_form() {
+    assert_eq!(
+        rehome_command(r"C:\code\project", RehomeSyntax::Nu),
+        " cd r#'C:\\code\\project'#; clear\r"
+    );
+    assert_eq!(
+        rehome_command(r"C:\it's", RehomeSyntax::Nu),
+        " cd r#'C:\\it's'#; clear\r"
+    );
+    assert_eq!(
+        rehome_command(r"C:\a'#b", RehomeSyntax::Nu),
+        " cd r##'C:\\a'#b'##; clear\r"
+    );
+}
+
 /// Every dialect must produce exactly one submitted line and start with the
 /// history-skipping space, whatever the path contains.
 #[test]
 fn all_dialects_submit_exactly_one_line() {
-    for syntax in [RehomeSyntax::PowerShell, RehomeSyntax::Posix, RehomeSyntax::Cmd] {
+    for syntax in [RehomeSyntax::PowerShell, RehomeSyntax::Posix, RehomeSyntax::Cmd, RehomeSyntax::Nu] {
         for dir in [r"C:\a", r"C:\a b\c", "/tmp/x", r"C:\it's"] {
             let cmd = rehome_command(dir, syntax);
             assert!(cmd.starts_with(' '), "{syntax:?} on {dir:?}: {cmd:?}");

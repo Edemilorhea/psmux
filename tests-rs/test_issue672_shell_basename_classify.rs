@@ -128,16 +128,11 @@ fn powershell_classifies_powershell_however_it_is_spelled() {
     assert_family("powershell", RehomeSyntax::PowerShell);
 }
 
-/// Nushell is not one of the families psmux writes a dialect for, so it keeps
-/// the platform default: docs/multi-shell.md says so, and says to turn warm
-/// panes off if the injected line errors there. #672 is about SPELLING, not
-/// about which family a shell is in, so what is pinned here is that every
-/// spelling of nushell lands in the same place as every other: the fallback
-/// must not be reached for some spellings and skipped for others.
+/// Nushell has its own dialect: the PowerShell form's `$PWD.ProviderPath` is a
+/// Nushell parse error, so every spelling of nushell must select it.
 #[test]
-fn nushell_classifies_the_same_however_it_is_spelled() {
-    let expected = if cfg!(windows) { RehomeSyntax::PowerShell } else { RehomeSyntax::Posix };
-    assert_family("nu", expected);
+fn nushell_classifies_nu_however_it_is_spelled() {
+    assert_family("nu", RehomeSyntax::Nu);
 }
 
 // ───────────────────────── the reporter's config ─────────────────────────

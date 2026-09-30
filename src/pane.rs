@@ -407,6 +407,8 @@ pub(crate) enum RehomeSyntax {
     Posix,
     /// cmd.exe.
     Cmd,
+    /// Nushell.
+    Nu,
 }
 
 /// The lowercased file stem of one program path: `C:\Program Files\Git\bin\bash.exe`
@@ -429,6 +431,8 @@ fn rehome_syntax_for_stem(stem: &str) -> Option<RehomeSyntax> {
         Some(RehomeSyntax::Posix)
     } else if stem == "cmd" {
         Some(RehomeSyntax::Cmd)
+    } else if stem == "nu" {
+        Some(RehomeSyntax::Nu)
     } else if stem == "pwsh" || stem == "powershell" {
         Some(RehomeSyntax::PowerShell)
     } else {
@@ -498,7 +502,8 @@ pub(crate) fn rehome_syntax_for_shell(shell: &str) -> RehomeSyntax {
 
 /// Build the command injected to silently re-home a pane's shell to `dir`.
 ///
-/// The trailing clear (`cls` for PowerShell and cmd, `clear` for POSIX shells)
+/// The trailing clear (`cls` for PowerShell and cmd, `clear` for POSIX shells
+/// and Nushell)
 /// wipes the visible echo and its CSI 2J is what ends the render squelch; the
 /// trailing `\r` submits it as one command line. The leading space asks shells
 /// that ignore space-prefixed commands to skip the history entry (best-effort,
@@ -542,6 +547,16 @@ pub(crate) fn rehome_command(dir: &str, syntax: RehomeSyntax) -> String {
         RehomeSyntax::Cmd => {
             let escaped = dir.replace('"', "");
             format!(" cd /d \"{}\" & cls\r", escaped)
+        }
+        RehomeSyntax::Nu => {
+            // A Nushell raw string `r#'...'#` has no escapes, so backslashes
+            // and single quotes pass through; add `#`s until the closing
+            // delimiter cannot occur inside the path.
+            let mut hashes = String::from("#");
+            while dir.contains(&format!("'{}", hashes)) {
+                hashes.push('#');
+            }
+            format!(" cd r{h}'{d}'{h}; clear\r", h = hashes, d = dir)
         }
     }
 }

@@ -16,19 +16,40 @@ fn k(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
 
 #[test]
 fn printable_text_counts() {
-    assert!(is_text_input_key(&k(KeyCode::Char('a'), KeyModifiers::NONE)));
-    assert!(is_text_input_key(&k(KeyCode::Char('Z'), KeyModifiers::SHIFT))); // capitals
-    assert!(is_text_input_key(&k(KeyCode::Char(' '), KeyModifiers::NONE))); // space is text
-    assert!(is_text_input_key(&k(KeyCode::Char('é'), KeyModifiers::NONE))); // non-ASCII
+    assert!(is_text_input_key(&k(
+        KeyCode::Char('a'),
+        KeyModifiers::NONE
+    )));
+    assert!(is_text_input_key(&k(
+        KeyCode::Char('Z'),
+        KeyModifiers::SHIFT
+    ))); // capitals
+    assert!(is_text_input_key(&k(
+        KeyCode::Char(' '),
+        KeyModifiers::NONE
+    ))); // space is text
+    assert!(is_text_input_key(&k(
+        KeyCode::Char('é'),
+        KeyModifiers::NONE
+    ))); // non-ASCII
 }
 
 #[test]
 fn control_nav_and_modified_do_not_count() {
-    assert!(!is_text_input_key(&k(KeyCode::Char('c'), KeyModifiers::CONTROL))); // Ctrl-C
-    assert!(!is_text_input_key(&k(KeyCode::Char('x'), KeyModifiers::ALT))); // Alt-x
+    assert!(!is_text_input_key(&k(
+        KeyCode::Char('c'),
+        KeyModifiers::CONTROL
+    ))); // Ctrl-C
+    assert!(!is_text_input_key(&k(
+        KeyCode::Char('x'),
+        KeyModifiers::ALT
+    ))); // Alt-x
     assert!(!is_text_input_key(&k(KeyCode::Enter, KeyModifiers::NONE)));
     assert!(!is_text_input_key(&k(KeyCode::Tab, KeyModifiers::NONE)));
-    assert!(!is_text_input_key(&k(KeyCode::Backspace, KeyModifiers::NONE)));
+    assert!(!is_text_input_key(&k(
+        KeyCode::Backspace,
+        KeyModifiers::NONE
+    )));
     assert!(!is_text_input_key(&k(KeyCode::Left, KeyModifiers::NONE))); // navigation
     assert!(!is_text_input_key(&k(KeyCode::F(9), KeyModifiers::NONE))); // function key
 }

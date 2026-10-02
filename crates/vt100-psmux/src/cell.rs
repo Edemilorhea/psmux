@@ -1,7 +1,9 @@
-use unicode_width::UnicodeWidthChar as _;
 
-// 22 content bytes keep the cell compact; the struct is 40 bytes once the
-// Attrs OSC 8 hyperlink id (u32) and alignment padding are included.
+// 22 content bytes keep the cell compact; the struct is 44 bytes once the
+// Attrs OSC 8 hyperlink id (u32), the SGR 58 underline colour, the extended
+// underline style and alignment padding are included.  It was 40 before the
+// styled-underscore support (issue #589) added those last two; tmux carries
+// the same pair on every grid_cell (`us` plus the UNDERSCORE_2..5 attr bits).
 const CONTENT_BYTES: usize = 22;
 
 const IS_WIDE: u8 = 0b1000_0000;
@@ -15,7 +17,7 @@ pub struct Cell {
     len: u8,
     attrs: crate::attrs::Attrs,
 }
-const _: () = assert!(std::mem::size_of::<Cell>() == 40);
+const _: () = assert!(std::mem::size_of::<Cell>() == 44);
 
 impl PartialEq<Self> for Cell {
     fn eq(&self, other: &Self) -> bool {
@@ -30,6 +32,14 @@ impl PartialEq<Self> for Cell {
     }
 }
 
+/// The one blank cell every row shares for the columns it does not store.
+/// `Row` keeps only the columns up to the last one that differs from this, so
+/// reads past that point hand out a reference to this instead of to a cell that
+/// would have to be allocated first.  It is tmux's `grid_default_cell`, which
+/// `grid_get_cell` copies out for any column at or past the line's `cellsize`
+/// (tmux grid.c:650).
+static BLANK: std::sync::OnceLock<Cell> = std::sync::OnceLock::new();
+
 impl Cell {
     pub(crate) fn new() -> Self {
         Self {
@@ -37,6 +47,13 @@ impl Cell {
             len: 0,
             attrs: crate::attrs::Attrs::default(),
         }
+    }
+
+    /// A shared reference to the default blank cell.  Compares equal to
+    /// `Cell::new()` and renders as nothing, so it is indistinguishable from a
+    /// stored untouched cell on every read path.
+    pub(crate) fn blank() -> &'static Self {
+        BLANK.get_or_init(Self::new)
     }
 
     fn len(&self) -> usize {
@@ -49,7 +66,11 @@ impl Cell {
         // strings in this context should always be an arbitrary character
         // followed by zero or more zero-width characters, so we should only
         // have to look at the first character
-        self.set_wide(c.width().unwrap_or(1) > 1);
+        // Routed through the shared width function so a `codepoint-widths`
+        // override decides the wide flag too. If this used unicode-width
+        // directly while `Screen::text` honoured the override, the flag and
+        // the column advance would disagree and strand a cell (#639).
+        self.set_wide(crate::width::char_width(c).unwrap_or(1) > 1);
         self.attrs = a;
     }
 
@@ -111,7 +132,7 @@ impl Cell {
         self.len & IS_WIDE_CONTINUATION != 0
     }
 
-    fn set_wide(&mut self, wide: bool) {
+    pub(crate) fn set_wide(&mut self, wide: bool) {
         if wide {
             self.len |= IS_WIDE;
         } else {
@@ -176,6 +197,20 @@ impl Cell {
     #[must_use]
     pub fn underline(&self) -> bool {
         self.attrs.underline()
+    }
+
+    /// Returns the extended underline style the cell should be rendered with
+    /// (single, double, curly, dotted or dashed).
+    #[must_use]
+    pub fn underline_style(&self) -> crate::attrs::UnderlineStyle {
+        self.attrs.underline_style()
+    }
+
+    /// Returns the underline colour (SGR 58) the cell should be rendered
+    /// with.  `Color::Default` means "use the foreground colour".
+    #[must_use]
+    pub fn underline_color(&self) -> crate::Color {
+        self.attrs.ulcolor()
     }
 
     /// Returns whether the cell should be rendered with the inverse text

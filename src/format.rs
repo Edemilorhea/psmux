@@ -95,6 +95,16 @@ pub fn expand_format(fmt: &str, app: &AppState) -> String {
     expand_format_for_window(fmt, app, app.active_idx)
 }
 
+/// The REAL (user-visible) active window index. While a temporary -t focus
+/// is applied for command targeting, `active_idx` points at the target
+/// window; the pre-switch index saved in `temp_focus_saved_active` is what
+/// "active" means to the user, so `#{window_active}` and the `*` flag must
+/// compare against it (issue #551 — `display-message -t <win>` reported
+/// every targeted window as active).
+fn real_active_idx(app: &AppState) -> usize {
+    app.temp_focus_saved_active.unwrap_or(app.active_idx)
+}
+
 /// Expand tmux format strings for a specific window index.
 pub fn expand_format_for_window(fmt: &str, app: &AppState, win_idx: usize) -> String {
     let mut result = String::with_capacity(fmt.len() * 2);
@@ -192,7 +202,7 @@ pub fn expand_format_for_window(fmt: &str, app: &AppState, win_idx: usize) -> St
                     i += 2; continue;
                 }
                 b'F' => {
-                    if win_idx == app.active_idx { result.push('*'); }
+                    if win_idx == real_active_idx(app) { result.push('*'); }
                     else if win_idx == app.last_window_idx { result.push('-'); }
                     i += 2; continue;
                 }
@@ -269,14 +279,11 @@ thread_local! {
 /// result value and never repainted). This restores tmux-parity: async only for
 /// the status bar, synchronous everywhere else.
 ///
-/// DO NOT construct this at a render call site. It is created inside the three
-/// functions that make up the render path —
-/// `server::helpers::expand_status_formats`, `list_windows_json_with_tabs`, and
-/// `append_extra_style_json`. It was previously created at the call sites, and
-/// the server auto-push block was written without it, so `#()` in the status bar
-/// spawned a process synchronously on the event loop that also delivers
-/// keystrokes — on every pane output burst. Keeping construction inside the
-/// functions means a new render path cannot reintroduce that.
+/// The periodic render path owns its guards inside
+/// `server::helpers::expand_status_formats` and `list_windows_json_with_tabs`,
+/// so a new call site cannot forget one. The state-aware window preview uses a
+/// separate guard because it expands one requested window outside those
+/// helpers.
 pub struct AsyncFormatGuard(bool);
 impl AsyncFormatGuard {
     pub fn new() -> Self {
@@ -478,7 +485,7 @@ fn expand_expression(expr: &str, app: &AppState, win_idx: usize) -> String {
                 let two_arg = args.len() >= 2;
                 let mut parts = Vec::new();
                 for wi in 0..app.windows.len() {
-                    let fmt = if wi == app.active_idx { current_fmt } else { normal_fmt };
+                    let fmt = if wi == real_active_idx(app) { current_fmt } else { normal_fmt };
                     parts.push(expand_format_for_window(fmt, app, wi));
                 }
                 // Two-argument form joins without separator (user controls layout),
@@ -515,7 +522,7 @@ fn expand_expression(expr: &str, app: &AppState, win_idx: usize) -> String {
         return result;
     }
 
-    // Plain variable or option name
+    // Plain variable or option name. Unknown names render empty (tmux parity).
     expand_var(expr, app, win_idx)
 }
 
@@ -919,8 +926,14 @@ fn expand_var_or_format(target: &str, app: &AppState, win_idx: usize) -> String 
         if target.is_empty() || target.parse::<f64>().is_ok() {
             return target.to_string();
         }
-        let val = expand_var(target, app, win_idx);
-        if val.is_empty() && !target.is_empty() {
+        // Use the inner form so a REAL variable that is merely empty is
+        // distinguishable from a name that is not a variable at all. Testing
+        // `val.is_empty()` conflated them, so `#{b:pane_path}` rendered the
+        // literal text "pane_path" whenever no OSC 7 had arrived yet — every
+        // modifier over an optional variable echoed its own name instead of
+        // rendering nothing.
+        let val = expand_var_inner(target, app, win_idx);
+        if val == UNKNOWN_VAR {
             // Try as option
             if let Some(opt_val) = lookup_option(target, app) {
                 return opt_val;
@@ -957,6 +970,7 @@ fn lookup_option(name: &str, app: &AppState) -> Option<String> {
         "mouse" => Some(if app.mouse_enabled { "on".into() } else { "off".into() }),
         "bold-is-bright" => Some(if app.bold_is_bright { "on".into() } else { "off".into() }),
         "scroll-enter-copy-mode" => Some(if app.scroll_enter_copy_mode { "on".into() } else { "off".into() }),
+        "mouse-drag-enter-copy-mode" => Some(if app.mouse_drag_enter_copy_mode { "on".into() } else { "off".into() }),
         "choose-tree-preview" => Some(if app.choose_tree_preview { "on".into() } else { "off".into() }),
         "mode-keys" => Some(app.mode_keys.clone()),
         "default-command" | "default-shell" => Some(if app.default_shell.is_empty() {
@@ -999,6 +1013,7 @@ fn lookup_option(name: &str, app: &AppState) -> Option<String> {
         "monitor-silence" => Some(app.monitor_silence.to_string()),
         "bell-action" => Some(app.bell_action.clone()),
         "visual-bell" => Some(if app.visual_bell { "on".into() } else { "off".into() }),
+        "terminal-overrides" => Some(app.terminal_overrides.join(",")),
         "claude-code-fix-tty" => Some(if app.claude_code_fix_tty { "on".into() } else { "off".into() }),
         "claude-code-force-interactive" => Some(if app.claude_code_force_interactive { "on".into() } else { "off".into() }),
         _ => {
@@ -1137,7 +1152,29 @@ fn find_comparison_in_cond(cond: &str) -> Option<(&str, &str, &str)> {
 // ─────────────────── variable expansion ──────────────────────────
 
 /// Expand a named variable.
+/// Sentinel returned by [`expand_var_inner`] for a name that is not a format
+/// variable at all, as distinct from a real variable whose value happens to be
+/// empty.
+///
+/// Those two cases used to be indistinguishable — both came back as `""` — and
+/// [`expand_var_or_format`] treated any empty result as "unknown name" and fell
+/// back to echoing the name as a literal. The visible consequence was that a
+/// modifier over an optional variable printed the variable's own name:
+/// `#{b:pane_path}` rendered the text `pane_path` whenever the shell had not
+/// yet sent an OSC 7. A bare `#{pane_path}` rendered correctly (empty), so the
+/// bug only appeared once a modifier was involved.
+///
+/// Contains a NUL so it can never collide with a real expansion.
+const UNKNOWN_VAR: &str = "\u{0}psmux:unknown-var";
+
+/// Expand a plain variable name. Unknown names expand to the empty string,
+/// matching tmux.
 pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
+    let v = expand_var_inner(var, app, win_idx);
+    if v == UNKNOWN_VAR { String::new() } else { v }
+}
+
+fn expand_var_inner(var: &str, app: &AppState, win_idx: usize) -> String {
     let win = match app.windows.get(win_idx) {
         Some(w) => w,
         None => {
@@ -1150,10 +1187,18 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
                     .map(|d| d.to_string_lossy().into_owned())
                     .unwrap_or_default(),
                 "pid" | "server_pid" => std::process::id().to_string(),
+                "server_instance" => {
+                    crate::session::read_namespace_instance(app.socket_name.as_deref())
+                        .unwrap_or_default()
+                }
                 "version" => VERSION.to_string(),
                 "host" | "hostname" => hostname_cached(),
                 "host_short" => { let h = hostname_cached(); h.split('.').next().unwrap_or(&h).to_string() }
                 _ => {
+                    // Not "unknown": with no window we simply cannot resolve a
+                    // window/pane variable. Reporting UNKNOWN_VAR here would
+                    // make a modifier chain echo the variable's name, so treat
+                    // an unresolvable-but-real variable as empty.
                     if let Some(v) = lookup_option(var, app) { v } else { String::new() }
                 }
             };
@@ -1205,11 +1250,11 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
         // ── Window ──
         "window_index" => app.win_display_index(win_idx).to_string(),
         "window_name" => win.name.clone(),
-        "window_active" => if win_idx == app.active_idx { "1".into() } else { "0".into() },
+        "window_active" => if win_idx == real_active_idx(app) { "1".into() } else { "0".into() },
         "window_panes" => count_panes(&win.root).to_string(),
         "window_flags" | "window_raw_flags" => {
             let mut f = String::new();
-            if win_idx == app.active_idx { f.push('*'); }
+            if win_idx == real_active_idx(app) { f.push('*'); }
             else if win_idx == app.last_window_idx { f.push('-'); }
             if win.zoom_saved.is_some() { f.push('Z'); }
             if win.activity_flag { f.push('#'); }
@@ -1220,9 +1265,9 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
         "window_id" => format!("@{}", win.id),
         "window_activity_flag" => if win.activity_flag { "1".into() } else { "0".into() },
         "window_zoomed_flag" => if win.zoom_saved.is_some() { "1".into() } else { "0".into() },
-        "window_layout" | "window_visible_layout" => generate_window_layout(&win.root, app.last_window_area),
-        "window_width" => app.last_window_area.width.to_string(),
-        "window_height" => app.last_window_area.height.to_string(),
+        "window_layout" | "window_visible_layout" => generate_window_layout(&win.root, win.area),
+        "window_width" => win.area.width.to_string(),
+        "window_height" => win.area.height.to_string(),
         "window_format" => "1".into(),
         "window_activity" => app.created_at.timestamp().to_string(),
         "window_silence_flag" => if win.silence_flag { "1".into() } else { "0".into() },
@@ -1233,7 +1278,13 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
         "window_last_flag" => if win_idx == app.last_window_idx { "1".into() } else { "0".into() },
         "window_start_flag" => if win_idx == 0 { "1".into() } else { "0".into() },
         "window_end_flag" => if win_idx == app.windows.len().saturating_sub(1) { "1".into() } else { "0".into() },
-        "window_bigger" => "0".into(),
+        "window_bigger" => {
+            if win.area.width > app.client_area.width || win.area.height > app.client_area.height {
+                "1".into()
+            } else {
+                "0".into()
+            }
+        }
         "window_cell_width" => "8".into(),
         "window_cell_height" => "16".into(),
         "window_offset_x" | "window_offset_y" | "window_stack_index" => "0".into(),
@@ -1296,8 +1347,32 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
                     }
                 }
                 if let Some(pid) = p.child_pid {
-                    // Fallback: upstream process-tree heuristic, then shell binary name.
-                    crate::platform::process_info::get_foreground_process_name(pid)
+                    // Fallback: the deepest foreground descendant (what tmux
+                    // reports — `cat` running under a shell, not the shell),
+                    // then the pane's own process, then a generic label.
+                    //
+                    // The process-table snapshot behind that walk has two
+                    // freshness policies, and FORMAT_ASYNC already says which
+                    // one this expansion wants: it is set exactly on the
+                    // per-frame render path (status bar, window tabs, window
+                    // title) and clear for every one-shot expansion that
+                    // becomes a command reply. A frame may be one refresh
+                    // behind — the next frame corrects it, and keeping the
+                    // 9-11ms system walk off the server event loop is what the
+                    // keystroke-latency fix bought. A command reply may NOT:
+                    // `display-message -p '#{pane_current_command}'` is asked
+                    // once, and a stale table is the whole answer, which is how
+                    // this format came to report `pwsh` two seconds after a
+                    // command started and the command two seconds after it
+                    // exited. tmux reads the tty's foreground process group at
+                    // query time and is never stale, so the query route walks
+                    // inline when the snapshot has expired.
+                    let deepest = if FORMAT_ASYNC.with(|c| c.get()) {
+                        crate::platform::process_info::get_deepest_foreground_process_name(pid)
+                    } else {
+                        crate::platform::process_info::get_deepest_foreground_process_name_fresh(pid)
+                    };
+                    deepest
                         .or_else(|| crate::platform::process_info::get_process_name(pid))
                         .unwrap_or_else(|| "shell".into())
                 } else if !p.title.is_empty() {
@@ -1309,17 +1384,102 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
         }
         "pane_current_path" => {
             if let Some(p) = target_pane() {
-                // Layer 1: PEB walk (authoritative for local processes)
-                if let Some(pid) = p.child_pid {
-                    if let Some(cwd) = crate::platform::process_info::get_foreground_cwd(pid) {
+                // What the shell last said about itself over OSC 7 / OSC 9;9,
+                // if anything.  Read once: the PEB walk below must not hold the
+                // parser lock.
+                let announced = p
+                    .term
+                    .lock()
+                    .ok()
+                    .and_then(|t| t.screen().path().map(str::to_owned));
+
+                // Layer 0 (issue #615): a pane running `wsl` or `ssh` has no
+                // Win32 process that knows where the shell is.  wsl.exe keeps
+                // the working directory it was created with forever, so the PEB
+                // walk below succeeds and confidently returns the directory the
+                // user was in BEFORE typing `wsl` -- which is exactly what made
+                // `split-window -c "#{pane_current_path}"` open the wrong
+                // folder.  When a bridge is in the tree, an announcement from
+                // the shell is the only real information available, so it wins.
+                //
+                // The bridge walk is deliberately behind `announced`: a pane
+                // with no shell integration never pays for it, and its
+                // behaviour is bit-for-bit what it was before.
+                if let Some(raw) = announced.as_deref() {
+                    if let Some(pid) = p.child_pid {
+                        if crate::platform::process_info::tree_has_vt_bridge_cached(pid) {
+                            if let Some(win) = crate::wsl_path::osc_cwd_to_windows(
+                                raw,
+                                crate::wsl_path::default_distro(),
+                            ) {
+                                return win;
+                            }
+                        }
+                    }
+                }
+
+                // Layer 1: PEB walk (authoritative for local processes -- pwsh,
+                // cmd, cygwin bash and git bash all move it on `cd`).
+                //
+                // A pane claimed from the warm pool is the one case where that
+                // reading is known to be a lie for a while: the spare is
+                // already running in the directory the pool spawned it in (the
+                // server's own cwd), and `-c <dir>` is honoured by typing a
+                // `cd` into it, which only takes effect once the shell reaches
+                // a prompt.  `cwd_hint` carries both the directory that was
+                // asked for and the reading taken just before that `cd` was
+                // written, so the request is reported for exactly as long as
+                // the process has not moved, and `split-window -c <dir>` never
+                // answers with the server's working directory (#615 follow
+                // up).  Everything else keeps trusting the reading.
+                {
+                    let live = p
+                        .child_pid
+                        .and_then(crate::platform::process_info::get_foreground_cwd);
+                    if let Some(hint) = p.cwd_hint.as_ref() {
+                        if hint.pid == p.child_pid
+                            && !hint.settled.load(std::sync::atomic::Ordering::Relaxed)
+                        {
+                            match live.as_deref() {
+                                // Still sitting where the pool left it: the
+                                // injected `cd` has not run yet.
+                                Some(cwd)
+                                    if hint
+                                        .stale
+                                        .as_deref()
+                                        .is_some_and(|s| crate::util::same_dir(s, cwd)) =>
+                                {
+                                    return hint.requested.clone();
+                                }
+                                // Nothing readable at all: the request is the
+                                // only thing known about this pane.
+                                None => return hint.requested.clone(),
+                                // The process moved, either into the requested
+                                // directory or somewhere the user went first.
+                                // Either way the reading is live from now on,
+                                // latched so a later `cd` back into the pool's
+                                // directory cannot revive the hint.
+                                Some(_) => {
+                                    hint.settled
+                                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                                }
+                            }
+                        }
+                    }
+                    if let Some(cwd) = live {
                         return cwd;
                     }
                 }
-                // Layer 2: OSC 7 path (works over SSH/WSL where PEB fails)
-                if let Ok(parser) = p.term.lock() {
-                    if let Some(osc_path) = parser.screen().path() {
-                        return osc_path.to_string();
+                // Layer 2: the announced path, translated to a native Windows
+                // path when it is a POSIX one (works where the PEB fails).
+                if let Some(raw) = announced.as_deref() {
+                    if let Some(win) = crate::wsl_path::osc_cwd_to_windows(
+                        raw,
+                        crate::wsl_path::default_distro(),
+                    ) {
+                        return win;
                     }
+                    return raw.to_string();
                 }
                 // Layer 3: fallback to server CWD
                 std::env::current_dir()
@@ -1344,15 +1504,39 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
             if let Some(p) = target_pane() { format!("/dev/pty{}", p.id) }
             else { String::new() }
         }
-        "pane_in_mode" => match app.mode {
-            Mode::CopyMode | Mode::CopySearch { .. } | Mode::ClockMode => "1".into(),
-            _ => "0".into(),
-        },
-        "pane_mode" => match app.mode {
-            Mode::CopyMode | Mode::CopySearch { .. } => "copy-mode".into(),
-            Mode::ClockMode => "clock-mode".into(),
-            _ => String::new(),
-        },
+        // A mode belongs to one pane, as it does in tmux (`window.c`
+        // `window_pane_set_mode` pushes it onto that pane's own mode stack),
+        // so both of these must answer for the TARGET pane rather than for
+        // whichever pane happens to hold focus (#607).  The focused pane's
+        // live mode is `AppState::mode`; every other pane's is parked in its
+        // own `copy_state`.
+        "pane_in_mode" => {
+            let target_id = target_pane().map(|p| p.id);
+            if target_id.is_some() && target_id == crate::copy_mode::active_pane_id(app) {
+                match app.mode {
+                    Mode::CopyMode | Mode::CopySearch { .. } | Mode::ClockMode => "1".into(),
+                    _ => "0".into(),
+                }
+            } else if target_pane().map_or(false, |p| p.copy_state.is_some()) {
+                "1".into()
+            } else {
+                "0".into()
+            }
+        }
+        "pane_mode" => {
+            let target_id = target_pane().map(|p| p.id);
+            if target_id.is_some() && target_id == crate::copy_mode::active_pane_id(app) {
+                match app.mode {
+                    Mode::CopyMode | Mode::CopySearch { .. } => "copy-mode".into(),
+                    Mode::ClockMode => "clock-mode".into(),
+                    _ => String::new(),
+                }
+            } else if target_pane().map_or(false, |p| p.copy_state.is_some()) {
+                "copy-mode".into()
+            } else {
+                String::new()
+            }
+        }
         "pane_synchronized" => if app.sync_input { "1".into() } else { "0".into() },
         "pane_dead" => {
             if let Some(p) = target_pane() {
@@ -1386,7 +1570,7 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
         "pane_left" => {
             if let Some(p) = target_pane() {
                 let mut rects = Vec::new();
-                crate::tree::compute_rects(&win.root, app.last_window_area, &mut rects);
+                crate::tree::compute_rects(&win.root, win.area, &mut rects);
                 if let Some((_, rect)) = rects.iter().find(|(path, _)| {
                     crate::tree::get_active_pane_id_at_path(&win.root, path) == Some(p.id)
                 }) { rect.x.to_string() } else { "0".into() }
@@ -1395,7 +1579,7 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
         "pane_top" => {
             if let Some(p) = target_pane() {
                 let mut rects = Vec::new();
-                crate::tree::compute_rects(&win.root, app.last_window_area, &mut rects);
+                crate::tree::compute_rects(&win.root, win.area, &mut rects);
                 if let Some((_, rect)) = rects.iter().find(|(path, _)| {
                     crate::tree::get_active_pane_id_at_path(&win.root, path) == Some(p.id)
                 }) { rect.y.to_string() } else { "0".into() }
@@ -1404,7 +1588,7 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
         "pane_right" => {
             if let Some(p) = target_pane() {
                 let mut rects = Vec::new();
-                crate::tree::compute_rects(&win.root, app.last_window_area, &mut rects);
+                crate::tree::compute_rects(&win.root, win.area, &mut rects);
                 if let Some((_, rect)) = rects.iter().find(|(path, _)| {
                     crate::tree::get_active_pane_id_at_path(&win.root, path) == Some(p.id)
                 }) { (rect.x + rect.width).saturating_sub(1).to_string() } else { "79".into() }
@@ -1413,7 +1597,7 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
         "pane_bottom" => {
             if let Some(p) = target_pane() {
                 let mut rects = Vec::new();
-                crate::tree::compute_rects(&win.root, app.last_window_area, &mut rects);
+                crate::tree::compute_rects(&win.root, win.area, &mut rects);
                 if let Some((_, rect)) = rects.iter().find(|(path, _)| {
                     crate::tree::get_active_pane_id_at_path(&win.root, path) == Some(p.id)
                 }) { (rect.y + rect.height).saturating_sub(1).to_string() } else { "23".into() }
@@ -1422,23 +1606,23 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
         "pane_at_top" => {
             if let Some(p) = target_pane() {
                 let mut rects = Vec::new();
-                crate::tree::compute_rects(&win.root, app.last_window_area, &mut rects);
+                crate::tree::compute_rects(&win.root, win.area, &mut rects);
                 if let Some((_, rect)) = rects.iter().find(|(path, _)| {
                     crate::tree::get_active_pane_id_at_path(&win.root, path) == Some(p.id)
                 }) {
-                    if rect.y == app.last_window_area.y { "1".into() } else { "0".into() }
+                    if rect.y == win.area.y { "1".into() } else { "0".into() }
                 } else { "1".into() }
             } else { "1".into() }
         }
         "pane_at_bottom" => {
             if let Some(p) = target_pane() {
                 let mut rects = Vec::new();
-                crate::tree::compute_rects(&win.root, app.last_window_area, &mut rects);
+                crate::tree::compute_rects(&win.root, win.area, &mut rects);
                 if let Some((_, rect)) = rects.iter().find(|(path, _)| {
                     crate::tree::get_active_pane_id_at_path(&win.root, path) == Some(p.id)
                 }) {
                     let bottom = rect.y + rect.height;
-                    let win_bottom = app.last_window_area.y + app.last_window_area.height;
+                    let win_bottom = win.area.y + win.area.height;
                     if bottom >= win_bottom { "1".into() } else { "0".into() }
                 } else { "1".into() }
             } else { "1".into() }
@@ -1446,29 +1630,38 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
         "pane_at_left" => {
             if let Some(p) = target_pane() {
                 let mut rects = Vec::new();
-                crate::tree::compute_rects(&win.root, app.last_window_area, &mut rects);
+                crate::tree::compute_rects(&win.root, win.area, &mut rects);
                 if let Some((_, rect)) = rects.iter().find(|(path, _)| {
                     crate::tree::get_active_pane_id_at_path(&win.root, path) == Some(p.id)
                 }) {
-                    if rect.x == app.last_window_area.x { "1".into() } else { "0".into() }
+                    if rect.x == win.area.x { "1".into() } else { "0".into() }
                 } else { "1".into() }
             } else { "1".into() }
         }
         "pane_at_right" => {
             if let Some(p) = target_pane() {
                 let mut rects = Vec::new();
-                crate::tree::compute_rects(&win.root, app.last_window_area, &mut rects);
+                crate::tree::compute_rects(&win.root, win.area, &mut rects);
                 if let Some((_, rect)) = rects.iter().find(|(path, _)| {
                     crate::tree::get_active_pane_id_at_path(&win.root, path) == Some(p.id)
                 }) {
                     let right = rect.x + rect.width;
-                    let win_right = app.last_window_area.x + app.last_window_area.width;
+                    let win_right = win.area.x + win.area.width;
                     if right >= win_right { "1".into() } else { "0".into() }
                 } else { "1".into() }
             } else { "1".into() }
         }
         "pane_search_string" => app.copy_search_query.clone(),
-        "pane_start_command" => app.default_shell.clone(),
+        // The command THIS pane was started with (issue #580). tmux reports
+        // the pane's own spawn argv and the empty string for a pane running
+        // the plain default shell (format.c format_cb_start_command ->
+        // cmd_stringify_argv, which returns "" for argc == 0). Reporting
+        // `app.default_shell` here made every pane in the server answer with
+        // the same string, so ownership predicates like
+        // `#{m:*MARKER*,#{pane_start_command}}` could never match.
+        "pane_start_command" => target_pane()
+            .map(|p| crate::pane::start_command_display(&p.start_command))
+            .unwrap_or_default(),
         "pane_start_path" | "pane_tabs" => String::new(),
         "pane_fg" => {
             if let Some(p) = target_pane() {
@@ -1536,7 +1729,7 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
                         let cols = p.last_cols;
                         // Convert screen-absolute mouse_y to pane-relative row
                         let mut rects = Vec::new();
-                        crate::tree::compute_rects(&w.root, app.last_window_area, &mut rects);
+                        crate::tree::compute_rects(&w.root, w.area, &mut rects);
                         let pane_y_offset = rects.iter()
                             .find(|(path, _)| crate::tree::get_active_pane_id_at_path(&w.root, path) == Some(p.id))
                             .map(|(_, rect)| rect.y)
@@ -1562,7 +1755,7 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
                         let screen = parser.screen();
                         let cols = p.last_cols;
                         let mut rects = Vec::new();
-                        crate::tree::compute_rects(&w.root, app.last_window_area, &mut rects);
+                        crate::tree::compute_rects(&w.root, w.area, &mut rects);
                         let (pane_x_offset, pane_y_offset) = rects.iter()
                             .find(|(path, _)| crate::tree::get_active_pane_id_at_path(&w.root, path) == Some(p.id))
                             .map(|(_, rect)| (rect.x, rect.y))
@@ -1707,9 +1900,19 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
         "buffer_created" => app.created_at.timestamp().to_string(),
 
         // ── Client ──
-        "client_width" => app.last_window_area.width.to_string(),
-        "client_height" => (app.last_window_area.height + if app.status_visible { 1 } else { 0 }).to_string(),
-        "client_session" | "client_last_session" => app.session_name.clone(),
+        "client_width" => app.client_area.width.to_string(),
+        "client_height" => (app.client_area.height + if app.status_visible { 1 } else { 0 }).to_string(),
+        "client_session" => app.session_name.clone(),
+        // The session this client came from, empty when it has not switched.
+        // This was aliased to client_session, so it echoed the CURRENT session
+        // and could neither predict what `-l` would do nor verify what it did
+        // (issue #566). tmux reports empty for a client with no last session,
+        // which is what an unset value gives here.
+        "client_last_session" => app
+            .latest_client_id
+            .and_then(|cid| app.client_registry.get(&cid))
+            .and_then(|info| info.last_session.clone())
+            .unwrap_or_default(),
         "client_name" | "client_tty" => "client0".into(),
         "client_pid" => std::process::id().to_string(),
         "client_prefix" => if app.client_prefix_active || matches!(app.mode, Mode::Prefix { .. }) { "1".into() } else { "0".into() },
@@ -1719,6 +1922,10 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
         "client_flags" => "focused".into(),
         "client_key_table" => if app.client_prefix_active || matches!(app.mode, Mode::Prefix { .. }) {
             "prefix".into()
+        } else if let Some(t) = app.current_key_table.as_ref() {
+            // `switch-client -T <table>` latched a custom table (issue #640);
+            // tmux reports `c->keytable->name` here.
+            t.clone()
         } else {
             match app.mode {
                 Mode::CopyMode => "copy-mode-vi".into(),
@@ -1736,18 +1943,29 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
         "host" | "hostname" => hostname_cached(),
         "host_short" => { let h = hostname_cached(); h.split('.').next().unwrap_or(&h).to_string() }
         "user" | "username" => env::var("USERNAME").or_else(|_| env::var("USER")).unwrap_or_else(|_| "unknown".into()),
+        // NOTE: `#{pid}`/`#{server_pid}` are SESSION-scoped on psmux, not
+        // namespace-scoped as they are on tmux: psmux runs one server process
+        // per session, so this is the pid of whichever session's server answered
+        // the request. Use `#{server_instance}` to identify the namespace.
         "pid" | "server_pid" => std::process::id().to_string(),
+        // Namespace-scoped identity (issue #509): constant for the life of this
+        // `-L` namespace's server set, and different after a genuine restart.
+        // Every server in the namespace reads the same token, so the value does
+        // not depend on which one answered.
+        "server_instance" => {
+            crate::session::read_namespace_instance(app.socket_name.as_deref()).unwrap_or_default()
+        }
         "version" => VERSION.to_string(),
         "start_time" => app.created_at.timestamp().to_string(),
         "socket_path" => {
-            let home = env::var("USERPROFILE").or_else(|_| env::var("HOME")).unwrap_or_default();
-            format!("{}/.psmux/default", home)
+            format!("{}/default", crate::paths::psmux_dir())
         }
 
         // ── Options as format variables ──
         "mouse" => if app.mouse_enabled { "on".into() } else { "off".into() },
         "bold-is-bright" => if app.bold_is_bright { "on".into() } else { "off".into() },
         "scroll-enter-copy-mode" => if app.scroll_enter_copy_mode { "on".into() } else { "off".into() },
+        "mouse-drag-enter-copy-mode" => if app.mouse_drag_enter_copy_mode { "on".into() } else { "off".into() },
         "choose-tree-preview" => if app.choose_tree_preview { "on".into() } else { "off".into() },
         "prefix" => format_key_binding(&app.prefix_key),
         "prefix2" => app.prefix2_key.as_ref().map(|k| format_key_binding(k)).unwrap_or_else(|| "none".to_string()),
@@ -1759,10 +1977,26 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
         // active pane's scrollback (the *retained* count), not the
         // configured maximum (#271).  Falls back to 0 when no active pane
         // is reachable, matching tmux's behaviour for empty buffers.
+        // It reads the LIVE grid even while copy mode shows a snapshot
+        // (PR #671), because tmux's format_cb_history_size answers from
+        // wp->base.grid->hsize whatever mode the pane is in.
         "history_size" => {
             if let Some(p) = active_pane(&win.root, &win.active_path) {
-                if let Ok(parser) = p.term.lock() {
+                if let Ok(parser) = p.live_parser().lock() {
                     return parser.screen().scrollback_filled().to_string();
+                }
+            }
+            "0".into()
+        }
+        // history_bytes is how much the active pane's scrollback actually
+        // occupies.  It used to be hardcoded to 0, which hid exactly the
+        // growth issue #641 was about; now that a row is compacted to its used
+        // width on the way into history, this number tracks retained text
+        // rather than pane width, so it is worth reporting honestly.
+        "history_bytes" => {
+            if let Some(p) = active_pane(&win.root, &win.active_path) {
+                if let Ok(parser) = p.live_parser().lock() {
+                    return parser.screen().history_bytes().to_string();
                 }
             }
             "0".into()
@@ -1777,16 +2011,46 @@ pub fn expand_var(var: &str, app: &AppState, win_idx: usize) -> String {
         }
         "alternate_saved_x" | "alternate_saved_y" => "0".into(),
 
+        // ── Mouse tracking flags (#662) ──
+        //
+        // tmux reads all six straight off the pane's own screen mode
+        // (format.c:1940-2026) and its default wheel binding is written in
+        // terms of them (key-bindings.c:510):
+        //
+        //   bind -n WheelUpPane { if -F '#{||:#{alternate_on},#{pane_in_mode},#{mouse_any_flag}}' \
+        //       { send -M } { copy-mode -e } }
+        //
+        // psmux tracked the same state for its own wheel gate but never
+        // published it, so every one of these rendered empty and that binding
+        // line could only ever take its `copy-mode -e` branch.  They are read
+        // from the TARGET pane, not the active one, so `-t %N` and
+        // `list-panes -F` answer per pane the way tmux does.
+        "mouse_any_flag" | "mouse_standard_flag" | "mouse_button_flag"
+        | "mouse_all_flag" | "mouse_utf8_flag" | "mouse_sgr_flag" => {
+            let on = target_pane().and_then(|p| p.term.lock().ok()).map(|parser| {
+                let screen = parser.screen();
+                match var {
+                    "mouse_any_flag" => screen.mouse_any_flag(),
+                    "mouse_standard_flag" => screen.mouse_standard_flag(),
+                    "mouse_button_flag" => screen.mouse_button_flag(),
+                    "mouse_all_flag" => screen.mouse_all_flag(),
+                    "mouse_utf8_flag" => screen.mouse_utf8_flag(),
+                    _ => screen.mouse_sgr_flag(),
+                }
+            });
+            if on == Some(true) { "1".into() } else { "0".into() }
+        }
+
         // ── Misc ──
         "origin_flag" | "insert_flag" | "keypad_cursor_flag" | "keypad_flag" => "0".into(),
         "wrap_flag" => "1".into(),
         "line" | "command" | "command_list_name" | "command_list_alias" | "command_list_usage" | "config_files" => String::new(),
         "current_file" => crate::config::current_config_file(),
 
-        // Anything else: try as option, then env
+        // Anything else: try as option, then report "not a variable at all".
         _ => {
             if let Some(val) = lookup_option(var, app) { val }
-            else { String::new() }
+            else { UNKNOWN_VAR.to_string() }
         }
     }
 }
@@ -1994,5 +2258,17 @@ fn collect_pane_ids(node: &Node, ids: &mut Vec<usize>) {
 mod tests;
 
 #[cfg(test)]
+#[path = "../tests-rs/test_issue662_mouse_flag_formats.rs"]
+mod tests_issue662_mouse_flag_formats;
+
+#[cfg(test)]
 #[path = "../tests-rs/test_issue272_format_shell_cache.rs"]
 mod tests_issue272_format_shell_cache;
+
+#[cfg(test)]
+#[path = "../tests-rs/test_modifier_over_empty_var.rs"]
+mod tests_modifier_over_empty_var;
+
+#[cfg(test)]
+#[path = "../tests-rs/test_issue580_pane_start_command.rs"]
+mod tests_issue580_pane_start_command;

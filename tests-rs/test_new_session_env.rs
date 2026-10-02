@@ -1,8 +1,8 @@
 //! new-session -e: session environment merges into app.environment and format expansion.
 
-use crate::types::AppState;
 use crate::config::parse_config_content;
 use crate::format::expand_format;
+use crate::types::AppState;
 
 #[test]
 fn session_env_merge_after_config_visible_in_expand_format() {
@@ -28,6 +28,9 @@ fn session_env_merge_last_wins_duplicate_variable() {
         ("PSMUX_DUP_E".to_string(), "last".to_string()),
     ];
     crate::util::merge_session_env_into_app(&mut app, &env);
-    assert_eq!(app.environment.get("PSMUX_DUP_E").map(|s| s.as_str()), Some("last"));
+    assert_eq!(
+        app.environment.get("PSMUX_DUP_E").map(|s| s.as_str()),
+        Some("last")
+    );
     assert_eq!(expand_format("#{PSMUX_DUP_E}", &app), "last");
 }

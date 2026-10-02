@@ -18,6 +18,7 @@ fn leaf(id: usize, active: bool) -> LayoutJson {
         active,
         copy_mode: false,
         scroll_offset: 0,
+        view_offset: 0,
         sel_start_row: None,
         sel_start_col: None,
         sel_end_row: None,
@@ -130,16 +131,28 @@ fn render_three_panes_does_not_color_unrelated_separator_active() {
         crate::client::render_layout_json(
             f, &layout, area,
             false,
-            inactive_border, active_border,
+            ratatui::style::Style::default().fg(inactive_border),
+            ratatui::style::Style::default().fg(active_border),
             false, Color::Reset,
             active_rect,
             "", false, "off", "",
             total,
             crate::border_lines::border_chars("single"),
             None,
+            crate::client::WindowContentStyles::default(),
+            crate::pane_border::PaneBorderIndicators::Colour,
         );
-        let border_mask = crate::client::border_mask_from_layout(&layout, area, f.buffer_mut().area, false);
-        crate::rendering::fix_border_intersections(f.buffer_mut(), crate::border_lines::border_chars("single"), &border_mask);
+        let borders = crate::client::border_geometry_from_layout(
+            &layout,
+            area,
+            f.buffer_mut().area,
+            false,
+        );
+        crate::rendering::fix_border_intersections(
+            f.buffer_mut(),
+            crate::border_lines::border_chars("single"),
+            &borders,
+        );
     }).unwrap();
 
     // Inspect every horizontal separator cell '─' on the right side of the
@@ -198,16 +211,28 @@ fn render_two_panes_keeps_half_highlight_path() {
         crate::client::render_layout_json(
             f, &layout, area,
             false,
-            inactive_border, active_border,
+            ratatui::style::Style::default().fg(inactive_border),
+            ratatui::style::Style::default().fg(active_border),
             false, Color::Reset,
             active_rect,
             "", false, "off", "",
             total,
             crate::border_lines::border_chars("single"),
             None,
+            crate::client::WindowContentStyles::default(),
+            crate::pane_border::PaneBorderIndicators::Colour,
         );
-        let border_mask = crate::client::border_mask_from_layout(&layout, area, f.buffer_mut().area, false);
-        crate::rendering::fix_border_intersections(f.buffer_mut(), crate::border_lines::border_chars("single"), &border_mask);
+        let borders = crate::client::border_geometry_from_layout(
+            &layout,
+            area,
+            f.buffer_mut().area,
+            false,
+        );
+        crate::rendering::fix_border_intersections(
+            f.buffer_mut(),
+            crate::border_lines::border_chars("single"),
+            &borders,
+        );
     }).unwrap();
 
     // The vertical separator '│' should have at least some cells colored as

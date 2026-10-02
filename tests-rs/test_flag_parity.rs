@@ -28,6 +28,9 @@ fn make_window(name: &str, id: usize) -> crate::types::Window {
         active_path: vec![],
         name: name.to_string(),
         id,
+        area: ratatui::layout::Rect::new(0, 0, 120, 30),
+        window_size: None,
+        window_options: Default::default(),
         activity_flag: false,
         bell_flag: false,
         silence_flag: false,
@@ -97,14 +100,15 @@ fn set_option_flag_g_global() {
 #[test]
 fn set_option_flag_u_unset_resets_default() {
     let mut app = mock_app_with_window();
-    // -u sets value to empty; for numeric options the empty string can't parse,
-    // so the field keeps its last value.  Verify the unset path executes
-    // without error (user options DO get cleared to "").
+    // -u clears the option. For numeric options the empty string cannot parse,
+    // so the field keeps its last value; user options are REMOVED outright
+    // (#619, tmux options_remove_or_default), not blanked in place, so that a
+    // later `set -o` sees nothing set and applies.
     execute_command_string(&mut app, "set-option -g @unset-probe hello").unwrap();
     assert_eq!(app.user_options.get("@unset-probe").map(|s| s.as_str()), Some("hello"));
     execute_command_string(&mut app, "set-option -gu @unset-probe").unwrap();
-    assert_eq!(app.user_options.get("@unset-probe").map(|s| s.as_str()), Some(""),
-        "-u flag: should unset (set to empty)");
+    assert_eq!(app.user_options.get("@unset-probe").map(|s| s.as_str()), None,
+        "-u flag: should remove the user option");
 }
 
 #[test]
@@ -152,12 +156,12 @@ fn set_option_flag_F_format_expand() {
 #[test]
 fn set_option_combined_flags_gu() {
     let mut app = mock_app_with_window();
-    // Combined -gu: global unset.  For user options, verify reset to empty.
+    // Combined -gu: global unset. For user options the key is removed (#619).
     execute_command_string(&mut app, "set-option -g @gu-probe value").unwrap();
     assert_eq!(app.user_options.get("@gu-probe").map(|s| s.as_str()), Some("value"));
     execute_command_string(&mut app, "set-option -gu @gu-probe").unwrap();
-    assert_eq!(app.user_options.get("@gu-probe").map(|s| s.as_str()), Some(""),
-        "combined -gu: should unset to empty");
+    assert_eq!(app.user_options.get("@gu-probe").map(|s| s.as_str()), None,
+        "combined -gu: should remove the user option");
 }
 
 #[test]
@@ -188,9 +192,10 @@ fn set_option_user_at_option_unset() {
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, "set-option -g @test-opt hello").unwrap();
     execute_command_string(&mut app, "set-option -gu @test-opt").unwrap();
-    // psmux -u sets value to empty string rather than removing the key
-    assert_eq!(app.user_options.get("@test-opt").map(|s| s.as_str()), Some(""),
-        "@option unset should set to empty");
+    // -u removes the key, matching tmux (#619). It used to blank it in place,
+    // which kept the option looking set to the `-o` guard for ever.
+    assert_eq!(app.user_options.get("@test-opt").map(|s| s.as_str()), None,
+        "@option unset should remove the key");
 }
 
 #[test]
@@ -909,8 +914,12 @@ fn split_window_flag_P_print() {
 #[test]
 fn split_window_flag_Z_zoom() {
     let mut app = mock_app_with_window();
+    assert!(app.windows[0].zoom_saved.is_none());
     execute_command_string(&mut app, "split-window -Z").unwrap();
-    // -Z should zoom the new pane after split
+    assert!(app.windows[0].zoom_saved.is_some(), "-Z should zoom the active pane after splitting");
+    assert_eq!(app.windows[0].active_path, vec![1], "-Z should leave the new pane active");
+    // These commands start a real shell; end it before the state drops.
+    crate::util::kill_app_shells(&mut app);
 }
 
 #[test]
@@ -1290,12 +1299,16 @@ fn display_popup_flag_w_percent() {
 fn link_window_flag_s_source() {
     let mut app = mock_app_with_windows(&["w0", "w1"]);
     execute_command_string(&mut app, "link-window -s 0").unwrap();
+    // These commands start a real shell; end it before the state drops.
+    crate::util::kill_app_shells(&mut app);
 }
 
 #[test]
 fn link_window_flag_t_target() {
     let mut app = mock_app_with_windows(&["w0", "w1"]);
     execute_command_string(&mut app, "link-window -s 0 -t 2").unwrap();
+    // These commands start a real shell; end it before the state drops.
+    crate::util::kill_app_shells(&mut app);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -1963,6 +1976,8 @@ fn alias_swapw() {
 fn alias_linkw() {
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, "linkw -s 0").unwrap();
+    // These commands start a real shell; end it before the state drops.
+    crate::util::kill_app_shells(&mut app);
 }
 
 #[test]

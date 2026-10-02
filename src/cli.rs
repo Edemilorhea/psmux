@@ -1,5 +1,338 @@
 use crate::types::{ParsedTarget, VERSION, build_version_string};
 
+// ---------------------------------------------------------------------------
+// Dangling value-taking flags (issue #635)
+//
+// tmux rejects `kill-window -t` (a value-taking flag with nothing after it)
+// GENERICALLY, in arguments.c:
+//
+//     xasprintf(cause, "-%c expects an argument", flag);
+//     return (-1);
+//
+// The command never runs.  psmux instead used the idiom
+// `if let Some(v) = args.get(i + 1)` at ~60 call sites, so a valueless flag
+// was silently dropped and the command executed against the DEFAULT target:
+// `kill-window -t` killed the current window and `kill-session -t` destroyed
+// the current session (PSMUX_TARGET_SESSION is inherited by pane children),
+// both at exit 0.  The realistic trigger is ordinary shell scripting --
+// `psmux kill-session -t $TARGET` with `$TARGET` unset.
+//
+// The fix mirrors tmux: ONE table of per-command flag templates and ONE
+// validator, called from every command ingress.
+// ---------------------------------------------------------------------------
+
+/// Per-command flag templates, transcribed verbatim from the `.args` field of
+/// each `struct cmd_entry` in tmux's `cmd-*.c`.
+///
+/// Template grammar (tmux `args_parse_flags`): a bare letter is a boolean
+/// flag, `X:` takes a REQUIRED value, `X::` takes an OPTIONAL value.
+///
+/// Entries are `(command, alias, template)`.  Extra psmux aliases that tmux
+/// does not define are listed in [`EXTRA_ALIASES`].
+const ARGS_TEMPLATES: &[(&str, &str, &str)] = &[
+    ("attach-session",        "attach",     "c:dEf:rt:x"),
+    ("bind-key",              "bind",       "nrN:T:"),
+    ("break-pane",            "breakp",     "abdPF:n:s:t:Wx:X:y:Y:"),
+    ("capture-pane",          "capturep",   "ab:CeE:FHJLMNpPqRS:Tt:"),
+    ("choose-buffer",         "chooseb",    "F:f:K:kNO:rt:yZ"),
+    ("choose-client",         "",           "F:f:hiK:kNO:rt:yZ"),
+    ("choose-tree",           "",           "F:f:GhK:kNO:rst:wyZ"),
+    ("clear-history",         "clearhist",  "Ht:"),
+    ("clear-prompt-history",  "clearphist", "T:"),
+    ("clock-mode",            "",           "t:"),
+    ("command-prompt",        "",           "1CbeFiklI:NPp:t:T:"),
+    ("confirm-before",        "confirm",    "bc:p:t:y"),
+    ("copy-mode",             "",           "dekHMqSs:t:u"),
+    ("customize-mode",        "",           "F:f:kNt:yZ"),
+    ("delete-buffer",         "deleteb",    "b:"),
+    ("detach-client",         "detach",     "aE:s:t:P"),
+    ("display-menu",          "menu",       "b:c:C:H:s:S:MOt:T:x:y:"),
+    ("display-message",       "display",    "aCc:d:lINpt:F:v"),
+    ("display-panes",         "displayp",   "d:kNs:t:Z"),
+    ("display-popup",         "popup",      "Bb:Cc:d:e:Eh:kNs:S:t:T:w:x:y:"),
+    ("find-window",           "findw",      "CiNrt:TZ"),
+    ("has-session",           "has",        "t:"),
+    ("if-shell",              "if",         "bFt:"),
+    ("join-pane",             "joinp",      "bdfhvp:l:s:t:"),
+    ("kill-pane",             "killp",      "af:t:"),
+    ("kill-server",           "",           ""),
+    ("kill-session",          "",           "aCgf:t:"),
+    ("kill-window",           "killw",      "af:t:"),
+    ("last-pane",             "lastp",      "det:Z"),
+    ("last-window",           "last",       "t:"),
+    ("link-window",           "linkw",      "abdks:t:"),
+    ("list-buffers",          "lsb",        "F:f:O:r"),
+    ("list-clients",          "lsc",        "F:f:O:rt:"),
+    ("list-commands",         "lscm",       "F:"),
+    ("list-keys",             "lsk",        "1aF:NO:P:rT:"),
+    ("list-panes",            "lsp",        "aF:f:O:rst:"),
+    ("list-sessions",         "ls",         "F:f:O:r"),
+    ("list-windows",          "lsw",        "aF:f:O:rt:"),
+    ("load-buffer",           "loadb",      "b:t:w"),
+    ("lock-client",           "lockc",      "t:"),
+    ("lock-server",           "lock",       ""),
+    ("lock-session",          "locks",      "t:"),
+    ("move-pane",             "movep",      "bdD::fhMvl:L::P:R::s:t:U::X:Y:z:"),
+    ("move-window",           "movew",      "abdkrs:t:"),
+    ("new-session",           "new",        "Ac:dDe:EF:f:n:Ps:t:x:Xy:"),
+    ("new-window",            "neww",       "abc:de:EF:kn:PSt:"),
+    ("next-layout",           "nextl",      "t:"),
+    ("next-window",           "next",       "at:"),
+    ("paste-buffer",          "pasteb",     "db:prSs:t:"),
+    ("pipe-pane",             "pipep",      "IOot:"),
+    ("previous-layout",       "prevl",      "t:"),
+    ("previous-window",       "prev",       "at:"),
+    ("refresh-client",        "refresh",    "A:B:cC:Df:r:F:lLRSt:U"),
+    ("rename-session",        "rename",     "t:"),
+    ("rename-window",         "renamew",    "t:"),
+    ("resize-pane",           "resizep",    "D::L::MR::Tt:U::x:y:Z"),
+    ("resize-window",         "resizew",    "aADLRt:Ux:y:"),
+    ("respawn-pane",          "respawnp",   "c:e:Ekt:"),
+    ("respawn-window",        "respawnw",   "c:e:Ekt:"),
+    ("rotate-window",         "rotatew",    "Dt:UZ"),
+    ("run-shell",             "run",        "bd:Ct:Es:c:"),
+    ("save-buffer",           "saveb",      "ab:"),
+    ("select-layout",         "selectl",    "Enopt:"),
+    ("select-pane",           "selectp",    "DdegLlMmP:RT:t:UZ"),
+    ("select-window",         "selectw",    "lnpTt:"),
+    ("send-keys",             "send",       "c:FHKlMN:Rt:X"),
+    ("send-prefix",           "",           "2t:"),
+    ("server-access",         "",           "adglrw"),
+    ("set-buffer",            "setb",       "ab:t:n:w"),
+    ("set-environment",       "setenv",     "Fhgrt:u"),
+    ("set-hook",              "",           "agpERTt:uB:w"),
+    ("set-option",            "set",        "aFgopqst:uUw"),
+    ("set-window-option",     "setw",       "aFgoqt:u"),
+    ("show-buffer",           "showb",      "b:"),
+    ("show-environment",      "showenv",    "hgst:"),
+    ("show-hooks",            "",           "Bgpt:w"),
+    ("show-messages",         "showmsgs",   "JTt:"),
+    ("show-options",          "show",       "AgHpqst:vw"),
+    ("show-prompt-history",   "showphist",  "T:"),
+    ("show-window-options",   "showw",      "gvt:"),
+    ("source-file",           "source",     "t:Fnqv"),
+    ("split-window",          "splitw",     "bB:c:de:EfF:hIkl:m:p:PR:s:S:t:T:vWZ"),
+    ("start-server",          "start",      ""),
+    ("suspend-client",        "suspendc",   "t:"),
+    ("swap-pane",             "swapp",      "dDs:t:UZ"),
+    ("swap-window",           "swapw",      "ds:t:"),
+    ("switch-client",         "switchc",    "c:EFlnO:pt:rT:Z"),
+    ("switch-mode",           "",           "F:kst:wZ"),
+    ("unbind-key",            "unbind",     "anqT:"),
+    ("unlink-window",         "unlinkw",    "kt:"),
+    ("wait-for",              "wait",       "EF:LSUlvw:"),
+    ("new-pane",              "newp",       "bB:c:de:EfF:hIkl:LMm:Op:PR:s:S:t:T:vWx:X:y:Y:Z"),
+    // psmux-only commands.  tmux has no cmd_entry for these, so the templates
+    // come from psmux's own handlers (docs/tmux_args_reference.md is the
+    // per-command flag list psmux actually parses).
+    ("choose-session",        "",           "F:f:K:kNO:rt:yZ"),
+    ("choose-window",         "",           "F:f:K:kNO:rt:yZ"),
+    ("server-info",           "info",       ""),
+    ("send-paste",            "",           "t:"),
+];
+
+/// Value-taking flags psmux adds to a command that tmux's template does not
+/// declare.  Kept separate so ARGS_TEMPLATES stays a verbatim transcription of
+/// tmux and every psmux-specific rule is visible in one place.
+const PSMUX_EXTRA_FLAGS: &[(&str, &str)] = &[
+    // psmux's new-window takes `-T <title>`; tmux's does not.
+    ("new-window", "T:"),
+    // psmux routes `-t <target>` on these three; tmux's templates have no `t`.
+    ("unbind-key", "t:"),
+    ("list-buffers", "t:"),
+    ("list-keys", "t:"),
+];
+
+/// Aliases psmux accepts that tmux does not define, mapped to the canonical
+/// command whose template they share (docs/tmux_args_reference.md).
+const EXTRA_ALIASES: &[(&str, &str)] = &[
+    ("split-pane", "split-window"),
+    ("splitp", "split-window"),
+    ("kill-ses", "kill-session"),
+    ("a", "attach-session"),
+    ("at", "attach-session"),
+    ("resp", "respawn-pane"),
+    ("send-key", "send-keys"),
+    ("show-option", "show-options"),
+    ("show-window-option", "show-window-options"),
+    ("warmup", "start-server"),
+];
+
+/// How a flag letter consumes a value, per its command's tmux template.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FlagValue {
+    /// Boolean flag, or a letter this command does not declare at all.
+    None,
+    /// `X:` — tmux errors with "-X expects an argument" when it is dangling.
+    Required,
+    /// `X::` — tmux silently records "no value" when it is dangling, and also
+    /// when the next token looks like another flag.
+    Optional,
+}
+
+/// Resolve a psmux-only alias to the command whose template it shares.
+fn canonical_command(command: &str) -> &str {
+    EXTRA_ALIASES
+        .iter()
+        .find(|(alias, _)| *alias == command)
+        .map(|(_, target)| *target)
+        .unwrap_or(command)
+}
+
+/// The canonical entry `(name, alias, template)` for `command`, if any.
+fn args_entry(command: &str) -> Option<&'static (&'static str, &'static str, &'static str)> {
+    let canonical = canonical_command(command);
+    ARGS_TEMPLATES
+        .iter()
+        .find(|(name, alias, _)| *name == canonical || (!alias.is_empty() && *alias == canonical))
+}
+
+/// The tmux `.args` template for `command`, resolving aliases.
+pub fn args_template(command: &str) -> Option<&'static str> {
+    args_entry(command).map(|(_, _, template)| *template)
+}
+
+/// Value-taking flags psmux adds to `command` on top of tmux's template.
+fn psmux_extra_flags(command: &str) -> &'static str {
+    let Some((name, _, _)) = args_entry(command) else { return "" };
+    PSMUX_EXTRA_FLAGS
+        .iter()
+        .find(|(cmd, _)| cmd == name)
+        .map(|(_, extra)| *extra)
+        .unwrap_or("")
+}
+
+/// Classify `flag` against `template`, mirroring tmux's
+/// `strchr(parse->template, flag)` plus its `found[1] == ':'` /
+/// `found[2] == ':'` tests.
+fn flag_value_kind(template: &str, flag: char) -> FlagValue {
+    let bytes = template.as_bytes();
+    // Only ASCII alphanumerics are flag letters in tmux; a ':' in the
+    // template is punctuation and must never be matched as a flag.
+    if !flag.is_ascii_alphanumeric() {
+        return FlagValue::None;
+    }
+    let needle = flag as u8;
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == needle {
+            // Skip a letter that is really the tail of a `::` run? There is
+            // none: `:` is never a flag letter, so a match here is genuine.
+            return if bytes.get(i + 1) == Some(&b':') {
+                if bytes.get(i + 2) == Some(&b':') {
+                    FlagValue::Optional
+                } else {
+                    FlagValue::Required
+                }
+            } else {
+                FlagValue::None
+            };
+        }
+        i += 1;
+    }
+    FlagValue::None
+}
+
+/// True when `token` is what tmux's optional-value path treats as "another
+/// flag" rather than a value: `-` followed by `-` or an alphabetic character
+/// (`args_parse_flag_argument`: `as[0] == '-' && (as[1] == '-' || isalpha(as[1]))`).
+/// A negative NUMBER (`-5`) deliberately fails this test, so `resize-pane -x -5`
+/// still passes `-5` through as the value.
+fn looks_like_another_flag(token: &str) -> bool {
+    let b = token.as_bytes();
+    b.len() >= 2 && b[0] == b'-' && (b[1] == b'-' || b[1].is_ascii_alphabetic())
+}
+
+/// Reject a value-taking flag that has no value, exactly where tmux does.
+///
+/// `command` is the command name (canonical or alias); `args` is everything
+/// AFTER it. Returns `Err("-t expects an argument")` for the offending flag,
+/// or `Ok(())` when the command line is well formed (including when the
+/// command is unknown to the table, so nothing new is ever rejected).
+///
+/// Faithful to `args_parse_flags`:
+///   * flag scanning stops at the first token that is not `-`-prefixed, at a
+///     bare `-`, and at `--`;
+///   * clustered short flags (`-at`) are walked letter by letter;
+///   * an attached value (`-tfoo`) satisfies the flag;
+///   * a REQUIRED value consumes the next token WHATEVER it looks like, so
+///     `kill-window -t -a` uses `-a` as the target (tmux then reports
+///     "can't find window: -a") rather than erroring here;
+///   * an OPTIONAL value (`::`) is never mandatory, and is not consumed when
+///     the next token looks like another flag.
+pub fn validate_flag_arguments<S: AsRef<str>>(command: &str, args: &[S]) -> Result<(), String> {
+    let Some(template) = args_template(command) else {
+        return Ok(());
+    };
+    let extra = psmux_extra_flags(command);
+    let kind_of = |flag: char| match flag_value_kind(template, flag) {
+        FlagValue::None => flag_value_kind(extra, flag),
+        kind => kind,
+    };
+    let mut i = 0;
+    while i < args.len() {
+        let token = args[i].as_ref();
+        if !token.starts_with('-') || token == "-" || token == "--" {
+            break; // positional, bare '-', or end-of-options: flags are over
+        }
+        i += 1; // the flag token itself is consumed
+        let letters: Vec<char> = token.chars().skip(1).collect();
+        let mut k = 0;
+        while k < letters.len() {
+            let flag = letters[k];
+            k += 1;
+            match kind_of(flag) {
+                FlagValue::None => continue, // boolean, or not ours to police
+                kind => {
+                    if k < letters.len() {
+                        break; // attached value: `-tfoo`, `-atfoo`
+                    }
+                    match args.get(i).map(|a| a.as_ref()) {
+                        Some(next) => {
+                            if !(kind == FlagValue::Optional && looks_like_another_flag(next)) {
+                                i += 1; // the next token is this flag's value
+                            }
+                        }
+                        None => {
+                            if kind == FlagValue::Required {
+                                return Err(format!("-{} expects an argument", flag));
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Same check for a whole command LINE (command name first), used by the
+/// config-file and key-binding routes where the command arrives as a string.
+pub fn validate_command_line_flags<S: AsRef<str>>(tokens: &[S]) -> Result<(), String> {
+    let Some(command) = tokens.first() else {
+        return Ok(());
+    };
+    validate_flag_arguments(command.as_ref(), &tokens[1..])
+}
+
+/// True when `-<flag>` takes a value for `command`, per [`ARGS_TEMPLATES`].
+///
+/// Same classification [`validate_flag_arguments`] applies, exposed so a parser
+/// that has to step OVER a flag's value cannot drift from the one flag table.
+/// Without it a hand-written parser has to keep its own list of value-taking
+/// flags, and the flag it forgets turns its value into a positional argument.
+pub fn flag_takes_value(command: &str, flag: char) -> bool {
+    let Some(template) = args_template(command) else {
+        return false;
+    };
+    let kind = match flag_value_kind(template, flag) {
+        FlagValue::None => flag_value_kind(psmux_extra_flags(command), flag),
+        kind => kind,
+    };
+    kind != FlagValue::None
+}
+
 /// Normalize `-x=VALUE` short-flag forms into `["-x", "VALUE"]`.
 ///
 /// tmux accepts both `-t VALUE` (space) and `-t=VALUE` (equals) for
@@ -32,6 +365,161 @@ pub fn normalize_flag_equals(args: Vec<String>) -> Vec<String> {
         out.push(arg);
     }
     out
+}
+
+/// Split tmux-style ATTACHED short-option arguments in the GLOBAL (pre
+/// subcommand) region of the command line: `-Lsockname` -> `-L sockname`
+/// (discussion #571).
+///
+/// tmux parses its program options with getopt(3) (tmux.c: spec string
+/// `2c:CDdf:hlL:NqS:T:uUvV`), and its bundled compat getopt treats
+/// characters left attached after a value-taking option letter as that
+/// option's argument (`optarg = place` in the "no white space" branch of
+/// compat/getopt_long.c), so `-L sockname` and `-Lsockname` are
+/// equivalent.  Tools that drive tmux emit the
+/// attached form (libtmux builds `-L{name}`), and psmux's exact-match
+/// scanners treated the whole token as an unknown flag and SILENTLY
+/// dropped it — a `-Lfoo new-session` landed in the DEFAULT namespace.
+///
+/// Rules:
+///   - Only the region BEFORE the subcommand is rewritten; the first token
+///     not starting with `-` ends the scan, so command flags such as
+///     `select-pane -L` (no value) are never touched.
+///   - Only the value-taking global option letters psmux's own scanners
+///     consume are split: L, f, S, and psmux's global `-t`.  Letters psmux
+///     does not handle globally (tmux's `-c`/`-T`) pass through unchanged —
+///     splitting those would leave a stray value token that the scanner
+///     mistakes for the subcommand.  `-C`/`-CC` and boolean flags pass
+///     through unchanged.
+///   - A detached form (`-L name`) passes through unchanged: the letter is
+///     followed by nothing, so there is no attached value to split.
+pub fn normalize_attached_global_args(args: Vec<String>) -> Vec<String> {
+    let mut out = Vec::with_capacity(args.len());
+    let mut in_globals = true;
+    let mut skip_value = false;
+    for (idx, arg) in args.into_iter().enumerate() {
+        // args[0] is the binary name, not the subcommand.
+        if idx > 0 && in_globals {
+            if skip_value {
+                // Previous token was a detached value-taking flag: this token
+                // is its value, not the subcommand.
+                skip_value = false;
+                out.push(arg);
+                continue;
+            }
+            if !arg.starts_with('-') || arg == "-" {
+                in_globals = false; // subcommand (or bare -): stop rewriting
+                out.push(arg);
+                continue;
+            }
+            let bytes = arg.as_bytes();
+            if bytes.len() >= 3
+                && !arg.starts_with("--")
+                && matches!(bytes[1], b'L' | b'f' | b'S' | b't')
+            {
+                out.push(format!("-{}", bytes[1] as char));
+                out.push(arg[2..].to_string());
+                continue;
+            }
+            if bytes.len() == 2 && matches!(bytes[1], b'L' | b'f' | b'S' | b't') {
+                skip_value = true; // detached form: the NEXT token is the value
+            }
+        }
+        out.push(arg);
+    }
+    out
+}
+
+/// Split tmux-style ATTACHED `-t` target arguments AFTER the subcommand:
+/// `kill-session -tname` -> `kill-session -t name` (discussion #571,
+/// command-level slice).
+///
+/// tmux's command parser (arguments.c args_parse_flag_argument: the
+/// `if (*string != '\0')` branch) treats characters left attached after a
+/// value-taking flag letter as that flag's argument, for EVERY command.
+/// psmux's exact-match command parsers ignored such tokens, and the global
+/// routing fallback then picked the most recent session — reproduced:
+/// `kill-session -tvictimA` killed victimB.  `-t` is value-taking in every
+/// tmux and psmux command, so it is the one letter that can be rewritten
+/// generically without a per-command flag table (`-L`, `-T`, `-s`, ... are
+/// boolean in some commands and value-taking in others).
+///
+/// Rules:
+///   - Only tokens after the first non-flag token (the subcommand) are
+///     candidates; the global region is `normalize_attached_global_args`'s
+///     job and is left alone here.
+///   - Rewriting stops at a literal `--`: everything after it is payload
+///     (send-keys literals, direct-exec argv), exactly like tmux.
+///   - Only `-t<value>` is split.  A bare `-t` (detached form) and every
+///     other flag pass through unchanged.
+///   - tmux parses a token like `-tfoo` as a target in every command, so
+///     this rewrite is parity even where the token was meant as text; the
+///     tmux-blessed way to pass literal `-t...` text is after `--`.
+pub fn normalize_attached_target_flag(args: Vec<String>) -> Vec<String> {
+    let mut out = Vec::with_capacity(args.len());
+    let mut seen_subcommand = false;
+    let mut seen_dashdash = false;
+    for (idx, arg) in args.into_iter().enumerate() {
+        if idx == 0 {
+            out.push(arg); // binary name
+            continue;
+        }
+        if arg == "--" {
+            seen_dashdash = true;
+            out.push(arg);
+            continue;
+        }
+        if !seen_subcommand {
+            if !arg.starts_with('-') || arg == "-" {
+                seen_subcommand = true;
+            }
+            out.push(arg);
+            continue;
+        }
+        if !seen_dashdash && arg.len() > 2 && arg.starts_with("-t") && !arg.starts_with("--") {
+            out.push("-t".to_string());
+            out.push(arg[2..].to_string());
+            continue;
+        }
+        out.push(arg);
+    }
+    out
+}
+
+pub fn deferred_command_start<S: AsRef<str>>(command: &str, args: &[S]) -> Option<usize> {
+    let value_options: &[&str] = match command {
+        "bind-key" | "bind" => &["-T"],
+        "set-hook" => &["-t"],
+        "confirm-before" | "confirm" => &["-p", "-t"],
+        _ => return None,
+    };
+
+    let mut i = 0;
+    while i < args.len() {
+        let token = args[i].as_ref();
+        if token == "--" {
+            i += 1;
+            break;
+        }
+        if !token.starts_with('-') || token == "-" {
+            break;
+        }
+        i += if value_options.contains(&token) { 2 } else { 1 };
+    }
+
+    match command {
+        "bind-key" | "bind" | "set-hook" => (i < args.len()).then_some(i + 1),
+        "confirm-before" | "confirm" => (i < args.len()).then_some(i),
+        _ => None,
+    }
+}
+
+pub fn outer_target_scan_end<S: AsRef<str>>(command: &str, args: &[S]) -> usize {
+    deferred_command_start(command, args)
+        .into_iter()
+        .chain(args.iter().position(|arg| arg.as_ref() == "--"))
+        .min()
+        .unwrap_or(args.len())
 }
 
 /// Same as [`normalize_flag_equals`] but operates on `Vec<&str>`, returning
@@ -86,7 +574,9 @@ SESSION COMMANDS:
         -t <name>           Target session name
     kill-session, kill-ses  Kill a session
         -t <name>           Target session name
-    kill-server             Kill all sessions and the server
+    kill-server             Kill every session on this socket (-L namespace,
+                            or the default one when no -L is given)
+        -a, --all           Kill every session in every -L namespace
     rename-session, rename  Rename the current session
     switch-client, switchc  Switch to another session
     list-clients, lsc       List connected clients
@@ -279,6 +769,8 @@ SET OPTIONS (use with: set -g <option> <value>):
     mouse               Bool Mouse support (default: on)
     status              Bool Show status bar (default: on)
     status-position     Str  "top" or "bottom" (default: bottom)
+    priority            Str  psmux process scheduling class: "normal",
+                             "above-normal" or "high" (default: above-normal)
     focus-events        Bool Pass focus events to apps (default: off)
     mode-keys           Str  "vi" or "emacs" (default: emacs)
     renumber-windows    Bool Auto-renumber on close (default: off)
@@ -314,6 +806,7 @@ SET OPTIONS (use with: set -g <option> <value>):
     pane-border-style   Str  Inactive pane border style
     pane-active-border-style Str Active pane border style
     pane-border-hover-style Str Border hover highlight style
+    pane-border-indicators Str Active pane indicator (off/colour/arrows/both)
     window-status-format        Str  Inactive window tab format
     window-status-current-format Str  Active window tab format
     window-status-separator     Str  Separator between tabs
@@ -460,7 +953,7 @@ pub fn print_commands() {
   if-shell (if)             - Conditional command execution
   join-pane                 - Join a pane to a window
   kill-pane                 - Kill a pane
-  kill-server               - Kill the psmux server
+  kill-server               - Kill the servers on this socket (-a: all namespaces)
   kill-session              - Kill a session
   kill-window               - Kill a window
   last-pane                 - Select the previously active pane
@@ -519,12 +1012,94 @@ pub fn print_commands() {
 "#);
 }
 
+/// Strip the tmux exact-match marker from a raw target specification.
+///
+/// tmux target grammar allows a leading '=' meaning "match this session name
+/// exactly, no fuzzy prefix matching". psmux only ever matches exactly, so
+/// the marker carries no information here, but any code that keeps the RAW
+/// -t string (for relative pane forms like :.+) and later compares it as a
+/// session name must see the plain name: `"name" == "=name"` silently
+/// matching nothing is issue #558 (kill-session -t =name burned its 5s
+/// settle deadline and exited 1 while the session survived).
+pub fn strip_exact_match_prefix(target: &str) -> &str {
+    target.strip_prefix('=').unwrap_or(target)
+}
+
+/// Does a bare `-t` token name a WINDOW rather than a session?
+///
+/// tmux's window table (`cmd-find.c:51`, `cmd_find_window_table`) is
+/// `{start} ^`, `{last} !`, `{end} $`, `{next} +`, `{previous} -`, and
+/// `cmd-find.c:443` tries a plain number as a window index before anything
+/// else. A bare NAME stays ambiguous and keeps psmux's session meaning.
+pub fn bare_target_names_a_window(target: &str) -> bool {
+    if target.parse::<usize>().is_ok() {
+        return true;
+    }
+    if matches!(target, "!" | "^" | "$") {
+        return true;
+    }
+    if target.starts_with('{') && target.ends_with('}') && target.len() > 2 {
+        return true;
+    }
+    if let Some(n) = target.strip_prefix(['+', '-']) {
+        return n.is_empty() || n.chars().all(|c| c.is_ascii_digit());
+    }
+    false
+}
+
+/// Commands whose `-t` is a window target, where a bare token must be read as
+/// a window before it is read as a session.
+///
+/// tmux resolves such a `-t` through `cmd_find_get_window` (`cmd-find.c:328`),
+/// which uses the CURRENT session and asks
+/// `cmd_find_get_window_with_session` first; only if that fails does it try
+/// the token as a session itself (`cmd-find.c:348`). psmux's `parse_target`
+/// reads any bare token as a session name (`"A bare string without ':' or
+/// '.' is always a session name, even if numeric"`), so `select-window -t 0`
+/// looked for a SESSION called `0`: on the CLI that died with
+/// `no server running on session '<ns>__0'`, and from a binding, the control
+/// socket or the `:` prompt it silently selected nothing (issue #692).
+///
+/// `move-window` and `swap-window` were coerced here first (issue #602).
+/// `select-window` joins them; commands that resolve their own `-t`
+/// (kill-window, break-pane, join-pane) are deliberately left alone.
+pub fn window_target_command(cmd: &str) -> bool {
+    matches!(
+        cmd,
+        "move-window" | "movew" | "swap-window" | "swapw" | "select-window" | "selectw"
+    )
+}
+
+/// Put the colon back on a bare window target, so the generic parser reads it
+/// as a window in the current session (tmux `cmd_find_get_window`).
+///
+/// Returns the target unchanged when the command's `-t` is not a window
+/// target or the token is not window-shaped.
+///
+/// `select-window` took only the plain index when issue #692 landed, because
+/// the relative and symbolic forms (`+2`, `!`, `{end}`) were resolved server
+/// side by `move-window`/`swap-window`'s own #602 resolver and by nothing
+/// else, so coercing them would only have turned a loud CLI error into a
+/// silent no-op. Issue #693 item 4 routes `select-window` through that same
+/// resolver on every route, so it now takes the whole shape, exactly as
+/// tmux's `cmd_find_window_table` (cmd-find.c:51-58) and the offset branch
+/// (cmd-find.c:390-417) do.
+pub fn coerce_bare_window_target(cmd: &str, target: &str) -> String {
+    let plain = strip_exact_match_prefix(target);
+    let window_shaped = bare_target_names_a_window(plain);
+    if window_target_command(cmd) && window_shaped {
+        format!(":{}", plain)
+    } else {
+        target.to_string()
+    }
+}
+
 /// Parse a tmux-style target specification
 pub fn parse_target(target: &str) -> ParsedTarget {
     let mut result = ParsedTarget::default();
-    
+
     // Strip leading '=' prefix (tmux exact-match semantics)
-    let target = target.strip_prefix('=').unwrap_or(target);
+    let target = strip_exact_match_prefix(target);
     
     if target.starts_with('%') {
         if let Ok(pid) = target[1..].parse::<usize>() {
@@ -641,7 +1216,17 @@ pub fn parse_target(target: &str) -> ParsedTarget {
                     result.window_name = Some(win_part.to_string());
                 }
             }
-            if let Ok(p) = wp[dot_pos + 1..].parse::<usize>() {
+            // The pane slot accepts a %id as well as an index, exactly as the
+            // "@window.pane" branch above already does. Parsing it with a bare
+            // parse::<usize>() silently failed on the '%', leaving pane = None,
+            // and the command then fell back to the ACTIVE pane. That is not a
+            // no-op: "kill-pane -t sess:.%4" killed the active pane %2 in a
+            // different window and still exited 0.
+            let pane_str = &wp[dot_pos + 1..];
+            if let Some(pid) = pane_str.strip_prefix('%').and_then(|s| s.parse::<usize>().ok()) {
+                result.pane = Some(pid);
+                result.pane_is_id = true;
+            } else if let Ok(p) = pane_str.parse::<usize>() {
                 result.pane = Some(p);
             }
         } else {
@@ -660,6 +1245,127 @@ pub fn parse_target(target: &str) -> ParsedTarget {
 pub fn extract_session_from_target(target: &str) -> String {
     let parsed = parse_target(target);
     parsed.session.unwrap_or_else(|| "default".to_string())
+}
+
+/// Split set-option flags from operands. Ordinary flags end at the option
+/// name; `-t <target>` remains recognized until `--`.
+pub(crate) struct ParsedSetOptionArgs<'a> {
+    pub flag_chars: String,
+    pub target: Option<&'a str>,
+    pub missing_target: bool,
+    pub positionals: Vec<&'a str>,
+}
+
+impl ParsedSetOptionArgs<'_> {
+    pub fn validate(&self, window_command: bool) -> Result<(), String> {
+        if let Some(flag) = invalid_set_option_flag(&self.flag_chars) {
+            return Err(format!("unknown flag -{}", flag));
+        }
+        if self.missing_target {
+            return Err("target required after -t".to_string());
+        }
+        let unset = self.flag_chars.contains('u') || self.flag_chars.contains('U');
+        let append = self.flag_chars.contains('a');
+        let pane_scope = self.flag_chars.contains('p');
+        let local_window = (window_command || self.flag_chars.contains('w'))
+            && !self.flag_chars.contains('g')
+            && !self.flag_chars.contains('s');
+        let Some(option) = self.positionals.first().copied() else {
+            return Err("too few arguments (need at least 1)".to_string());
+        };
+        crate::server::option_catalog::validate_local_window_override(option, local_window)?;
+        if pane_scope {
+            if unset || self.positionals.len() >= 2 {
+                return Ok(());
+            }
+            return Err("set-option -p: option and value required".to_string());
+        }
+        if unset {
+            return Ok(());
+        }
+        if self.positionals.get(1).is_none() {
+            if !append && crate::server::options::missing_value_toggles(option) {
+                return Ok(());
+            }
+            return Err(format!("empty value for '{}'", option));
+        }
+        if append {
+            crate::server::option_catalog::validate_option_append(option)?;
+        }
+        // `-F` means the value is a FORMAT, so what lands in the option store is
+        // the expansion, not the text typed here. tmux expands first and
+        // validates the result (cmd-set-option.c), so validating the raw
+        // `#{...}` would refuse a legitimate assignment. The server validates
+        // the expanded value in options::apply_set_option.
+        if self.flag_chars.contains('F') {
+            return Ok(());
+        }
+        crate::server::option_catalog::validate_option_value(
+            option,
+            &self.positionals[1..].join(" "),
+        )
+    }
+}
+
+pub(crate) fn parse_set_option_args<'a>(args: &[&'a str]) -> ParsedSetOptionArgs<'a> {
+    let mut flag_chars = String::new();
+    let mut target = None;
+    let mut missing_target = false;
+    let mut positionals = Vec::new();
+    let mut i = 0;
+    let mut parsing_flags = true;
+    let mut literal_values = false;
+    while i < args.len() {
+        let arg = args[i];
+        if parsing_flags {
+            if arg == "--" {
+                parsing_flags = false;
+                literal_values = true;
+                i += 1;
+                continue;
+            }
+            if arg.starts_with('-') && arg.len() > 1 {
+                flag_chars.push_str(&arg[1..]);
+                if arg.contains('t') {
+                    match args.get(i + 1).copied() {
+                        Some(value) => target = Some(value),
+                        None => missing_target = true,
+                    }
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+                continue;
+            }
+            parsing_flags = false;
+        } else if !literal_values && arg == "--" {
+            literal_values = true;
+            i += 1;
+            continue;
+        } else if !literal_values && arg == "-t" {
+            flag_chars.push('t');
+            match args.get(i + 1).copied() {
+                Some(value) => target = Some(value),
+                None => missing_target = true,
+            }
+            i += 2;
+            continue;
+        }
+        positionals.push(arg);
+        i += 1;
+    }
+    ParsedSetOptionArgs {
+        flag_chars,
+        target,
+        missing_target,
+        positionals,
+    }
+}
+
+fn invalid_set_option_flag(flag_chars: &str) -> Option<char> {
+    flag_chars
+        .chars()
+        .find(|flag| !crate::SET_OPTION_CLI_FLAGS.contains(*flag))
 }
 
 /// Extract a flag value from args, supporting tmux short-flag CLI forms:
@@ -749,6 +1455,47 @@ mod tests {
         assert_eq!(pt.pane, Some(1));
     }
 
+    // A %id is legal in the PANE slot of "session:window.pane". It used to be
+    // parsed with a bare parse::<usize>(), which fails on the '%', so pane came
+    // back None and every caller fell through to the ACTIVE pane. The observable
+    // damage was destructive rather than inert: "kill-pane -t sess:.%4" killed
+    // the active pane %2, in a different window, and exited 0.
+    #[test]
+    fn parse_target_pane_id_in_pane_slot_current_window() {
+        let pt = parse_target("mysession:.%4");
+        assert_eq!(pt.session, Some("mysession".to_string()));
+        assert_eq!(pt.window, None, "no window component means the current window");
+        assert_eq!(pt.pane, Some(4), "%4 must reach the pane slot, not be dropped");
+        assert!(pt.pane_is_id, "%4 is an id, not an index: indexes would resolve to a different pane");
+    }
+
+    #[test]
+    fn parse_target_pane_id_in_pane_slot_with_window_index() {
+        let pt = parse_target("mysession:1.%7");
+        assert_eq!(pt.session, Some("mysession".to_string()));
+        assert_eq!(pt.window, Some(1));
+        assert_eq!(pt.pane, Some(7));
+        assert!(pt.pane_is_id);
+    }
+
+    #[test]
+    fn parse_target_pane_id_in_pane_slot_with_window_name() {
+        let pt = parse_target("mysession:logs.%2");
+        assert_eq!(pt.window_name, Some("logs".to_string()));
+        assert_eq!(pt.pane, Some(2));
+        assert!(pt.pane_is_id);
+    }
+
+    // A numeric pane index in the same slot must stay an INDEX. If this flipped
+    // to pane_is_id the two syntaxes would silently mean the same thing and
+    // "sess:.1" would start resolving to pane %1 instead of the second pane.
+    #[test]
+    fn parse_target_pane_index_is_not_an_id() {
+        let pt = parse_target("mysession:.1");
+        assert_eq!(pt.pane, Some(1));
+        assert!(!pt.pane_is_id, "a bare index must not be treated as a %id");
+    }
+
     #[test]
     fn parse_target_bare_window_name() {
         // :mywindow (no session)
@@ -780,5 +1527,21 @@ mod tests {
 mod tests_issue196_flag_equals;
 
 #[cfg(test)]
+#[path = "../tests-rs/test_issue635_dangling_flag_value.rs"]
+mod tests_issue635_dangling_flag_value;
+
+#[cfg(test)]
 #[path = "../tests-rs/test_issue497_selectwindow_id.rs"]
 mod tests_issue497_selectwindow_id;
+
+#[cfg(test)]
+#[path = "../tests-rs/test_issue558_eq_prefix.rs"]
+mod tests_issue558_eq_prefix;
+
+#[cfg(test)]
+#[path = "../tests-rs/test_discussion571_attached_global_args.rs"]
+mod tests_discussion571_attached_global_args;
+
+#[cfg(test)]
+#[path = "../tests-rs/test_issue692_select_window_targets.rs"]
+mod tests_issue692_select_window_targets;

@@ -17,7 +17,8 @@ use std::time::Duration;
 use windows_sys::Win32::Foundation::GlobalFree;
 #[cfg(windows)]
 use windows_sys::Win32::System::DataExchange::{
-    CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData,
+    CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable,
+    OpenClipboard, SetClipboardData,
 };
 #[cfg(windows)]
 use windows_sys::Win32::System::Memory::{
@@ -155,3 +156,34 @@ pub fn read_from_system_clipboard() -> Option<String> {
 
 #[cfg(not(windows))]
 pub fn read_from_system_clipboard() -> Option<String> { None }
+
+/// Return whether the Windows clipboard contains an image format understood by
+/// the standard clipboard APIs. This does not open or read the clipboard.
+#[cfg(windows)]
+pub fn system_clipboard_has_image() -> bool {
+    const CF_BITMAP: u32 = 2;
+    const CF_DIB: u32 = 8;
+    const CF_DIBV5: u32 = 17;
+
+    [CF_BITMAP, CF_DIB, CF_DIBV5]
+        .into_iter()
+        .any(|format| unsafe { IsClipboardFormatAvailable(format) != 0 })
+}
+
+#[cfg(not(windows))]
+pub fn system_clipboard_has_image() -> bool { false }
+
+/// The system clipboard's change counter.
+///
+/// `GetClipboardSequenceNumber` is a read of one shared value: it does not open
+/// the clipboard, cannot fail and cannot block behind another process that is
+/// holding it.  That is what makes it usable from the client's input loop,
+/// where an `OpenClipboard` per keystroke would not be: the head of the
+/// clipboard can be cached and only re-read when this number moves.
+#[cfg(windows)]
+pub fn clipboard_sequence_number() -> u32 {
+    unsafe { windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber() }
+}
+
+#[cfg(not(windows))]
+pub fn clipboard_sequence_number() -> u32 { 0 }

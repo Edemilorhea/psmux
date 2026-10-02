@@ -19,10 +19,17 @@ fn mock_app() -> AppState {
 
 fn make_window(name: &str, id: usize) -> crate::types::Window {
     crate::types::Window {
-        root: Node::Split { kind: LayoutKind::Horizontal, sizes: vec![], children: vec![] },
+        root: Node::Split {
+            kind: LayoutKind::Horizontal,
+            sizes: vec![],
+            children: vec![],
+        },
         active_path: vec![],
         name: name.to_string(),
         id,
+        area: ratatui::layout::Rect::new(0, 0, 120, 30),
+        window_size: None,
+        window_options: Default::default(),
         activity_flag: false,
         bell_flag: false,
         silence_flag: false,
@@ -102,14 +109,20 @@ fn resolve_shell_binary_cmd_exe_passthrough() {
 #[cfg(windows)]
 fn resolve_shell_binary_arbitrary_passthrough() {
     let result = resolve_shell_binary("notepad");
-    assert_eq!(result, "notepad", "unknown binaries should pass through unchanged");
+    assert_eq!(
+        result, "notepad",
+        "unknown binaries should pass through unchanged"
+    );
 }
 
 #[test]
 #[cfg(windows)]
 fn resolve_shell_binary_full_path_passthrough() {
     let result = resolve_shell_binary(r"C:\Windows\System32\cmd.exe");
-    assert_eq!(result, r"C:\Windows\System32\cmd.exe", "full paths should pass through unchanged");
+    assert_eq!(
+        result, r"C:\Windows\System32\cmd.exe",
+        "full paths should pass through unchanged"
+    );
 }
 
 // ─── build_run_shell_command tests ──────────────────────────────────────────
@@ -169,9 +182,18 @@ fn build_run_shell_command_generic_command_uses_shell_wrapper() {
 #[cfg(windows)]
 fn build_run_shell_command_preserves_args() {
     let cmd = build_run_shell_command("pwsh -NoProfile -Command echo hello world");
-    let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().to_string()).collect();
-    assert!(args.contains(&"-NoProfile".to_string()), "Should preserve -NoProfile arg");
-    assert!(args.contains(&"-Command".to_string()), "Should preserve -Command arg");
+    let args: Vec<String> = cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().to_string())
+        .collect();
+    assert!(
+        args.contains(&"-NoProfile".to_string()),
+        "Should preserve -NoProfile arg"
+    );
+    assert!(
+        args.contains(&"-Command".to_string()),
+        "Should preserve -Command arg"
+    );
 }
 
 // ─── expand_run_shell_path tests ────────────────────────────────────────────
@@ -315,26 +337,40 @@ fn run_shell_double_quoted_command() {
 fn ensure_background_adds_flag_to_run_shell() {
     let result = ensure_background("run-shell echo test");
     assert!(result.contains("-b"), "Should add -b flag. Got: {}", result);
-    assert!(result.starts_with("run-shell -b"), "Flag should be right after command. Got: {}", result);
+    assert!(
+        result.starts_with("run-shell -b"),
+        "Flag should be right after command. Got: {}",
+        result
+    );
 }
 
 #[test]
 fn ensure_background_adds_flag_to_run_alias() {
     let result = ensure_background("run echo test");
     assert!(result.contains("-b"), "Should add -b flag. Got: {}", result);
-    assert!(result.starts_with("run -b"), "Flag should be right after alias. Got: {}", result);
+    assert!(
+        result.starts_with("run -b"),
+        "Flag should be right after alias. Got: {}",
+        result
+    );
 }
 
 #[test]
 fn ensure_background_noop_when_already_background() {
     let result = ensure_background("run-shell -b echo test");
-    assert_eq!(result, "run-shell -b echo test", "Should not double add -b flag");
+    assert_eq!(
+        result, "run-shell -b echo test",
+        "Should not double add -b flag"
+    );
 }
 
 #[test]
 fn ensure_background_noop_for_non_run_commands() {
     let result = ensure_background("display-message hello");
-    assert_eq!(result, "display-message hello", "Non run commands should be unchanged");
+    assert_eq!(
+        result, "display-message hello",
+        "Non run commands should be unchanged"
+    );
 }
 
 // ─── parse_command_line tests for edge cases ────────────────────────────────
@@ -380,4 +416,119 @@ fn parse_command_line_backslash_in_double_quotes() {
 fn parse_command_line_empty_string() {
     let parts = parse_command_line("");
     assert!(parts.is_empty());
+}
+
+// ─── run-shell child PATH ───────────────────────────────────────────────────
+//
+// A run-shell child inherits the SERVER's environment, which may not contain
+// the directory psmux itself runs from: a parked warm server keeps the
+// environment of whatever spawned it, even after another session claims it.
+// Plugin scripts and user bindings that shell out to `psmux` then fail with
+// "not recognized as the name of a cmdlet" although psmux is running.
+
+#[cfg(windows)]
+fn own_dir() -> String {
+    std::env::current_exe()
+        .expect("current_exe()")
+        .parent()
+        .expect("current_exe() has a parent")
+        .to_string_lossy()
+        .into_owned()
+}
+
+#[cfg(windows)]
+fn child_path(cmd: &std::process::Command) -> Option<String> {
+    cmd.get_envs()
+        .find(|(key, _)| key.to_string_lossy().eq_ignore_ascii_case("PATH"))
+        .and_then(|(_, value)| value.map(|v| v.to_string_lossy().into_owned()))
+}
+
+#[cfg(windows)]
+fn path_entries(path: &str) -> Vec<&str> {
+    path.split(';').collect()
+}
+
+#[test]
+#[cfg(windows)]
+fn prepend_if_absent_prepends_missing_dir() {
+    assert_eq!(
+        prepend_if_absent(r"C:\Windows;C:\Windows\System32", r"D:\psmux").as_deref(),
+        Some(r"D:\psmux;C:\Windows;C:\Windows\System32")
+    );
+}
+
+#[test]
+#[cfg(windows)]
+fn prepend_if_absent_handles_empty_path() {
+    assert_eq!(
+        prepend_if_absent("", r"D:\psmux").as_deref(),
+        Some(r"D:\psmux")
+    );
+}
+
+#[test]
+#[cfg(windows)]
+fn prepend_if_absent_keeps_an_existing_entry() {
+    assert_eq!(prepend_if_absent(r"D:\psmux;C:\Windows", r"D:\psmux"), None);
+}
+
+#[test]
+#[cfg(windows)]
+fn prepend_if_absent_ignores_case_and_trailing_separator() {
+    assert_eq!(
+        prepend_if_absent(r"d:\PSMUX\;C:\Windows", r"D:\psmux"),
+        None
+    );
+    assert_eq!(
+        prepend_if_absent(r"C:\Windows;D:\psmux", r"D:\psmux\"),
+        None
+    );
+}
+
+/// The reported failure: a server whose `PATH` does not contain the psmux
+/// directory. The child still has to be able to resolve `psmux`, and the
+/// directory must show up exactly once.
+#[test]
+#[cfg(windows)]
+fn run_shell_child_gets_psmux_dir_on_a_poisoned_path() {
+    let mut cmd = std::process::Command::new("cmd");
+    apply_own_dir_to_path(&mut cmd, r"C:\Windows;C:\Windows\System32");
+
+    let path = child_path(&cmd).expect("the child must receive an explicit PATH");
+    let dir = own_dir();
+    let entries = path_entries(&path);
+    assert_eq!(
+        entries
+            .first()
+            .map(|entry| entry.trim_end_matches(|c| c == '\\' || c == '/')),
+        Some(dir.trim_end_matches(|c| c == '\\' || c == '/')),
+        "expected {dir} first on the child PATH, got {path}"
+    );
+    assert_eq!(
+        entries
+            .iter()
+            .filter(|entry| entry
+                .trim_end_matches(|c| c == '\\' || c == '/')
+                .eq_ignore_ascii_case(&dir))
+            .count(),
+        1,
+        "expected {dir} exactly once on the child PATH, got {path}"
+    );
+    assert!(
+        path.ends_with(r"C:\Windows;C:\Windows\System32"),
+        "the inherited PATH must be preserved after the prepended entry, got {path}"
+    );
+}
+
+/// An environment that already knows about psmux is left exactly as the caller
+/// set it up: no duplicate entry, no reordering.
+#[test]
+#[cfg(windows)]
+fn run_shell_child_path_is_untouched_when_psmux_is_already_on_it() {
+    let mut cmd = std::process::Command::new("cmd");
+    apply_own_dir_to_path(&mut cmd, &format!("{};C:\\Windows", own_dir()));
+    assert!(
+        child_path(&cmd).is_none(),
+        "an inherited PATH that already contains the psmux directory must not be rewritten"
+    );
 }

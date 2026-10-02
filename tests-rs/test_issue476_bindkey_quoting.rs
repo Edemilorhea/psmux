@@ -18,11 +18,25 @@ fn roundtrip(args: &[&str]) -> Vec<String> {
 fn issue476_repro_binding_grouping_survives() {
     // Exactly the tail the server sees for:
     // bind-key -n C-h "if-shell -F '1' 'set -g @result KEY_MATCH' 'set -g @result KEY_NOMATCH'"
-    let tail = ["if-shell", "-F", "1", "set -g @result KEY_MATCH", "set -g @result KEY_NOMATCH"];
+    let tail = [
+        "if-shell",
+        "-F",
+        "1",
+        "set -g @result KEY_MATCH",
+        "set -g @result KEY_NOMATCH",
+    ];
     let out = roundtrip(&tail);
-    assert_eq!(out, vec![
-        "if-shell", "-F", "1", "set -g @result KEY_MATCH", "set -g @result KEY_NOMATCH",
-    ], "grouped args must survive requote + re-parse");
+    assert_eq!(
+        out,
+        vec![
+            "if-shell",
+            "-F",
+            "1",
+            "set -g @result KEY_MATCH",
+            "set -g @result KEY_NOMATCH",
+        ],
+        "grouped args must survive requote + re-parse"
+    );
 }
 
 #[test]
@@ -38,14 +52,23 @@ fn chain_separators_stay_bare_for_command_chaining() {
     assert_eq!(joined, "split-window \\; select-pane -D");
     // split_chained_commands must still see the separator
     let chained = crate::config::split_chained_commands_pub(&joined);
-    assert_eq!(chained.len(), 2, "chaining must still split, got {:?}", chained);
+    assert_eq!(
+        chained.len(),
+        2,
+        "chaining must still split, got {:?}",
+        chained
+    );
 }
 
 #[test]
 fn empty_token_preserved() {
     let tail = ["select-pane", "-T", ""];
     let out = roundtrip(&tail);
-    assert_eq!(out, vec!["select-pane", "-T", ""], "empty quoted arg must survive (#177 parity)");
+    assert_eq!(
+        out,
+        vec!["select-pane", "-T", ""],
+        "empty quoted arg must survive (#177 parity)"
+    );
 }
 
 #[test]
@@ -66,14 +89,49 @@ fn token_with_double_quotes_roundtrips_via_single_quotes() {
 fn windows_path_with_spaces_roundtrips() {
     let tail = ["run-shell", "C:\\Program Files\\Git\\bin\\bash.exe"];
     let out = roundtrip(&tail);
-    assert_eq!(out, vec!["run-shell", "C:\\Program Files\\Git\\bin\\bash.exe"]);
+    assert_eq!(
+        out,
+        vec!["run-shell", "C:\\Program Files\\Git\\bin\\bash.exe"]
+    );
 }
 
 #[test]
 fn format_condition_token_stays_bare() {
-    let tail = ["if-shell", "-F", "#{m/r:^pwsh$,#{pane_current_command}}", "send-keys C-h", "select-pane -L"];
+    let tail = [
+        "if-shell",
+        "-F",
+        "#{m/r:^pwsh$,#{pane_current_command}}",
+        "send-keys C-h",
+        "select-pane -L",
+    ];
     let out = roundtrip(&tail);
     assert_eq!(out[2], "#{m/r:^pwsh$,#{pane_current_command}}");
     assert_eq!(out[3], "send-keys C-h");
     assert_eq!(out[4], "select-pane -L");
+}
+
+#[test]
+fn target_filter_stops_at_deferred_command_boundaries() {
+    let cases: &[(&str, &[&str], &[&str])] = &[
+        (
+            "bind-key",
+            &["-n", "x", "kill-window", "-t"],
+            &["-n", "x", "kill-window", "-t"],
+        ),
+        (
+            "set-hook",
+            &["-g", "-t", "0", "after-split-window", "kill-window", "-t"],
+            &["-g", "after-split-window", "kill-window", "-t"],
+        ),
+        (
+            "confirm-before",
+            &["-p", "Kill?", "-t", "0", "kill-window", "-t"],
+            &["-p", "Kill?", "kill-window", "-t"],
+        ),
+        ("kill-window", &["-t", "0", "-a"], &["-a"]),
+    ];
+
+    for (command, args, expected) in cases {
+        assert_eq!(without_outer_target(command, args), *expected, "{command}");
+    }
 }

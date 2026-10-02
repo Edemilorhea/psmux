@@ -117,11 +117,48 @@ pub fn is_warm_disabled_by_config() -> bool {
     false
 }
 
+/// The `priority` option as written in the user's config file, if it is there
+/// and usable.
+///
+/// The attach client never runs load_config: it asks the server for the options
+/// it renders with. But its own scheduling class has to be decided before it
+/// has spoken to anybody, so it peeks at the file the same lightweight way
+/// is_warm_disabled_by_config does (#608). Anything unparseable is simply
+/// absent here; the server's full config pass is what reports it.
+pub fn priority_from_config() -> Option<String> {
+    let content = read_user_config_content()?;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('#') {
+            continue;
+        }
+        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+        if parts.len() < 3 {
+            continue;
+        }
+        if parts[0] != "set" && parts[0] != "set-option" {
+            continue;
+        }
+        let mut i = 1;
+        while i < parts.len() && parts[i].starts_with('-') {
+            i += 1;
+        }
+        if i + 1 < parts.len() && parts[i] == "priority" {
+            let val = parts[i + 1].trim_matches('"').trim_matches('\'');
+            return crate::platform::normalize_priority(val).map(|v| v.to_string());
+        }
+    }
+    None
+}
+
 /// Populate key_tables with PREFIX_DEFAULTS and ROOT_DEFAULTS from help.rs.
 /// This ensures default bindings live in key_tables (like tmux)
 /// so that unbind-key <key> can actually remove them.
 /// Must be called BEFORE load_config / source_file.
 pub fn populate_default_bindings(app: &mut AppState) {
+    // A re-seed restores every built-in copy-mode key, as tmux's
+    // key_bindings_init does for its copy-mode tables.
+    app.copy_mode_defaults_unbound.clear();
     let defaults = crate::help::PREFIX_DEFAULTS;
     let table = app.key_tables.entry("prefix".to_string()).or_default();
     for (key_str, cmd_str) in defaults {
@@ -151,6 +188,92 @@ pub fn populate_default_bindings(app: &mut AppState) {
     }
 }
 
+/// The built-in copy-mode keys of `table`, parsed once: normalised key, the
+/// key name as `list-keys` prints it, and the `send-keys -X` command. Empty
+/// for any table that is not `copy-mode` or `copy-mode-vi`.
+pub fn copy_mode_default_keys(table: &str) -> &'static [((KeyCode, KeyModifiers), &'static str, &'static str)] {
+    use std::sync::OnceLock;
+    type Parsed = Vec<((KeyCode, KeyModifiers), &'static str, &'static str)>;
+    fn parse(list: &'static [(&'static str, &'static str)]) -> Parsed {
+        list.iter()
+            .filter_map(|(k, c)| parse_key_name(k).map(|key| (normalize_key_for_binding(key), *k, *c)))
+            .collect()
+    }
+    static VI: OnceLock<Parsed> = OnceLock::new();
+    static EMACS: OnceLock<Parsed> = OnceLock::new();
+    match table {
+        "copy-mode-vi" => VI.get_or_init(|| parse(crate::help::COPY_MODE_VI_DEFAULTS)),
+        "copy-mode" => EMACS.get_or_init(|| parse(crate::help::COPY_MODE_EMACS_DEFAULTS)),
+        _ => &[],
+    }
+}
+
+/// The copy-mode table the built-in handlers follow: `copy-mode-vi` for
+/// `mode-keys vi`, `copy-mode` otherwise (tmux picks its table the same way).
+pub fn active_copy_mode_table(app: &AppState) -> &'static str {
+    if app.mode_keys == "vi" { "copy-mode-vi" } else { "copy-mode" }
+}
+
+/// True when `key` is a built-in copy-mode key of the active table that the
+/// user unbound, so the built-in handler must leave it alone. In tmux an
+/// unbound copy-mode key does nothing: the table simply has no entry for it.
+pub fn copy_mode_default_unbound(app: &AppState, key: (KeyCode, KeyModifiers)) -> bool {
+    if app.copy_mode_defaults_unbound.is_empty() { return false; }
+    let key = normalize_key_for_binding(key);
+    let table = active_copy_mode_table(app);
+    app.copy_mode_defaults_unbound.contains(&(table.to_string(), key))
+}
+
+/// `unbind-key -T <table> <key>`: drop the key from the table, and when it is
+/// a built-in copy-mode key record that, so the built-in handler stops acting
+/// on it.
+pub fn unbind_key_in_table(app: &mut AppState, table: &str, key: (KeyCode, KeyModifiers)) {
+    let key = normalize_key_for_binding(key);
+    if let Some(binds) = app.key_tables.get_mut(table) {
+        binds.retain(|b| b.key != key);
+    }
+    if copy_mode_default_keys(table).iter().any(|(k, _, _)| *k == key) {
+        app.copy_mode_defaults_unbound.insert((table.to_string(), key));
+    }
+}
+
+/// `unbind-key -a -T <table>`: empty the table. For a copy-mode table that
+/// takes the built-in keys away too, as it does in tmux.
+pub fn unbind_all_in_table(app: &mut AppState, table: &str) {
+    if let Some(binds) = app.key_tables.get_mut(table) {
+        binds.clear();
+    }
+    for (k, _, _) in copy_mode_default_keys(table) {
+        app.copy_mode_defaults_unbound.insert((table.to_string(), *k));
+    }
+}
+
+/// Every binding `list-keys` reports, as `(table, key, command, repeat)`: the
+/// key tables, then the built-in copy-mode keys that are neither rebound nor
+/// unbound.
+pub fn list_keys_entries(app: &AppState) -> Vec<(String, String, String, bool)> {
+    let mut out: Vec<(String, String, String, bool)> = Vec::new();
+    for (table_name, binds) in &app.key_tables {
+        for bind in binds {
+            out.push((
+                table_name.clone(),
+                format_key_binding(&bind.key),
+                crate::commands::format_action(&bind.action),
+                bind.repeat,
+            ));
+        }
+    }
+    for table in ["copy-mode", "copy-mode-vi"] {
+        let user = app.key_tables.get(table);
+        for (key, name, cmd) in copy_mode_default_keys(table) {
+            if user.map_or(false, |b| b.iter().any(|b| b.key == *key)) { continue; }
+            if app.copy_mode_defaults_unbound.contains(&(table.to_string(), *key)) { continue; }
+            out.push((table.to_string(), (*name).to_string(), (*cmd).to_string(), false));
+        }
+    }
+    out
+}
+
 pub fn load_config(app: &mut AppState) {
     // Start a fresh warning batch for this load/reload and mark the window so
     // nested `source-file` directives don't emit a runtime status message.
@@ -162,20 +285,34 @@ pub fn load_config(app: &mut AppState) {
     // If -f flag was used, load that specific config file instead of default search
     if let Ok(config_file) = env::var("PSMUX_CONFIG_FILE") {
         let expanded = if config_file.starts_with('~') {
-            let home = env::var("USERPROFILE").or_else(|_| env::var("HOME")).unwrap_or_default();
-            config_file.replacen('~', &home, 1)
+            config_file.replacen('~', &crate::paths::home_dir(), 1)
         } else {
             config_file
         };
         set_current_config_file(&expanded);
-        if let Ok(content) = std::fs::read_to_string(&expanded) {
-            parse_config_content(app, &content);
+        match std::fs::read_to_string(&expanded) {
+            Ok(content) => parse_config_content(app, &content),
+            // An explicitly requested config file that cannot be read is a
+            // mistake worth surfacing — the user named this path on purpose.
+            Err(e) => {
+                // Route through warn_config for consistent formatting. It prefixes
+                // current_config_file (set to `expanded` above); no config line is
+                // in play at initial load, so the result is `<path>: cannot read: ...`.
+                warn_config(app, format!("cannot read: {}", e));
+            }
         }
         set_current_config_file("");
         return;
     }
 
-    let home = env::var("USERPROFILE").or_else(|_| env::var("HOME")).unwrap_or_default();
+    // Use the canonical resolver rather than reading USERPROFILE/HOME directly.
+    // `paths::home_dir()` deliberately demotes HOME to a last resort (issue
+    // #474): under MSYS2/Git Bash, HOME is a POSIX path like /home/user, and
+    // joining it with the backslash-separated names below produced
+    // `/home/user\.config\psmux\psmux.conf`, which never matches anything — so
+    // psmux silently started with NO config at all while every other part of it
+    // used the real Windows profile directory.
+    let home = crate::paths::home_dir();
     let paths = vec![
         format!("{}\\.psmux.conf", home),
         format!("{}\\.psmuxrc", home),
@@ -655,13 +792,26 @@ pub fn parse_config_line(app: &mut AppState, line: &str) {
     } else {
         l
     };
-    
+
+    // Issue #635: tmux fails the whole config LINE when a value-taking flag
+    // has no value ("-t expects an argument" from arguments.c) and never runs
+    // the command. Report it the way every other config diagnostic is
+    // reported and skip the directive rather than letting it act on the
+    // default target.
+    {
+        let tokens = crate::commands::parse_command_line(l);
+        if let Err(flag_error) = crate::cli::validate_command_line_flags(&tokens) {
+            warn_config(app, flag_error);
+            return;
+        }
+    }
+
+
     if l.starts_with("set-option ") || l.starts_with("set ") {
-        parse_set_option(app, l);
+        parse_set_option(app, l, false);
     }
     else if l.starts_with("setw ") || l.starts_with("set-window-option ") {
-        // setw maps to the same option parser (tmux window options overlap)
-        parse_set_option(app, l);
+        parse_set_option(app, l, true);
     }
     else if l.starts_with("bind-key ") || l.starts_with("bind ") {
         parse_bind_key(app, l);
@@ -750,53 +900,268 @@ pub fn parse_config_line(app: &mut AppState, line: &str) {
         // command (a known-but-unrouted command like `new-window` stays silent
         // to match prior behavior; a genuine typo like `bnid-key` is surfaced).
         let cmd = l.split_whitespace().next().unwrap_or("");
+        // tmux runs a `copy-mode` line in a sourced file like any other
+        // command (cfg.c queues every line), so `source-file` on a file that
+        // says `copy-mode` enters copy mode. It needs a pane, and a startup
+        // load (including the reload a claimed warm server does) is left out
+        // so a config file never opens a new session in copy mode.
+        if cmd == "copy-mode" && !app.windows.is_empty() && !in_startup_load() {
+            let _ = crate::commands::execute_command_string(app, l);
+            return;
+        }
         if !cmd.is_empty() && !is_known_command(app, cmd) {
             warn_config(app, format!("unknown command: {}", cmd));
         }
     }
 }
 
-fn parse_set_option(app: &mut AppState, line: &str) {
-    let parts: Vec<&str> = line.split_whitespace().collect();
-    if parts.len() < 2 { warn_config(app, "set-option requires an option name"); return; }
-    
+/// Strip one layer of matching wrapping quotes, if the whole string carries
+/// them. This is the pre-#536 fallback and is kept for the shapes the
+/// quote-aware scan below deliberately does not claim.
+fn strip_wrapping_quotes(v: &str) -> &str {
+    let b = v.as_bytes();
+    if b.len() >= 2 && (b[0] == b'"' || b[0] == b'\'') && b[b.len() - 1] == b[0] {
+        &v[1..v.len() - 1]
+    } else {
+        v
+    }
+}
+
+/// Split a config line into whitespace-separated tokens, treating a quoted run
+/// as a single token, and record the byte offset where each token starts.
+///
+/// The offsets are the point of this: they let the caller recover the value
+/// **verbatim** from the original line. `split_whitespace()` discards where the
+/// runs of whitespace were, which is what made a quoted gap unrecoverable
+/// (#536).
+fn tokens_with_offsets(line: &str) -> Vec<(usize, String)> {
+    let mut out: Vec<(usize, String)> = Vec::new();
+    let mut cur = String::new();
+    let mut start = 0usize;
+    let mut started = false;
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut it = line.char_indices();
+    while let Some((idx, c)) = it.next() {
+        if !started && !c.is_whitespace() {
+            start = idx;
+            started = true;
+        }
+        match c {
+            // Keep the escape pair intact; the value scan resolves it later.
+            '\\' if in_double => {
+                cur.push(c);
+                if let Some((_, n)) = it.next() {
+                    cur.push(n);
+                }
+            }
+            '\'' if !in_double => {
+                in_single = !in_single;
+                cur.push(c);
+            }
+            '"' if !in_single => {
+                in_double = !in_double;
+                cur.push(c);
+            }
+            _ if c.is_whitespace() && !in_single && !in_double => {
+                if started {
+                    out.push((start, std::mem::take(&mut cur)));
+                    started = false;
+                }
+            }
+            _ => cur.push(c),
+        }
+    }
+    if started {
+        out.push((start, cur));
+    }
+    out
+}
+
+/// Resolve a `set-option` value from the remainder of a config line.
+///
+/// A value wrapped in matching quotes that close at end of line is taken
+/// byte-exact, so `set -g @x "A     B"` keeps all five spaces and
+/// `"   leading"` keeps its indent. Inside double quotes `\"` and `\\` are
+/// unescaped, matching both tmux and the tokenizer the CLI path already uses.
+/// Anything else (a bare word, or a quote that does not close the line) falls
+/// back to the old behaviour: verbatim with trailing whitespace removed and one
+/// layer of wrapping quotes stripped.
+fn extract_option_value(rest: &str) -> String {
+    let rest = rest.trim_end();
+    let mut chars = rest.char_indices();
+    let quote = match chars.next() {
+        Some((_, c)) if c == '"' || c == '\'' => c,
+        Some(_) => return rest.to_string(),
+        None => return String::new(),
+    };
+    let mut out = String::new();
+    while let Some((idx, c)) = chars.next() {
+        // Only double quotes process escapes, matching tmux and
+        // commands::parse_command_line.
+        if quote == '"' && c == '\\' {
+            if let Some((_, n)) = chars.clone().next() {
+                if n == '"' || n == '\\' {
+                    out.push(n);
+                    chars.next();
+                    continue;
+                }
+            }
+            out.push(c);
+            continue;
+        }
+        if c == quote {
+            // Only a closing quote that ends the line delimits the whole
+            // value. Trailing content means this is some other shape (a
+            // chained command, two quoted words), so leave it to the fallback
+            // rather than silently claiming half of it.
+            if rest[idx + c.len_utf8()..].trim().is_empty() {
+                return out;
+            }
+            return strip_wrapping_quotes(rest).to_string();
+        }
+        out.push(c);
+    }
+    // Unterminated quote: behave as before.
+    strip_wrapping_quotes(rest).to_string()
+}
+
+fn parse_set_option(app: &mut AppState, line: &str, window_command: bool) {
+    let toks = tokens_with_offsets(line);
+    if toks.len() < 2 { warn_config(app, "set-option requires an option name"); return; }
+
     let mut i = 1;
     let mut is_global = false;
     let mut format_expand = false;  // -F: expand format strings in value
     let mut only_if_unset = false;  // -o: only set if not already set
     let mut append_mode = false;    // -a: append to current value
     let mut unset_mode = false;     // -u: unset (reset to default)
-    
-    while i < parts.len() {
-        let p = parts[i];
+    let mut quiet = false;          // -q: suppress the "already set" error
+    let mut window_scope = window_command;
+    let mut target = String::new();
+
+    while i < toks.len() {
+        let p = toks[i].1.as_str();
         if p.starts_with('-') {
             if p.contains('g') { is_global = true; }
+            // -s is tmux's server scope (#618). psmux keeps a single option
+            // store, so it resolves to the global one, exactly like -g. A
+            // config carrying `set -s default-terminal xterm-256color` (or the
+            // very common `set -sg escape-time 0`) must land the value, not
+            // drop the scope on the floor.
+            if p.contains('s') { is_global = true; }
             if p.contains('F') { format_expand = true; }
             if p.contains('o') { only_if_unset = true; }
             if p.contains('a') { append_mode = true; }
-            if p.contains('u') { unset_mode = true; }
-            // -q (quiet): no-op — we don't produce errors for unknown options
-            // -w: window option — treat same as global for our single-server model
+            if p.contains('w') { window_scope = true; }
+            // -U is an unset alias of -u (tmux parity, #553); the contains
+            // check is case-sensitive so both must be tested.
+            if p.contains('u') || p.contains('U') { unset_mode = true; }
+            // -q (quiet) suppresses the `-o` "already set" refusal below, which
+            // is the one error tmux's cmd-set-option.c lets `-q` swallow at
+            // exit 0 (`if (args_has(args, 'q')) goto out;`). Unknown options
+            // are still reported.
+            if p.contains('q') { quiet = true; }
             i += 1;
-            if p.contains('t') && i < parts.len() { i += 1; }
+            // #648: the target was skipped and thrown away, so a config line
+            // `set -w -t "s:zero" remain-on-exit on` could not name a window
+            // even once windows had their own option tables.
+            if p.contains('t') && i < toks.len() {
+                target = strip_wrapping_quotes(&toks[i].1).to_string();
+                i += 1;
+            }
         } else {
             break;
         }
     }
-    
-    if i >= parts.len() { warn_config(app, "set-option requires an option name"); return; }
 
-    // Extract key and value
-    let key = parts[i];
-    let raw_value = if i + 1 < parts.len() {
-        parts[i + 1..].join(" ")
-    } else {
-        String::new()
+    if i >= toks.len() { warn_config(app, "set-option requires an option name"); return; }
+
+    // Extract key, then take the value from the ORIGINAL line starting at the
+    // next token's offset, so quoted whitespace survives (#536).
+    let key = strip_wrapping_quotes(&toks[i].1).to_string();
+    let key = key.as_str();
+    let raw_value = match toks.get(i + 1) {
+        Some((off, _)) => extract_option_value(&line[*off..]),
+        None => String::new(),
     };
+    if let Err(error) =
+        crate::server::option_catalog::validate_local_window_override(
+            key,
+            window_scope && !is_global,
+        )
+    {
+        warn_config(app, error);
+        return;
+    }
 
-    // Handle -u (unset): reset option to empty
+    // #648: `-w` / `setw` without `-g` writes the TARGET WINDOW's own option
+    // table, not the one global store. Same rule as the CLI and TCP routes:
+    // scope follows the option NAME (tmux's options_scope_from_name), so a
+    // session or server option under `-w` still lands in the global store and
+    // every config that has ever relied on that keeps working.
+    // A startup config file runs BEFORE any window exists, so an untargeted
+    // `-w` line has no window to write to. Real tmux drops it on the floor
+    // (measured on 3.4: `setw monitor-activity on` in a `-f` config left both
+    // the window and the global table untouched), but psmux has always landed
+    // those lines in the one store, and every `.psmux.conf` carrying a bare
+    // `setw` line depends on that. So an untargeted `-w` with no window to aim
+    // at falls through to the global window table below rather than vanishing.
+    let has_window_to_target = !app.windows.is_empty()
+        || !target.trim().is_empty();
+    if window_scope
+        && !is_global
+        && has_window_to_target
+        && crate::server::options::is_window_scoped_write(key)
+    {
+        let value = if format_expand && !raw_value.is_empty() {
+            crate::format::expand_format(&raw_value, app)
+        } else {
+            raw_value.clone()
+        };
+        // A boolean named with no value toggles, exactly as it does at global
+        // scope (#278) — against the value the WINDOW currently resolves to.
+        let (value, unset_mode) = if value.is_empty() && !unset_mode && !append_mode
+            && crate::server::options::is_boolean_option(key)
+        {
+            let index = crate::server::options::resolve_option_target_window(app, &target)
+                .unwrap_or(app.active_idx);
+            let current = crate::server::options::resolve_window_option(app, index, key);
+            (if current == "on" { "off".to_string() } else { "on".to_string() }, false)
+        } else {
+            (value, unset_mode)
+        };
+        let reply = crate::server::options::apply_set_window_option(
+            app, &target, key, &value, unset_mode, append_mode, only_if_unset, quiet,
+        );
+        if let Some(error) = reply.strip_prefix("ERROR: ") {
+            warn_config(app, error.to_string());
+        } else {
+            app.user_set_options.insert(key.to_string());
+        }
+        return;
+    }
+
+    // Handle -u (unset): restore the option's table default.
+    //
+    // Issue #619: the `user_set_options` erase used to be reachable only for
+    // window-style and window-active-style (the two options #617 repaired), so
+    // for every other non `@` option the key survived the unset and the `-o`
+    // guard below still read it as set. `set -gu escape-time` followed by
+    // `set -go escape-time 77` therefore left escape-time at its default and
+    // dropped the 77 on the floor. tmux clears the option at the scope on `-u`
+    // (cmd-set-option.c calls options_remove_or_default) and then `-o` finds
+    // nothing set (`already = (o != NULL)` in the same file), so it applies.
+    //
+    // #619 follow up: this branch also wrote an EMPTY value where tmux writes
+    // the TABLE DEFAULT, so `set -gu escape-time` in a config file left the old
+    // number in place while the CLI route restored 500, and `set -gu
+    // status-style` produced a styleless status bar rather than the stock
+    // green one. Both the value restore and the explicit-set erase now live in
+    // one shared helper that the server request loop and the plugin drain loop
+    // call too, so all three unset routes land on the same value.
     if unset_mode {
-        parse_option_value(app, &format!("{} ", key), is_global);
+        crate::server::options::reset_option_to_default(app, key);
         return;
     }
 
@@ -809,64 +1174,112 @@ fn parse_set_option(app: &mut AppState, line: &str) {
         }
     }
 
-    // Handle -o (only set if not currently set)
+    // Handle -o (only set if not currently set).
+    //
+    // Refusing is not enough: tmux REPORTS the refusal. cmd-set-option.c ends
+    // its `-o` guard with
+    //
+    //     if (already) {
+    //             if (args_has(args, 'q'))
+    //                     goto out;
+    //             cmdq_error(item, "already set: %s", argument);
+    //             goto fail;
+    //     }
+    //
+    // so without `-q` the command FAILS and names the option. psmux dropped the
+    // write in silence on every route, which made `-o` useless for its one job:
+    // a plugin that seeds a default it does not want to clobber could not tell
+    // "I set it" from "the user already had it" (#619 follow up). The config
+    // route records it as a config warning, exactly like "unknown option", so
+    // it reaches ~/.psmux/config-warnings.log and the attach-time summary; the
+    // in-TUI command prompt runs through this same parser, so it also gets a
+    // status message the way a failed command should.
+    // Expand format strings in the value if -F flag is set. No quote trimming
+    // here any more: extract_option_value already resolved the quoting, so a
+    // value whose content legitimately begins and ends with a quote keeps it.
+    let value = if format_expand && !raw_value.is_empty() {
+        crate::format::expand_format(&raw_value, app)
+    } else {
+        raw_value
+    };
+
+    if append_mode {
+        if let Err(error) = crate::server::option_catalog::validate_option_append(key) {
+            warn_config(app, error);
+            return;
+        }
+    }
+
+    // Handle -a (append to current value)
+    let final_value = if append_mode {
+        let current = crate::format::lookup_option_pub(key, app).unwrap_or_default();
+        if matches!(key, "terminal-overrides" | "codepoint-widths") {
+            // ARRAY option: `-a` adds elements, it does not glue characters
+            // onto the last one (tmux options_array_assign), so
+            // `set -ga terminal-overrides 'xterm*:Tc'` without a leading
+            // comma still lands as its own element.
+            format!("{},{}", current, value)
+        } else {
+            format!("{}{}", current, value)
+        }
+    } else {
+        value
+    };
+
+    // -o still validates the requested assignment before deciding that the
+    // existing value wins.
     if only_if_unset {
-        // For @-prefixed user options, check if key exists
-        // For built-in options, check the user_set_options tracker
         let already_set = if key.starts_with('@') {
             app.user_options.contains_key(key)
         } else {
             app.user_set_options.contains(key)
         };
-        if already_set { return; }
+        if already_set {
+            if let Err(error) =
+                crate::server::option_catalog::validate_option_value(key, &final_value)
+            {
+                warn_config(app, error);
+            } else if !quiet {
+                warn_config(app, format!("already set: {}", key));
+                if !in_startup_load() {
+                    app.status_message = Some((
+                        format!("already set: {}", key),
+                        std::time::Instant::now(),
+                        None,
+                    ));
+                }
+            }
+            return;
+        }
     }
 
-    // Expand format strings in the value if -F flag is set
-    let value = if format_expand && !raw_value.is_empty() {
-        let stripped = raw_value.trim_matches('"').trim_matches('\'');
-        let expanded = crate::format::expand_format(stripped, app);
-        expanded
-    } else {
-        raw_value
-    };
-
-    // Handle -a (append to current value)
-    let final_value = if append_mode {
-        let current = crate::format::lookup_option_pub(key, app).unwrap_or_default();
-        format!("{}{}", current, value.trim_matches('"').trim_matches('\''))
-    } else {
-        value
-    };
-
-    let rest = format!("{} {}", key, final_value);
-    parse_option_value(app, &rest, is_global);
-    // Track that this option was explicitly set (for -o only-if-unset checks)
-    app.user_set_options.insert(key.to_string());
+    // Pass key and value separately. Rejoining them into one string could not
+    // represent a value with leading or trailing spaces, which the receiver
+    // then trimmed back off (#536).
+    if parse_option_value(app, key, &final_value, is_global) {
+        // Track that this option was explicitly set (for -o only-if-unset checks)
+        app.user_set_options.insert(key.to_string());
+    }
 }
 
-pub fn parse_option_value(app: &mut AppState, rest: &str, _is_global: bool) {
-    let parts: Vec<&str> = rest.splitn(2, ' ').collect();
-    if parts.is_empty() { return; }
-    
-    let key = parts[0].trim();
-    let value = if parts.len() > 1 {
-        let v = parts[1].trim();
-        // Only strip quotes when the entire value is wrapped in matching
-        // quotes.  Preserves values like `"path with spaces" --login`.
-        if (v.starts_with('"') && v.ends_with('"'))
-            || (v.starts_with('\'') && v.ends_with('\''))
-        {
-            &v[1..v.len() - 1]
-        } else {
-            v
-        }
-    } else {
-        ""
-    };
+/// Apply one option, given its name and its **exact** value.
+///
+/// The value arrives verbatim: the caller has already resolved quoting, so a
+/// deliberate run of spaces, or leading/trailing whitespace inside a quoted
+/// config value, survives to here. This used to take a single `"key value"`
+/// string and re-split it, which could not represent those runs at all and
+/// trimmed the ends back off (#536).
+///
+/// Returns false when validation rejects the value.
+pub fn parse_option_value(app: &mut AppState, key: &str, value: &str, _is_global: bool) -> bool {
+    let key = key.trim();
+    if let Err(error) = crate::server::option_catalog::validate_option_value(key, value) {
+        warn_config(app, error);
+        return false;
+    }
 
-    // Validate the value against the option's declared type from the catalog
-    // (issue #370 follow-up). Only options that exist in the catalog are
-    // checked, so unmodeled/user options never produce a false warning.
+    // Keep the existing boolean diagnostics. Numeric assignments are validated
+    // once above against the destination type declared by the option catalog.
     if !value.is_empty() {
         if let Some(def) = crate::server::option_catalog::OPTION_CATALOG
             .iter()
@@ -874,13 +1287,7 @@ pub fn parse_option_value(app: &mut AppState, rest: &str, _is_global: bool) {
         {
             let v = value.trim();
             match def.option_type {
-                "number" => {
-                    if v.parse::<i64>().is_err() {
-                        warn_config(app, format!(
-                            "invalid value '{}' for option '{}' (expected a number)", v, key));
-                    }
-                }
-                "boolean" => {
+                crate::server::option_catalog::OptionType::Boolean => {
                     // Accept the usual boolean tokens, and also any integer:
                     // a few "boolean" options (e.g. `status`) also take counts.
                     let lv = v.to_ascii_lowercase();
@@ -902,10 +1309,29 @@ pub fn parse_option_value(app: &mut AppState, rest: &str, _is_global: bool) {
         "status-right" => app.status_right = value.to_string(),
         "mouse" => app.mouse_enabled = matches!(value, "on" | "true" | "1" | "yes"),
         "scroll-enter-copy-mode" => app.scroll_enter_copy_mode = matches!(value, "on" | "true" | "1" | "yes"),
+        "mouse-drag-enter-copy-mode" => app.mouse_drag_enter_copy_mode = matches!(value, "on" | "true" | "1" | "yes"),
         "pwsh-mouse-selection" => app.pwsh_mouse_selection = matches!(value, "on" | "true" | "1" | "yes"),
         "mouse-selection" => app.mouse_selection = matches!(value, "on" | "true" | "1" | "yes"),
+        "mouse-selection-force" => app.mouse_selection_force = matches!(value, "on" | "true" | "1" | "yes"),
         "paste-detection" => app.paste_detection = matches!(value, "on" | "true" | "1" | "yes"),
         "choose-tree-preview" => app.choose_tree_preview = matches!(value, "on" | "true" | "1" | "yes"),
+        // The config-file path is a SEPARATE match from apply_set_option, so an
+        // option that has to do something (rather than just store a field)
+        // needs an arm in both. Same as bold-is-bright just below.
+        // The generic catalog check above validates only "number" and
+        // "boolean", so the restricted value set is enforced here by hand and
+        // a bad one warns instead of silently falling back (#608).
+        "priority" => match crate::platform::normalize_priority(value) {
+            Some(_) => {
+                app.priority = crate::platform::resolve_priority(Some(value), false);
+                crate::platform::set_process_priority(&app.priority);
+            }
+            None => warn_config(app, format!(
+                "invalid value '{}' for option 'priority' (expected {})",
+                value.trim(),
+                crate::platform::PRIORITY_VALUES.join(", ")
+            )),
+        },
         "bold-is-bright" => {
             app.bold_is_bright = matches!(value, "on" | "true" | "1" | "yes");
             crate::platform::set_bold_is_bright(app.bold_is_bright);
@@ -928,6 +1354,22 @@ pub fn parse_option_value(app: &mut AppState, rest: &str, _is_global: bool) {
                 app.escape_time_ms = ms;
             }
         }
+        // Issue #606: repeat-time was documented, catalogued and honoured by
+        // the server's set-option, but this match had no arm for it, so a
+        // `.tmux.conf` line fell through to the catch-all below, was reported
+        // as "unknown option 'repeat-time'" and left `repeat_time_ms` at its
+        // 500 ms default. tmux (options-table.c) bounds it to
+        // 0..=REPEAT_TIME_MAX_MS milliseconds; 0 disables repeat entirely.
+        "repeat-time" => match value.parse::<i64>() {
+            Ok(ms) if (0..=crate::server::options::REPEAT_TIME_MAX_MS).contains(&ms) => {
+                app.repeat_time_ms = ms as u64;
+            }
+            Ok(ms) if ms < 0 => warn_config(app, format!("value is too small: {}", value)),
+            Ok(_) => warn_config(app, format!("value is too large: {}", value)),
+            // A non-numeric value already produced the catalog type warning
+            // above, so do not warn about it twice.
+            Err(_) => {}
+        },
         "prediction-dimming" | "dim-predictions" => {
             app.prediction_dimming = !matches!(value, "off" | "false" | "0");
         }
@@ -1048,7 +1490,11 @@ pub fn parse_option_value(app: &mut AppState, rest: &str, _is_global: bool) {
         "allow-set-title" => {
             app.allow_set_title = matches!(value, "on" | "true" | "1" | "yes");
         }
-        "terminal-overrides" => { /* tmux terminfo override — accepted for compatibility, no-op on Windows */ }
+        "terminal-overrides" => {
+            // Array option (issue #700): smcup/rmcup decide whether the
+            // attach client uses the host's alternate screen.
+            app.terminal_overrides = crate::terminal_overrides::split_array(value);
+        }
         "default-terminal" => {
             // tmux sets the TERM env var from this option (#137)
             app.environment.insert("TERM".to_string(), value.to_string());
@@ -1079,16 +1525,29 @@ pub fn parse_option_value(app: &mut AppState, rest: &str, _is_global: bool) {
         "status-left-style" => { app.status_left_style = value.to_string(); }
         "status-right-style" => { app.status_right_style = value.to_string(); }
         "clock-mode-colour" | "clock-mode-style" => { app.user_options.insert(key.to_string(), value.to_string()); }
-        "pane-border-format" | "pane-border-status" => { app.user_options.insert(key.to_string(), value.to_string()); }
+        "pane-border-format" | "pane-border-status" | "pane-border-indicators" => { app.user_options.insert(key.to_string(), value.to_string()); }
+        // Read back from user_options by the copy mode gutter and the border
+        // renderer. Without an arm here they reached the fallthrough below,
+        // which stored the value (so it worked) and reported the option as
+        // unknown (#706). The value of copy-mode-line-numbers is checked
+        // against its choices by the catalog before this match, like tmux.
+        "copy-mode-line-numbers" | "copy-mode-line-number-style"
+        | "copy-mode-current-line-number-style" | "pane-border-lines" => {
+            app.user_options.insert(key.to_string(), value.to_string());
+        }
         "popup-style" | "popup-border-style" | "popup-border-lines" => { app.user_options.insert(key.to_string(), value.to_string()); }
         "window-style" | "window-active-style" => { app.user_options.insert(key.to_string(), value.to_string()); }
         "wrap-search" => { app.user_options.insert(key.to_string(), value.to_string()); }
         "lock-after-time" | "lock-command" => { app.user_options.insert(key.to_string(), value.to_string()); }
         "main-pane-width" => {
-            if let Ok(n) = value.parse::<u16>() { app.main_pane_width = n; }
+            if let Some(n) = crate::server::options::parse_main_pane_size(value) {
+                app.main_pane_width = n;
+            }
         }
         "main-pane-height" => {
-            if let Ok(n) = value.parse::<u16>() { app.main_pane_height = n; }
+            if let Some(n) = crate::server::options::parse_main_pane_size(value) {
+                app.main_pane_height = n;
+            }
         }
         "status-left-length" => {
             if let Ok(n) = value.parse::<usize>() { app.status_left_length = n; }
@@ -1115,10 +1574,17 @@ pub fn parse_option_value(app: &mut AppState, rest: &str, _is_global: bool) {
         "warm" => {
             app.warm_enabled = matches!(value, "on" | "true" | "1" | "yes");
             if !app.warm_enabled {
-                if let Some(mut wp) = app.warm_pane.take() {
-                    wp.child.kill().ok();
-                }
+                app.warm_pane.target = 0;
+                app.warm_pane.kill_all();
+            } else if app.warm_pane.target == 0 {
+                app.warm_pane.target = crate::types::default_warm_pool_size().max(1);
             }
+        }
+        "warm-pool-size" => {
+            crate::server::options::set_warm_pool_size(app, value);
+        }
+        "codepoint-widths" => {
+            crate::server::options::set_codepoint_widths(app, value);
         }
         "command-alias" => {
             if let Some(pos) = value.find('=') {
@@ -1135,8 +1601,26 @@ pub fn parse_option_value(app: &mut AppState, rest: &str, _is_global: bool) {
                         app.status_format.push(String::new());
                     }
                     app.status_format[idx] = value.to_string();
-                    return;
+                    return true;
                 }
+            }
+            // A catalog option this match does not route is still a real
+            // option: hand it to the runtime setter so `set -g NAME VALUE` in
+            // a config file lands exactly where the same command typed at
+            // runtime does. Before this, such an option (alternate-screen,
+            // message-limit, history-file-limit) warned "unknown option" and
+            // was parked in user_options where nothing reads it, so
+            // `set -g alternate-screen off` in psmux.conf left the pane
+            // honouring the alternate screen. The value was already
+            // validated against the catalog at the top of this function.
+            if crate::server::option_catalog::is_known_option(key) {
+                if let Err(error) =
+                    crate::server::options::apply_set_option(app, key, value, false)
+                {
+                    warn_config(app, error);
+                    return false;
+                }
+                return true;
             }
             // Store @-prefixed user/plugin options separately from environment
             // so they don't leak into child shells (#105).
@@ -1240,6 +1724,7 @@ pub fn parse_option_value(app: &mut AppState, rest: &str, _is_global: bool) {
             }
         }
     }
+    true
 }
 
 /// Split a string into tokens respecting single and double quotes.
@@ -1383,7 +1868,20 @@ pub fn parse_bind_key(app: &mut AppState, line: &str) {
     
     // Split on `\;` or `;` to support command chaining (like tmux `bind x split-window \; select-pane -D`)
     let sub_commands: Vec<String> = split_chained_commands(&command);
-    
+
+    // Issue #635: tmux parses the bound command list at BIND time
+    // (cmd-bind-key.c -> cmd_parse_from_arguments), so a dangling
+    // value-taking flag refuses the binding instead of arming a key that
+    // silently acts on the default target when pressed.
+    for sub in &sub_commands {
+        let tokens = crate::commands::parse_command_line(sub);
+        if let Err(flag_error) = crate::cli::validate_command_line_flags(&tokens) {
+            warn_config(app, flag_error);
+            return;
+        }
+    }
+
+
     if let Some(key) = parse_key_name(key_str) {
         let key = normalize_key_for_binding(key);
         let action = if sub_commands.len() > 1 {
@@ -1397,6 +1895,17 @@ pub fn parse_bind_key(app: &mut AppState, line: &str) {
         let table = app.key_tables.entry(_key_table).or_default();
         table.retain(|b| b.key != key);
         table.push(Bind { key, action, repeat: _repeatable });
+    } else {
+        // Silence is what made issue #616 so hard to see: a key name the parser
+        // did not understand vanished with no boot warning, nothing in
+        // list-keys and no clue in config-warnings.log. tmux reports
+        // `unknown key: <name>` (cmd-bind-key.c), so say the same thing --
+        // except for the names tmux knows and psmux simply does not model
+        // (mouse events and friends), which have always been accepted quietly
+        // and must not start warning in every ported config.
+        if !is_unmodelled_tmux_key_name(key_str) {
+            warn_config(app, format!("unknown key: {}", key_str));
+        }
     }
 }
 
@@ -1426,9 +1935,7 @@ pub fn parse_unbind_key(app: &mut AppState, line: &str) {
     if unbind_all {
         if let Some(t) = table {
             // -a -T <table>: only clear that table
-            if let Some(binds) = app.key_tables.get_mut(&t) {
-                binds.clear();
-            }
+            unbind_all_in_table(app, &t);
         } else {
             // -a (no table): clear ALL tables + suppress defaults
             app.key_tables.clear();
@@ -1443,8 +1950,13 @@ pub fn parse_unbind_key(app: &mut AppState, line: &str) {
             // Remove from the targeted table only (tmux behavior).
             // Default is "prefix" when no -n or -T is specified.
             let target = table.unwrap_or_else(|| "prefix".to_string());
-            if let Some(binds) = app.key_tables.get_mut(&target) {
-                binds.retain(|b| b.key != key);
+            unbind_key_in_table(app, &target, key);
+        } else {
+            // Same reasoning as parse_bind_key: tmux's cmd-unbind-key.c reports
+            // `unknown key: <name>` rather than quietly doing nothing, and the
+            // names psmux does not model are excused the same way.
+            if !is_unmodelled_tmux_key_name(parts[i]) {
+                warn_config(app, format!("unknown key: {}", parts[i]));
             }
         }
     }
@@ -1611,12 +2123,18 @@ pub fn parse_key_name(name: &str) -> Option<(KeyCode, KeyModifiers)> {
         if let Some(kc) = named_key(rest) {
             return Some((kc, mods));
         }
-        if rest.len() == 1 {
+        // A key is one CHARACTER, not one BYTE. `M-<U+0444>` leaves two bytes
+        // of UTF-8 in `rest`, so the old byte-length gate failed and every
+        // non-ASCII modifier binding was dropped without a word (issue #616).
+        // tmux takes the same shape in key-string.c: the ASCII fast path is
+        // `string[1] == '\0' && string[0] <= 127`, and anything else is decoded
+        // as UTF-8 and OR'd with the modifiers.
+        if rest.chars().count() == 1 {
             if let Some(c) = rest.chars().next() {
                 if mods.contains(KeyModifiers::SHIFT) {
-                    return Some((KeyCode::Char(c.to_ascii_uppercase()), mods.difference(KeyModifiers::SHIFT)));
+                    return Some((KeyCode::Char(map_key_case(c, true)), mods.difference(KeyModifiers::SHIFT)));
                 }
-                return Some((KeyCode::Char(c.to_ascii_lowercase()), mods));
+                return Some((KeyCode::Char(map_key_case(c, false)), mods));
             }
         }
         // Unrecognized key after modifiers — fall through
@@ -1654,13 +2172,104 @@ pub fn parse_key_name(name: &str) -> Option<(KeyCode, KeyModifiers)> {
         _ => {}
     }
     
-    if name.len() == 1 {
+    // One character, not one byte (issue #616): `bind <U+044B>` is a 2 byte
+    // key name and used to fall straight through to None.
+    if name.chars().count() == 1 {
         if let Some(c) = name.chars().next() {
             return Some((KeyCode::Char(c), KeyModifiers::NONE));
         }
     }
-    
+
     None
+}
+
+/// True when `name` is a key name tmux's `key_string_lookup_string` accepts but
+/// psmux has no KeyCode for: the mouse event family, the terminal-report
+/// pseudo keys and `UserN`.
+///
+/// These are NOT parse errors. `bind -n WheelUpPane ...` is a normal line in a
+/// ported tmux config (psmux's own FAQ quotes tmux's default binding), and
+/// psmux has always accepted the command and simply not acted on it. The
+/// unknown-key diagnostic added for issue #616 must catch typos, not start
+/// failing every config that carries a mouse binding, so those names are
+/// excused here and stay silent exactly as before.
+///
+/// tmux builds the mouse names from KEYC_MOUSE_STRING in tmux.h: an event name
+/// (MouseDown1, MouseDragEnd3, WheelUp, DoubleClick1 ...) followed by a
+/// location suffix (Pane, Status, StatusLeft, Border, ScrollbarSlider ...).
+pub fn is_unmodelled_tmux_key_name(name: &str) -> bool {
+    // Strip the same modifier prefixes tmux strips before its table lookup.
+    let mut rest = name;
+    loop {
+        let lower_two: String = rest.chars().take(2).collect::<String>().to_lowercase();
+        if matches!(lower_two.as_str(), "c-" | "m-" | "s-") {
+            rest = &rest[2..];
+        } else {
+            break;
+        }
+    }
+
+    const SPECIAL: &[&str] = &[
+        "any", "none", "mouse", "dragging", "focusin", "focusout",
+        "pastestart", "pasteend", "reportdarktheme", "reportlighttheme",
+        "mousemovepane", "mousemovestatus", "mousemovestatusleft",
+        "mousemovestatusright", "mousemoveborder",
+    ];
+    let lower = rest.to_lowercase();
+    if SPECIAL.contains(&lower.as_str()) {
+        return true;
+    }
+    // UserN
+    if let Some(n) = lower.strip_prefix("user") {
+        if !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) {
+            return true;
+        }
+    }
+
+    const LOCATIONS: &[&str] = &[
+        "pane", "status", "statusleft", "statusright", "statusdefault",
+        "scrollbarup", "scrollbarslider", "scrollbardown", "empty", "border",
+    ];
+    let Some(head) = LOCATIONS
+        .iter()
+        .filter_map(|loc| lower.strip_suffix(loc))
+        .max_by_key(|h| h.len())
+    else {
+        return false;
+    };
+    // The event name: a prefix plus an optional button number.
+    const EVENTS: &[&str] = &[
+        "mousedown", "mouseup", "mousedrag", "mousedragend",
+        "secondclick", "doubleclick", "tripleclick",
+    ];
+    if head == "wheelup" || head == "wheeldown" {
+        return true;
+    }
+    EVENTS.iter().any(|e| {
+        head.strip_prefix(e)
+            .map(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+            .unwrap_or(false)
+    })
+}
+
+/// Unicode aware single character case mapping for the modifier forms of a key
+/// name: `S-x` names the SHIFTED character and `C-A` normalises to `C-a`, which
+/// is what psmux has always done for ASCII via `to_ascii_uppercase` /
+/// `to_ascii_lowercase`. Those are no-ops outside ASCII, so a Cyrillic `S-` form
+/// would have silently collapsed onto the unshifted key once #616 let it parse
+/// at all, and `normalize_key_for_binding` drops SHIFT from every Char, so the
+/// two bindings would have overwritten each other.
+///
+/// Falls back to the original character when the mapping is not one to one
+/// (U+00DF uppercases to "SS", U+0130 lowercases to two scalars) so a key name
+/// stays exactly one character in every case.
+fn map_key_case(c: char, upper: bool) -> char {
+    let mut mapped: Vec<char> = if upper {
+        c.to_uppercase().collect()
+    } else {
+        c.to_lowercase().collect()
+    };
+    if mapped.len() == 1 { mapped.remove(0) } else { c }
 }
 
 thread_local! {
@@ -1741,8 +2350,31 @@ pub fn source_file(app: &mut AppState, path: &str) {
     let prev_file = current_config_file();
     set_current_config_file(&expanded_path);
 
-    if let Ok(content) = std::fs::read_to_string(&expanded_path) {
-        parse_config_content(app, &content);
+    match std::fs::read_to_string(&expanded_path) {
+        Ok(content) => parse_config_content(app, &content),
+        Err(e) => {
+            // A `source-file` naming a path that cannot be read used to be a
+            // silent no-op: no warning, no log line, nothing. Since the whole
+            // keybinding layer of a split config lives behind one such line, a
+            // typo or a moved repo produced a psmux with stock defaults and no
+            // indication why. Record it like any other config warning so it
+            // reaches ~/.psmux/config-warnings.log and the attach-time stderr
+            // summary.
+            //
+            // tmux parity note: tmux errors on a missing source-file too, but
+            // only when the path is not a glob. psmux has no glob support here,
+            // so every miss is a real miss.
+            //
+            // Route through warn_config for consistent formatting, but point it
+            // at the source-file directive itself — the parent file and line,
+            // where the user's fix belongs — not the child that couldn't be
+            // read. current_config_file was switched to the child above, and
+            // config_warn_line still holds the parent's line (source_file runs
+            // inside parse_config_content's per-line loop), so restore the parent
+            // file first; then name the missing child in the message.
+            set_current_config_file(&prev_file);
+            warn_config(app, format!("cannot source {}: {}", expanded_path, e));
+        }
     }
 
     set_current_config_file(&prev_file);
@@ -1766,7 +2398,11 @@ pub fn parse_key_string(key: &str) -> Option<(KeyCode, KeyModifiers)> {
     let mut mods = KeyModifiers::empty();
     let mut key_part = key;
     
-    while key_part.len() > 2 {
+    // Characters, not bytes (issue #616). `M-<U+0444>` is 3 characters but 4
+    // bytes; more importantly the single-character arm below used byte length,
+    // so the CLI / server route dropped every non-ASCII key exactly the way the
+    // config route did.
+    while key_part.chars().count() > 2 {
         if key_part.starts_with("C-") || key_part.starts_with("c-") {
             mods |= KeyModifiers::CONTROL;
             key_part = &key_part[2..];
@@ -1784,7 +2420,7 @@ pub fn parse_key_string(key: &str) -> Option<(KeyCode, KeyModifiers)> {
     let keycode = match key_part.to_lowercase().as_str() {
         // Single character keys: preserve the ORIGINAL case from key_part, not the lowercased version.
         // This is critical for case-sensitive bind-key (issue #157): bind-key T != bind-key t.
-        _ if key_part.len() == 1 => {
+        _ if key_part.chars().count() == 1 => {
             KeyCode::Char(key_part.chars().next().unwrap())
         }
         "space" => KeyCode::Char(' '),
@@ -2203,6 +2839,10 @@ mod tests_issue145_source_file;
 mod tests_issue193_scroll_enter_copy_mode;
 
 #[cfg(test)]
+#[path = "../tests-rs/test_mouse_drag_enter_copy_mode.rs"]
+mod test_mouse_drag_enter_copy_mode;
+
+#[cfg(test)]
 #[path = "../tests-rs/test_issue198_unbind_individual.rs"]
 mod tests_issue198_unbind_individual;
 
@@ -2231,6 +2871,10 @@ mod tests_issue287_german_keyboard;
 mod tests_issue362_config_new_session;
 
 #[cfg(test)]
+#[path = "../tests-rs/test_issue706_copy_mode_line_numbers.rs"]
+mod tests_issue706_copy_mode_line_numbers;
+
+#[cfg(test)]
 #[path = "../tests-rs/test_issue370_config_warnings.rs"]
 mod tests_issue370_config_warnings;
 
@@ -2257,3 +2901,27 @@ mod tests_issue499_quoted_semicolon;
 #[cfg(test)]
 #[path = "../tests-rs/test_issue504_ctrl_space_nul.rs"]
 mod tests_issue504_ctrl_space_nul;
+
+#[cfg(test)]
+#[path = "../tests-rs/test_issue536_config_quoted_whitespace.rs"]
+mod tests_issue536_config_quoted_whitespace;
+
+#[cfg(test)]
+#[path = "../tests-rs/test_issue606_repeat_time.rs"]
+mod tests_issue606_repeat_time;
+
+#[cfg(test)]
+#[path = "../tests-rs/test_issue616_unicode_bind.rs"]
+mod tests_issue616_unicode_bind;
+
+#[cfg(test)]
+#[path = "../tests-rs/test_issue619_set_option_unset_only.rs"]
+mod tests_issue619_set_option_unset_only;
+
+#[cfg(test)]
+#[path = "../tests-rs/test_issue619_set_option_already_set.rs"]
+mod tests_issue619_set_option_already_set;
+
+#[cfg(test)]
+#[path = "../tests-rs/test_config_option_parity.rs"]
+mod tests_config_option_parity;

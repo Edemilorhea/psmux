@@ -13,6 +13,11 @@
 // pool self-heals.  These tests exercise (1) with real ConPTY spawns; (2) plus
 // the full prefix+c path is covered by tests/test_issue450_dead_warm_pane.ps1.
 
+// Every test here spawns a REAL warm pane, i.e. a live PTY child, so they all
+// take crate::util::lock_test_env() and run one at a time. The suite runs 2800+
+// tests in parallel and two of these racing on process spawn made
+// create_window_with_live_warm_pane_still_transplants fail intermittently in a
+// full run while passing 3 out of 3 on its own.
 use super::*;
 
 fn test_app() -> AppState {
@@ -22,36 +27,14 @@ fn test_app() -> AppState {
     app
 }
 
-/// Kill the warm pane's child and wait until the OS reports it exited.
-/// TerminateProcess is asynchronous; try_wait flips within milliseconds.
-fn kill_warm_child(wp: &mut crate::types::WarmPane) {
-    wp.child.kill().ok();
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline {
-        if !matches!(wp.child.try_wait(), Ok(None)) {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    panic!("warm child did not report exit within 5s of kill()");
-}
-
 fn active_pane_of(win: &mut Window) -> &mut Pane {
     let path = win.active_path.clone();
     active_pane_mut(&mut win.root, &path).expect("active pane")
 }
 
-fn cleanup(app: &mut AppState) {
-    for win in app.windows.iter_mut() {
-        crate::tree::kill_all_children(&mut win.root);
-    }
-    if let Some(mut wp) = app.warm_pane.take() {
-        wp.child.kill().ok();
-    }
-}
-
 #[test]
 fn warm_pane_is_live_reports_running_child() {
+    let _lock = crate::util::lock_test_env();
     let pty = native_pty_system();
     let mut app = test_app();
     let mut wp = spawn_warm_pane(&*pty, &mut app).expect("spawn warm pane");
@@ -59,15 +42,16 @@ fn warm_pane_is_live_reports_running_child() {
         warm_pane_is_live(&mut wp),
         "a freshly spawned warm pane must report live"
     );
-    wp.child.kill().ok();
+    crate::util::kill_pty_child(&mut *wp.child);
 }
 
 #[test]
 fn warm_pane_is_live_reports_dead_child() {
+    let _lock = crate::util::lock_test_env();
     let pty = native_pty_system();
     let mut app = test_app();
     let mut wp = spawn_warm_pane(&*pty, &mut app).expect("spawn warm pane");
-    kill_warm_child(&mut wp);
+    crate::util::kill_pty_child(&mut *wp.child);
     assert!(
         !warm_pane_is_live(&mut wp),
         "a killed warm pane must report dead"
@@ -79,18 +63,19 @@ fn warm_pane_is_live_reports_dead_child() {
 /// warm pane id, dead child).  After the fix it must cold-spawn a live shell.
 #[test]
 fn create_window_with_dead_warm_pane_delivers_live_shell() {
+    let _lock = crate::util::lock_test_env();
     let pty = native_pty_system();
     let mut app = test_app();
     let mut wp = spawn_warm_pane(&*pty, &mut app).expect("spawn warm pane");
     let warm_id = wp.pane_id;
-    kill_warm_child(&mut wp);
-    app.warm_pane = Some(wp);
+    crate::util::kill_pty_child(&mut *wp.child);
+    app.warm_pane.push(wp);
 
     create_window(&*pty, &mut app, None, None, false).expect("create_window");
 
     assert_eq!(app.windows.len(), 1, "a window must still be created");
     assert!(
-        app.warm_pane.is_none(),
+        app.warm_pane.is_empty(),
         "the dead spare must be discarded, not restored"
     );
     let pane = active_pane_of(&mut app.windows[0]);
@@ -102,18 +87,23 @@ fn create_window_with_dead_warm_pane_delivers_live_shell() {
         matches!(pane.child.try_wait(), Ok(None)),
         "the delivered pane's shell must be alive"
     );
-    cleanup(&mut app);
+    crate::util::kill_app_shells(&mut app);
 }
 
 /// Regression guard for the fast path: a LIVE spare must still be
 /// transplanted (same pane id), keeping new-window instant.
 #[test]
 fn create_window_with_live_warm_pane_still_transplants() {
+    let _lock = crate::util::lock_test_env();
     let pty = native_pty_system();
     let mut app = test_app();
-    let wp = spawn_warm_pane(&*pty, &mut app).expect("spawn warm pane");
+    let mut wp = spawn_warm_pane(&*pty, &mut app).expect("spawn warm pane");
+    // Settled by hand: these cases are about the transplant, not about the
+    // readiness gate. A spare spawned microseconds ago is by design not yet
+    // claimable, because its shell has not finished starting.
+    wp.ready = true;
     let warm_id = wp.pane_id;
-    app.warm_pane = Some(wp);
+    app.warm_pane.push(wp);
 
     create_window(&*pty, &mut app, None, None, false).expect("create_window");
 
@@ -124,13 +114,14 @@ fn create_window_with_live_warm_pane_still_transplants() {
         "a live spare must be transplanted (warm fast path preserved)"
     );
     assert!(matches!(pane.child.try_wait(), Ok(None)));
-    cleanup(&mut app);
+    crate::util::kill_app_shells(&mut app);
 }
 
 /// Same gate on the split path: a dead spare must not be transplanted into
 /// a split; the split still succeeds via cold spawn.
 #[test]
 fn split_with_dead_warm_pane_delivers_live_shell() {
+    let _lock = crate::util::lock_test_env();
     let pty = native_pty_system();
     let mut app = test_app();
     // First window (cold spawn — no warm pane staged yet).
@@ -138,8 +129,8 @@ fn split_with_dead_warm_pane_delivers_live_shell() {
     // Stage a dead spare.
     let mut wp = spawn_warm_pane(&*pty, &mut app).expect("spawn warm pane");
     let warm_id = wp.pane_id;
-    kill_warm_child(&mut wp);
-    app.warm_pane = Some(wp);
+    crate::util::kill_pty_child(&mut *wp.child);
+    app.warm_pane.push(wp);
 
     split_active_with_command(&mut app, LayoutKind::Vertical, None, Some(&*pty), None)
         .expect("split");
@@ -158,5 +149,5 @@ fn split_with_dead_warm_pane_delivers_live_shell() {
         matches!(pane.child.try_wait(), Ok(None)),
         "the split pane's shell must be alive"
     );
-    cleanup(&mut app);
+    crate::util::kill_app_shells(&mut app);
 }

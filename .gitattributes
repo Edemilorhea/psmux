@@ -4,6 +4,9 @@
 # core.autocrlf setting. Binary files are auto-detected and left untouched.
 * text=auto eol=lf
 
+# Binary fixtures and embedded icon resources must preserve exact bytes.
+*.ico binary
+
 # Explicit text types (kept LF to match existing repo blobs).
 *.rs    text eol=lf
 *.toml  text eol=lf

@@ -56,7 +56,9 @@ fn fast_tracer(counter: &std::path::Path) -> String {
 }
 
 fn line_count(p: &std::path::Path) -> usize {
-    std::fs::read_to_string(p).map(|s| s.lines().count()).unwrap_or(0)
+    std::fs::read_to_string(p)
+        .map(|s| s.lines().count())
+        .unwrap_or(0)
 }
 
 fn cleanup(p: &std::path::Path) {
@@ -153,7 +155,10 @@ fn status_left_is_guarded_too() {
 
     let t0 = Instant::now();
     let _ = expand_status_formats(&app, "");
-    assert!(t0.elapsed() < NONBLOCKING, "status-left blocked the render path");
+    assert!(
+        t0.elapsed() < NONBLOCKING,
+        "status-left blocked the render path"
+    );
 
     wait_for_spawns(&counter, 1, Duration::from_secs(5));
     cleanup(&counter);
@@ -179,7 +184,10 @@ fn set_titles_string_is_guarded() {
         "set-titles-string blocked the render path for {:?}",
         elapsed
     );
-    assert!(out.host_title.is_some(), "set-titles on should produce a host_title");
+    assert!(
+        out.host_title.is_some(),
+        "set-titles on should produce a host_title"
+    );
 
     wait_for_spawns(&counter, 1, Duration::from_secs(5));
     cleanup(&counter);
@@ -194,23 +202,24 @@ fn host_title_is_none_when_set_titles_is_off() {
     );
 }
 
-// ───────────────── the other two guarded render helpers ─────────────────
+// ───────────────── additional guarded render inputs ─────────────────
 
 #[test]
-fn extra_style_json_does_not_block_the_render_path() {
-    let counter = counter_path("extra_block");
+fn client_render_option_formats_do_not_block_the_render_path() {
+    let counter = counter_path("client_options");
     cleanup(&counter);
     let mut app = mock_app(15);
     app.status_left_style = format!("#({})", slow_tracer(&counter));
 
-    let mut buf = String::from("{}");
     let t0 = Instant::now();
-    append_extra_style_json(&mut buf, &app);
+    let formats = expand_status_formats(&app, "");
+    let mut buf = String::from("{}");
+    append_client_render_options_json(&mut buf, &formats.client_render_options).unwrap();
     let elapsed = t0.elapsed();
 
     assert!(
         elapsed < NONBLOCKING,
-        "append_extra_style_json blocked {:?} — it runs on every frame too",
+        "client render option expansion blocked {:?}; it runs on every frame",
         elapsed
     );
 

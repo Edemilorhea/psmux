@@ -18,6 +18,9 @@ fn make_window(name: &str, id: usize) -> crate::types::Window {
         active_path: vec![],
         name: name.to_string(),
         id,
+        area: ratatui::layout::Rect::new(0, 0, 120, 30),
+        window_size: None,
+        window_options: Default::default(),
         activity_flag: false,
         bell_flag: false,
         silence_flag: false,
@@ -144,12 +147,18 @@ fn showb_alias_same_as_show_buffer() {
 // ════════════════════════════════════════════════════════════════════════════
 
 #[test]
-fn list_keys_empty_says_no_bindings() {
+fn list_keys_with_empty_tables_lists_only_the_copy_mode_keys() {
+    // The built-in copy-mode keys are listed like tmux lists its copy-mode
+    // tables (key-bindings.c), so empty key tables leave just those.
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, "list-keys").unwrap();
     let (cmd, out) = extract_popup(&app);
     assert_eq!(cmd, "list-keys");
-    assert_eq!(out.trim(), "(no bindings)");
+    assert!(!out.trim().is_empty());
+    assert!(
+        out.lines().all(|l| l.starts_with("bind-key -T copy-mode ") || l.starts_with("bind-key -T copy-mode-vi ")),
+        "only copy-mode tables expected, got:\n{}", out
+    );
 }
 
 #[test]
@@ -176,7 +185,8 @@ fn list_keys_shows_bound_keys_with_table_key_command() {
     app.key_tables.insert("prefix".to_string(), binds);
     execute_command_string(&mut app, "list-keys").unwrap();
     let (_, out) = extract_popup(&app);
-    let lines: Vec<&str> = out.lines().collect();
+    // The copy-mode tables are listed as well; count the prefix table only.
+    let lines: Vec<&str> = out.lines().filter(|l| l.starts_with("bind-key -T prefix ")).collect();
     assert_eq!(lines.len(), 3, "should list 3 bindings");
     // Verify table name, key format, and command string for each binding
     assert!(lines.iter().any(|l| l.contains("prefix") && l.contains("c") && l.contains("new-window")),
@@ -1040,12 +1050,16 @@ fn server_forwarded_link_window() {
     app.control_port = None;
     execute_command_string(&mut app, "link-window -s 0 -t 1").unwrap();
     // May or may not add a window depending on PTY availability in test env
+    // These commands start a real shell; end it before the state drops.
+    crate::util::kill_app_shells(&mut app);
 }
 #[test]
 fn server_forwarded_linkw() {
     let mut app = mock_app_with_window();
     app.control_port = None;
     execute_command_string(&mut app, "linkw -s 0 -t 1").unwrap();
+    // These commands start a real shell; end it before the state drops.
+    crate::util::kill_app_shells(&mut app);
 }
 #[test]
 fn server_forwarded_unlink_window() { assert_server_forward_noop("unlink-window"); }

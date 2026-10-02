@@ -84,7 +84,11 @@ fn chained_renames_free_every_intermediate_name() {
     let names: Vec<String> = (0..4).map(|i| key(&format!("chain-{}", i))).collect();
 
     let mut guard = crate::platform::acquire_session_mutex(&names[0]);
-    assert!(guard.is_some(), "setup: should have acquired '{}'", names[0]);
+    assert!(
+        guard.is_some(),
+        "setup: should have acquired '{}'",
+        names[0]
+    );
     for n in &names[1..] {
         rekey_session_guard(&mut guard, n);
     }
@@ -111,7 +115,11 @@ fn rename_back_to_the_original_name_reacquires_it() {
     let temp = key("round-temp");
 
     let mut guard = crate::platform::acquire_session_mutex(&original);
-    assert!(guard.is_some(), "setup: should have acquired '{}'", original);
+    assert!(
+        guard.is_some(),
+        "setup: should have acquired '{}'",
+        original
+    );
 
     rekey_session_guard(&mut guard, &temp);
     rekey_session_guard(&mut guard, &original);
@@ -119,7 +127,11 @@ fn rename_back_to_the_original_name_reacquires_it() {
     // Release-then-acquire ordering matters here: acquiring first would have the
     // process contending with a name it already owns.
     assert!(guard.is_some(), "guard should be back on '{}'", original);
-    assert!(!name_is_free(&original), "'{}' must be guarded again", original);
+    assert!(
+        !name_is_free(&original),
+        "'{}' must be guarded again",
+        original
+    );
     assert!(name_is_free(&temp), "intermediate '{}' must be free", temp);
     drop(guard);
 }
@@ -134,26 +146,40 @@ fn rekey_onto_the_same_name_keeps_it_guarded() {
 
     rekey_session_guard(&mut guard, &name);
 
-    assert!(guard.is_some(), "re-keying onto the same name must not lose it");
+    assert!(
+        guard.is_some(),
+        "re-keying onto the same name must not lose it"
+    );
     assert!(!name_is_free(&name), "'{}' must still be guarded", name);
     drop(guard);
 }
 
 #[test]
 #[cfg(windows)]
-fn warm_name_is_exempt_from_the_guard() {
+fn warm_name_is_guarded_like_any_other_name() {
     let old = key("warm-old");
+    // Namespaced warm base, so this test never contends with the real
+    // `__warm__` server that may be running on this machine.
+    let warm = format!("{}____warm__", key("warm-ns"));
 
     let mut guard = crate::platform::acquire_session_mutex(&old);
     assert!(guard.is_some(), "setup: should have acquired '{}'", old);
 
-    // The warm pool intentionally runs several standby servers, so the warm name
-    // must never be locked by one of them.
-    rekey_session_guard(&mut guard, "__warm__");
+    rekey_session_guard(&mut guard, &warm);
 
-    assert!(guard.is_none(), "warm sessions must not hold a name guard");
-    assert!(name_is_free(&old), "old name '{}' must still be released", old);
-    assert!(name_is_free("__warm__"), "'__warm__' must stay unguarded");
+    // Changed by issue #459. The warm name used to be exempt here, on the theory
+    // that "the pool runs several". There is no pool: `__warm__.port` is a single
+    // file, so a namespace can only ever publish one warm server. Leaving the name
+    // unguarded meant every warm that failed or was slow to register left another
+    // live process behind, which is the unbounded-growth mechanism in #459.
+    assert!(guard.is_some(), "warm name '{}' must be guarded", warm);
+    assert!(!name_is_free(&warm), "'{}' must read as held", warm);
+    assert!(
+        name_is_free(&old),
+        "old name '{}' must still be released",
+        old
+    );
+    drop(guard);
 }
 
 #[test]
@@ -161,13 +187,22 @@ fn warm_name_is_exempt_from_the_guard() {
 fn claiming_a_warm_server_guards_the_claimed_name() {
     let claimed = key("claimed");
 
-    // A warm server starts with no guard at all (it is exempt at startup); the
-    // claim is what turns it into a real named session.
-    let mut guard: Option<crate::platform::SessionMutex> = None;
+    // A warm server reaches the claim holding the `__warm__` name (issue #459);
+    // the claim is what turns it into a real named session.
+    let warm = format!("{}____warm__", key("claim-ns"));
+    let mut guard = crate::platform::acquire_session_mutex(&warm);
+    assert!(guard.is_some(), "setup: warm should hold '{}'", warm);
     rekey_session_guard(&mut guard, &claimed);
 
+    // Releasing the warm name is what lets the replacement warm start.
+    assert!(name_is_free(&warm), "claim must release '{}'", warm);
+
     assert!(guard.is_some(), "claim should acquire '{}'", claimed);
-    assert!(!name_is_free(&claimed), "claimed name '{}' must be guarded", claimed);
+    assert!(
+        !name_is_free(&claimed),
+        "claimed name '{}' must be guarded",
+        claimed
+    );
     drop(guard);
 }
 
@@ -198,7 +233,11 @@ fn rekey_onto_a_name_owned_elsewhere_runs_unguarded_instead_of_dying() {
     // The rename already happened, so a refused acquire must degrade to running
     // unguarded rather than take the session down.
     assert!(guard.is_none(), "must not claim a name a live owner holds");
-    assert!(name_is_free(&old), "old name '{}' must still be released", old);
+    assert!(
+        name_is_free(&old),
+        "old name '{}' must still be released",
+        old
+    );
 
     release_tx.send(()).unwrap();
     holder.join().unwrap();

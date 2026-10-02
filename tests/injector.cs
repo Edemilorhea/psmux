@@ -22,12 +22,30 @@ class Injector
     [DllImport("user32.dll")]
     static extern uint MapVirtualKeyW(uint code, uint mapType);
 
+    // Maps a character to the virtual key plus modifiers that produce it on the
+    // current keyboard layout. Low byte is the VK, high byte is the modifier
+    // mask (1 Shift, 2 Ctrl, 4 Alt); -1 means the character has no key.
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    static extern short VkKeyScanW(char ch);
+
     const ushort KEY_EVENT = 1;
     const uint LEFT_CTRL_PRESSED = 0x0008;
     const uint SHIFT_PRESSED = 0x0010;
     const uint LEFT_ALT_PRESSED = 0x0002;
 
-    [StructLayout(LayoutKind.Sequential)]
+    // CharSet.Unicode is LOAD BEARING on both of these structs, and its absence
+    // was a silent injector bug found while testing issue #616.
+    //
+    // StructLayout defaults to CharSet.Ansi, which makes the marshaller convert
+    // `char UnicodeChar` to a SINGLE ANSI byte in the console's input code page
+    // (437 here). ASCII survived that by accident: the ANSI byte lands at the
+    // low half of the WCHAR field and the padding byte above it is zero, so the
+    // native side reads the right character. Everything outside the code page
+    // was converted to '?' before WriteConsoleInputW ever saw it, so {U:044B}
+    // injected a literal question mark and every non-ASCII injection test was
+    // passing on a character it never actually sent. Verified with a
+    // ReadConsoleInputW probe: 'ы' in, U+003F out.
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     struct KEY_EVENT_RECORD
     {
         public int bKeyDown;
@@ -38,7 +56,7 @@ class Injector
         public uint dwControlKeyState;
     }
 
-    [StructLayout(LayoutKind.Explicit)]
+    [StructLayout(LayoutKind.Explicit, CharSet = CharSet.Unicode)]
     struct INPUT_RECORD
     {
         [FieldOffset(0)] public ushort EventType;
@@ -97,7 +115,7 @@ class Injector
         if (args.Length < 2)
         {
             File.WriteAllText(logFile, "Usage: injector.exe <pid> <keys>\n" +
-                "Keys: chars, ^x=Ctrl+x, {ALT:x}, {ENTER}, {ESC}, {LBRACE}, {RBRACE}, {SLEEP:ms}");
+                "Keys: chars, ^x=Ctrl+x, {ALT:x}, {ENTER}, {ESC}, {F1}..{F12}, {LBRACE}, {RBRACE}, {SLEEP:ms}");
             return 99;
         }
 
@@ -187,6 +205,25 @@ class Injector
                     {
                         if (SendKey(handle, 0x22, '\0', 0, log)) injected++;
                     }
+                    else if (token.Length >= 2 && token.Length <= 3 && token[0] == 'F'
+                             && token[1] >= '0' && token[1] <= '9'
+                             && (token.Length == 2 || (token[2] >= '0' && token[2] <= '9')))
+                    {
+                        // {F1}..{F12} function keys. VK_F1 is 0x70 and the
+                        // function keys are contiguous through VK_F12 at 0x7B.
+                        // UnicodeChar stays NUL: a real keyboard reports no
+                        // character for a function key, and apps that read
+                        // INPUT_RECORDs (Far Manager) key off the virtual key.
+                        int fn = int.Parse(token.Substring(1));
+                        if (fn >= 1 && fn <= 12)
+                        {
+                            if (SendKey(handle, (ushort)(0x70 + fn - 1), '\0', 0, log)) injected++;
+                        }
+                        else
+                        {
+                            log.Add("  SKIP {" + token + "}: only F1..F12 exist");
+                        }
+                    }
                     else if (token.StartsWith("ALT:"))
                     {
                         // {ALT:x} — Alt+x, e.g. copy mode jump-to-mark
@@ -233,6 +270,60 @@ class Injector
                             char uc = (char)Convert.ToUInt16(hex, 16);
                             if (SendKey(handle, 0, uc, 0, log)) injected++;
                             Thread.Sleep(20);
+                        }
+                    }
+                    else if (token.StartsWith("MOD:"))
+                    {
+                        // MOD:vkHex:charHex:ctrlHex  e.g. MOD:70:0000:0002
+                        //
+                        // Like RAW, but the modifier key-down/key-up records that
+                        // bracket the keypress are derived from the control key
+                        // state instead of being hard-wired to Ctrl.  A real
+                        // keyboard reports VK_MENU before an Alt combination and
+                        // VK_SHIFT before a shifted one, and Far Manager keys off
+                        // those, so Alt+F1 (the drives menu) cannot be expressed
+                        // with RAW, which would press Ctrl instead.
+                        var parts = token.Substring(4).Split(':');
+                        if (parts.Length == 3)
+                        {
+                            ushort rvk = Convert.ToUInt16(parts[0], 16);
+                            char rch = (char)Convert.ToUInt16(parts[1], 16);
+                            uint rctrl = Convert.ToUInt32(parts[2], 16);
+                            var pre = new List<INPUT_RECORD>();
+                            var post = new List<INPUT_RECORD>();
+                            uint held = 0;
+                            // Order matters: Ctrl first, then Alt, then Shift, and
+                            // released in the reverse order, which is the order
+                            // Windows reports for a real chord.
+                            if ((rctrl & 0x000C) != 0)
+                            {
+                                held |= (rctrl & 0x000C);
+                                pre.Add(MakeKey(true, 0x11, '\0', held));
+                                post.Insert(0, MakeKey(false, 0x11, '\0', 0));
+                            }
+                            if ((rctrl & 0x0003) != 0)
+                            {
+                                held |= (rctrl & 0x0003);
+                                pre.Add(MakeKey(true, 0x12, '\0', held));
+                                post.Insert(0, MakeKey(false, 0x12, '\0', held & ~0x0003u));
+                            }
+                            if ((rctrl & SHIFT_PRESSED) != 0)
+                            {
+                                held |= SHIFT_PRESSED;
+                                pre.Add(MakeKey(true, 0x10, '\0', held));
+                                post.Insert(0, MakeKey(false, 0x10, '\0', held & ~SHIFT_PRESSED));
+                            }
+                            var all = new List<INPUT_RECORD>();
+                            all.AddRange(pre);
+                            all.Add(MakeKey(true, rvk, rch, rctrl));
+                            all.Add(MakeKey(false, rvk, rch, rctrl));
+                            all.AddRange(post);
+                            var arr = all.ToArray();
+                            uint w; bool ok = WriteConsoleInput(handle, arr, (uint)arr.Length, out w);
+                            int e = ok ? 0 : Marshal.GetLastWin32Error();
+                            log.Add(string.Format("  MOD vk=0x{0:X2} ch=0x{1:X2} ctrl=0x{2:X4} n={3} ok={4} w={5} e={6}",
+                                rvk, (int)rch, rctrl, arr.Length, ok, w, e));
+                            if (ok) injected++;
                         }
                     }
                     else if (token.StartsWith("RAW:"))
@@ -300,7 +391,38 @@ class Injector
                 else if (c == '+') { vk = 0xBB; ctrl = SHIFT_PRESSED; }
                 else if (c == '}') { vk = 0xDD; ctrl = SHIFT_PRESSED; }
                 else if (c == '{') { vk = 0xDB; ctrl = SHIFT_PRESSED; }
-                else vk = (ushort)c;
+                else
+                {
+                    // Anything not in the table above: ask Windows for the key
+                    // that produces this character on the CURRENT layout, rather
+                    // than assuming the character code IS the virtual key.
+                    //
+                    // The old fallback was vk = (ushort)c, which is wrong for
+                    // every punctuation character it was reached for. '|' is
+                    // 0x7C, and 0x7C is VK_F13, so typing a pipe pressed F13:
+                    // the character never arrived, and the stray function key was
+                    // free to trigger a binding. That silently turned
+                    // "set-option -g window-status-separator |" into the same
+                    // command with an EMPTY value, and the commands after it
+                    // stopped taking effect.
+                    //
+                    // VkKeyScanW returns the virtual key in the low byte and the
+                    // required modifiers in the high byte (1 = Shift, 2 = Ctrl,
+                    // 4 = Alt), which also makes shifted punctuation correct
+                    // without hand-maintaining a table.
+                    short scan = VkKeyScanW(c);
+                    if (scan == -1)
+                    {
+                        log.Add(string.Format("  SKIP '{0}' (U+{1:X4}): no key on this layout", c, (int)c));
+                        i++;
+                        continue;
+                    }
+                    vk = (ushort)(scan & 0xFF);
+                    int mods = (scan >> 8) & 0xFF;
+                    if ((mods & 1) != 0) ctrl |= SHIFT_PRESSED;
+                    if ((mods & 2) != 0) ctrl |= LEFT_CTRL_PRESSED;
+                    if ((mods & 4) != 0) ctrl |= LEFT_ALT_PRESSED;
+                }
 
                 if (SendKey(handle, vk, c, ctrl, log)) injected++;
                 i++;

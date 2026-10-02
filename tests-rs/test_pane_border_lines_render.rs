@@ -25,6 +25,7 @@ fn leaf(id: usize, active: bool) -> LayoutJson {
         active,
         copy_mode: false,
         scroll_offset: 0,
+        view_offset: 0,
         sel_start_row: None,
         sel_start_col: None,
         sel_end_row: None,
@@ -62,16 +63,24 @@ fn render_counts(kind: &str, style: &str, w: u16, h: u16) -> std::collections::H
         crate::client::render_layout_json(
             f, &layout, area,
             false,
-            Color::DarkGray, Color::Green,
+            ratatui::style::Style::default().fg(Color::DarkGray),
+            ratatui::style::Style::default().fg(Color::Green),
             false, Color::Reset,
             active_rect,
             "", false, "off", "",
             total,
             bchars,
             None,
+            crate::client::WindowContentStyles::default(),
+            crate::pane_border::PaneBorderIndicators::Colour,
         );
-        let border_mask = crate::client::border_mask_from_layout(&layout, area, f.buffer_mut().area, false);
-        crate::rendering::fix_border_intersections(f.buffer_mut(), bchars, &border_mask);
+        let borders = crate::client::border_geometry_from_layout(
+            &layout,
+            area,
+            f.buffer_mut().area,
+            false,
+        );
+        crate::rendering::fix_border_intersections(f.buffer_mut(), bchars, &borders);
     }).unwrap();
 
     let buf = term.backend().buffer().clone();
@@ -155,12 +164,21 @@ fn nested_split_produces_double_junction() {
         let area = Rect::new(0, 0, 60, 20);
         let active_rect = crate::client::compute_active_rect_json(&layout, area);
         crate::client::render_layout_json(
-            f, &layout, area, false, Color::DarkGray, Color::Green,
+            f, &layout, area, false,
+            ratatui::style::Style::default().fg(Color::DarkGray),
+            ratatui::style::Style::default().fg(Color::Green),
             false, Color::Reset, active_rect, "", false, "off", "", total, bchars,
             None,
+            crate::client::WindowContentStyles::default(),
+            crate::pane_border::PaneBorderIndicators::Colour,
         );
-        let border_mask = crate::client::border_mask_from_layout(&layout, area, f.buffer_mut().area, false);
-        crate::rendering::fix_border_intersections(f.buffer_mut(), bchars, &border_mask);
+        let borders = crate::client::border_geometry_from_layout(
+            &layout,
+            area,
+            f.buffer_mut().area,
+            false,
+        );
+        crate::rendering::fix_border_intersections(f.buffer_mut(), bchars, &borders);
     }).unwrap();
     let buf = term.backend().buffer().clone();
     let mut junctions = 0;

@@ -161,9 +161,12 @@ if ($body.Length -gt 0) { P "capture-pane returned non-empty body (len=$($body.L
 # ============================================================
 Hdr "Layer 4: %output streaming for send-keys (the real iTerm2 display path)"
 $marker = "PSMUX_CC_$([Guid]::NewGuid().ToString('N').Substring(0,8))"
-Send-CC $cc "send-keys -t %0 -l `"echo $marker`""
+# No -t: the session has a single pane and pane ids start at %1, so the
+# historical `-t %0` never resolved — it only "worked" through the silent
+# misroute-to-active-pane that #545 removed (now it errors and no keys land).
+Send-CC $cc "send-keys -l `"echo $marker`""
 [void](Read-Reply $cc 1500)
-Send-CC $cc "send-keys -t %0 Enter"
+Send-CC $cc "send-keys Enter"
 [void](Read-Reply $cc 1500)
 Start-Sleep -Milliseconds 1500
 $stream = Drain-Notifications $cc 2000
@@ -185,13 +188,19 @@ Send-CC $cc "rename-window -t liveA liveA_renamed"
 $ev = Drain-Notifications $cc 1000
 if ($ev -match "%window-renamed @\d+ liveA_renamed") { P "%window-renamed" } else { F "no %window-renamed" }
 
-# Select first window by index 0 to fire after-select-window
+# Select first window by index 0 to fire after-select-window.
+# The notification may be written before or after the command's %end (tmux
+# makes no promise either way), and Read-Reply consumes everything up to
+# %end, so the reply is kept and searched too. Sweep 2026-09-24_23-37-41
+# lost it that way under load, 28P/1F, with an empty drain.
 Send-CC $cc "select-window -t :0"
-[void](Read-Reply $cc 1500)
-Start-Sleep -Milliseconds 400
-$ev = Drain-Notifications $cc 1000
-if ($ev -match "%session-window-changed \`$\d+ @\d+") { P "%session-window-changed on select-window" }
-else { F "no %session-window-changed: $ev" }
+$reply = Read-Reply $cc 1500
+$ev = $reply + (Drain-Notifications $cc 2000)
+if ($ev -match "%session-window-changed \`$\d+ @\d+") {
+    $where = if ($reply -match "%session-window-changed") { "before %end" } else { "after %end" }
+    P "%session-window-changed on select-window (arrived $where)"
+}
+else { F "no %session-window-changed: reply=[$($reply.Trim())] drain=[$($ev.Trim())]" }
 
 Send-CC $cc "kill-window -t liveA_renamed"
 [void](Read-Reply $cc 1500)
@@ -319,9 +328,10 @@ Close-CC $cc2
 Hdr "Layer 12: Output escape encoding (tmux octal)"
 $cc = Open-CC $S2
 $marker = "ESCMRK"
-Send-CC $cc "send-keys -t %0 -l `"echo $marker\\test`""
+# No -t for the same reason as Layer 4: %0 never resolves (ids start at %1).
+Send-CC $cc "send-keys -l `"echo $marker\\test`""
 [void](Read-Reply $cc 1500)
-Send-CC $cc "send-keys -t %0 Enter"
+Send-CC $cc "send-keys Enter"
 [void](Read-Reply $cc 1500)
 Start-Sleep -Milliseconds 1200
 $stream = Drain-Notifications $cc 2000

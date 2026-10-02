@@ -14,6 +14,10 @@
 //!   * `set-option default-terminal` updated `app.environment["TERM"]`
 //!     but the warm pane kept the old TERM forever.
 //!   * `set-option history-limit` was not propagated at all (#271).
+//!   * the host terminal palette (`PSMUX_HOST_COLORS`, planted on the child at
+//!     spawn time) was never registered here at all, so a spare spawned before
+//!     a client reported its colours kept an empty palette and handed it to the
+//!     first window created afterwards.
 //!
 //! This module is the only place that decides what to do, and the
 //! only place that mutates `app.warm_pane`.
@@ -114,9 +118,41 @@ pub fn for_env_change() -> WarmPaneSync {
 /// at the old dimensions.  Respawn at the new size so the next
 /// transplant lands pixel-perfect on the first frame with no reflow.
 pub fn for_resize(app: &AppState, new_rows: u16, new_cols: u16) -> WarmPaneSync {
-    match app.warm_pane.as_ref() {
-        Some(wp) if wp.rows == new_rows && wp.cols == new_cols => WarmPaneSync::Noop,
-        _ => WarmPaneSync::Respawn("client resized"),
+    // A pool is only "already the right size" when EVERY spare is, otherwise
+    // the odd one out would transplant at the stale grid and reflow on its
+    // first frame. An empty pool needs nothing killed but does need the
+    // refill to happen at the new size, which `respawn` arranges.
+    if !app.warm_pane.is_empty() && app.warm_pane.iter().all(|wp| wp.rows == new_rows && wp.cols == new_cols) {
+        WarmPaneSync::Noop
+    } else {
+        WarmPaneSync::Respawn("client resized")
+    }
+}
+
+/// The host terminal's palette reached the server (a client attached and
+/// reported it, or the report changed), so every spare whose shell was spawned
+/// with a different palette is stale.
+///
+/// `PSMUX_HOST_COLORS` is planted into a pane child's environment at SPAWN time
+/// by `pane::set_host_colors_env`, and an environment block cannot be edited
+/// from outside a running process.  A spare therefore carries whatever the
+/// server knew when that spare was spawned, forever.  That is normally NOTHING:
+/// a server learns its palette from the first client's `CtrlReq::HostColors`,
+/// which arrives after the pool has already been filled — and for a claimed
+/// `__warm__` standby the pool was filled by the standby, before it had a
+/// session at all.  Transplanting one of those spares hands the new pane's
+/// shell an empty palette while the server is busy answering OSC 10/11 with the
+/// real one, which is how a nested psmux client in a fresh window lost its
+/// parent's fg/bg.
+///
+/// Same shape as [`for_resize`]: an already-correct pool needs nothing, and an
+/// empty pool still wants the refill to happen with the new palette, which
+/// `Respawn` arranges.
+pub fn for_host_colors_change(app: &AppState) -> WarmPaneSync {
+    if app.warm_pane.iter().all(|wp| wp.host_colors == app.host_colors) {
+        WarmPaneSync::Noop
+    } else {
+        WarmPaneSync::Respawn("host colors changed")
     }
 }
 
@@ -198,22 +234,22 @@ fn apply_patch(app: &mut AppState, patch: WarmPanePatch) {
     // bounded and cheap.
     apply_patch_to_existing_panes(app, &patch);
 
-    let wp = match app.warm_pane.as_ref() {
-        Some(wp) => wp,
-        None => return,
-    };
-    match patch {
-        WarmPanePatch::HistoryLimit(n) => {
-            if let Ok(mut parser) = wp.term.lock() {
-                if parser.screen().scrollback_len() != n {
-                    parser.screen_mut().set_scrollback_len(n);
+    // Patch every spare, not just the head of the pool: any of them can be
+    // the one the next new-window claims.
+    for wp in app.warm_pane.iter() {
+        match patch {
+            WarmPanePatch::HistoryLimit(n) => {
+                if let Ok(mut parser) = wp.term.lock() {
+                    if parser.screen().scrollback_len() != n {
+                        parser.screen_mut().set_scrollback_len(n);
+                    }
                 }
             }
-        }
-        WarmPanePatch::AllowAlternateScreen(allowed) => {
-            if let Ok(mut parser) = wp.term.lock() {
-                if parser.screen().allow_alternate_screen() != allowed {
-                    parser.screen_mut().set_allow_alternate_screen(allowed);
+            WarmPanePatch::AllowAlternateScreen(allowed) => {
+                if let Ok(mut parser) = wp.term.lock() {
+                    if parser.screen().allow_alternate_screen() != allowed {
+                        parser.screen_mut().set_allow_alternate_screen(allowed);
+                    }
                 }
             }
         }
@@ -230,16 +266,20 @@ fn apply_patch_to_existing_panes(app: &mut AppState, patch: &WarmPanePatch) {
     fn walk(node: &mut Node, patch: &WarmPanePatch) {
         match node {
             Node::Leaf(p) => {
-                if let Ok(mut parser) = p.term.lock() {
-                    match patch {
-                        WarmPanePatch::HistoryLimit(n) => {
-                            if parser.screen().scrollback_len() != *n {
-                                parser.screen_mut().set_scrollback_len(*n);
+                // Reaches the live screen too while a copy-mode snapshot is in
+                // `term` (see `Pane::each_term`).
+                for term in p.each_term() {
+                    if let Ok(mut parser) = term.lock() {
+                        match patch {
+                            WarmPanePatch::HistoryLimit(n) => {
+                                if parser.screen().scrollback_len() != *n {
+                                    parser.screen_mut().set_scrollback_len(*n);
+                                }
                             }
-                        }
-                        WarmPanePatch::AllowAlternateScreen(allowed) => {
-                            if parser.screen().allow_alternate_screen() != *allowed {
-                                parser.screen_mut().set_allow_alternate_screen(*allowed);
+                            WarmPanePatch::AllowAlternateScreen(allowed) => {
+                                if parser.screen().allow_alternate_screen() != *allowed {
+                                    parser.screen_mut().set_allow_alternate_screen(*allowed);
+                                }
                             }
                         }
                     }
@@ -257,27 +297,20 @@ fn apply_patch_to_existing_panes(app: &mut AppState, patch: &WarmPanePatch) {
     }
 }
 
-fn respawn(app: &mut AppState, pty_system: &dyn portable_pty::PtySystem) {
-    // Always kill any existing warm pane first — there is no in-place
-    // way to swap shell binaries or environment blocks.
-    if let Some(mut old) = app.warm_pane.take() {
-        old.child.kill().ok();
-    }
-    // Honour warm_enabled: a config-disabled warm pane must not come
-    // back to life after a Respawn — the user opted out.
-    if !app.warm_enabled {
-        return;
-    }
-    match crate::pane::spawn_warm_pane(pty_system, app) {
-        Ok(wp) => {
-            app.warm_pane = Some(wp);
-        }
-        Err(_) => {
-            // Best-effort: if a respawn fails (e.g. transient PTY
-            // creation error) we leave warm_pane = None and the next
-            // consume path falls back to a synchronous cold spawn.
-        }
-    }
+fn respawn(app: &mut AppState, _pty_system: &dyn portable_pty::PtySystem) {
+    // Kill every spare — there is no in-place way to swap shell binaries or
+    // environment blocks, and a pool where only the head was refreshed would
+    // hand a stale shell to the second creation.
+    //
+    // Nothing is spawned here. The server loop notices the deficit on its next
+    // tick and hands the spawns to the background spawner, which is what keeps
+    // an expensive event (a client resize, a `set-option`) from stalling the
+    // loop for the length of a CreateProcess. `warm_enabled` and
+    // `warm-pool-size 0` are honoured there: a target of zero simply never
+    // produces a deficit, so an opted-out user's pool stays empty.
+    let killed = app.warm_pane.len();
+    app.warm_pane.kill_all();
+    crate::warm_trace!("pool: respawn requested, killed {} spare(s), target={}", killed, app.warm_pane.target);
 }
 
 /// Helper for warm-pane consume sites in `pane.rs`.  When a warm
@@ -301,6 +334,179 @@ pub fn reconcile_consumed_parser(parser: &mut vt100::Parser, app: &AppState) {
     }
 }
 
+/// Spares whose shell exists but which the server does not own yet (#686).
+///
+/// The pool's own `kill_all` can only reach spares that are already in
+/// `AppState`. A surge hands eight spawns to background threads, and each one
+/// is a real `CreateProcessW` long before its `WarmPane` reaches the server
+/// loop: the shell exists, its conhost exists, and the server knows nothing
+/// about it. `kill-server` in that window killed the windows and the pool and
+/// then called `process::exit`, which stops the spawner threads mid flight and
+/// leaves those shells parented to a dead psmux, idle at a prompt forever. The
+/// measured leak was six orphan `pwsh` over ten rounds of "new-session, six
+/// new-window, kill-server".
+///
+/// So the spawn is tracked from the moment it is ISSUED, not from the moment it
+/// lands:
+///
+///   * [`issue`] records the pane id with no pid yet, on the loop thread.
+///   * [`record_pid`] fills the pid in on the spawner thread, as soon as
+///     `CreateProcessW` has returned one. It answers `false` when the server has
+///     already begun to die, which tells the spawner to kill the child it just
+///     created rather than post it to a loop that will never read it.
+///   * [`release`] drops the entry once the spare is the server's (it landed in
+///     `AppState`, where `WarmPool::kill_all` covers it) or once the spawn has
+///     failed.
+///   * [`reap`] is the teardown: it closes the registry to new pids and returns
+///     every pid still in it, for the caller to kill by pid through the kill
+///     guard. It waits briefly for any spawn caught inside `CreateProcessW`,
+///     because that one's pid appears a few milliseconds late.
+pub mod inflight {
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Mutex;
+
+    static SPAWNS: Mutex<Option<HashMap<usize, Option<u32>>>> = Mutex::new(None);
+    static TEARING_DOWN: AtomicBool = AtomicBool::new(false);
+
+    fn with<R>(f: impl FnOnce(&mut HashMap<usize, Option<u32>>) -> R) -> R {
+        let mut g = SPAWNS.lock().unwrap_or_else(|e| e.into_inner());
+        f(g.get_or_insert_with(HashMap::new))
+    }
+
+    /// True once teardown has begun: no spawn issued from here on is ever
+    /// adopted.
+    pub fn is_tearing_down() -> bool {
+        TEARING_DOWN.load(Ordering::SeqCst)
+    }
+
+    /// Record that a spare spawn has been handed to the spawner. Called on the
+    /// loop thread, before the thread exists, so there is no window in which a
+    /// spawn is running untracked.
+    pub fn issue(pane_id: usize) {
+        with(|m| {
+            m.insert(pane_id, None);
+        });
+    }
+
+    /// The spawner has a pid. Returns false when the server is tearing down, in
+    /// which case the caller owns the kill: the entry is dropped here so the
+    /// reaper does not also chase a pid the spawner is already killing.
+    pub fn record_pid(pane_id: usize, pid: Option<u32>) -> bool {
+        if is_tearing_down() {
+            with(|m| m.remove(&pane_id));
+            return false;
+        }
+        with(|m| {
+            if let Some(slot) = m.get_mut(&pane_id) {
+                *slot = pid;
+            }
+        });
+        true
+    }
+
+    /// This spawn is no longer in flight: it landed in `AppState` (the pool
+    /// owns the child now) or it failed.
+    pub fn release(pane_id: usize) {
+        with(|m| {
+            m.remove(&pane_id);
+        });
+    }
+
+    /// Pane ids still in flight, for diagnostics and tests.
+    pub fn pending() -> Vec<usize> {
+        let mut v = with(|m| m.keys().copied().collect::<Vec<_>>());
+        v.sort_unstable();
+        v
+    }
+
+    /// Pids recorded so far, without disturbing the registry.
+    pub fn pids() -> Vec<u32> {
+        let mut v = with(|m| m.values().filter_map(|p| *p).collect::<Vec<_>>());
+        v.sort_unstable();
+        v
+    }
+
+    /// Close the registry and drain it.
+    ///
+    /// Returns the pids to kill. Entries with no pid yet are spawns sitting
+    /// inside `CreateProcessW`: they cannot be killed because nothing knows
+    /// what to kill, so the caller polls again until they have either
+    /// registered a pid (reaped on that pass) or seen the teardown flag and
+    /// killed their own child (which removes the entry). `budget` bounds that
+    /// wait, because a shutdown must never hang on a spawn that wedged.
+    pub fn reap(budget: std::time::Duration, mut sleep: impl FnMut(std::time::Duration)) -> Vec<u32> {
+        TEARING_DOWN.store(true, Ordering::SeqCst);
+        let deadline = std::time::Instant::now() + budget;
+        let mut killed = Vec::new();
+        loop {
+            let (ready, waiting) = with(|m| {
+                let ready: Vec<(usize, u32)> =
+                    m.iter().filter_map(|(id, p)| p.map(|p| (*id, p))).collect();
+                for (id, _) in &ready {
+                    m.remove(id);
+                }
+                (ready, m.len())
+            });
+            killed.extend(ready.into_iter().map(|(_, p)| p));
+            if waiting == 0 || std::time::Instant::now() >= deadline {
+                break;
+            }
+            sleep(std::time::Duration::from_millis(5));
+        }
+        killed
+    }
+
+    /// Tests share one process, so the registry has to be resettable.
+    #[cfg(test)]
+    pub fn reset_for_test() {
+        TEARING_DOWN.store(false, Ordering::SeqCst);
+        with(|m| m.clear());
+    }
+}
+
+/// Kill every spare the server does not own yet, and stop any spawn still in
+/// flight from surviving this process (#686).
+///
+/// Called from the shutdown path, after the pool's own spares are killed. The
+/// kill goes through the platform kill guard, which validates each pid's
+/// creation time before terminating, so a pid recycled between the spawn and
+/// this call is never touched.
+pub fn reap_inflight_spares() -> usize {
+    // The budget only applies while a spawn is actually in flight without a pid
+    // yet, ie a thread inside CreateProcessW; an idle shutdown returns from here
+    // immediately. 400ms is what a CreateProcessW costs on a machine under load
+    // (a 150ms budget let two shells through during a concurrent test sweep),
+    // and the shutdown path calls this twice with its client courtesies in
+    // between, so the real grace is about twice this. Both fit inside the
+    // 1500ms the kill-server handler holds its socket open for, which is what
+    // keeps the caller's force-kill fallback from cutting the shutdown short.
+    let pids = inflight::reap(std::time::Duration::from_millis(400), std::thread::sleep);
+    for pid in &pids {
+        crate::platform::process_kill::kill_pid_tree(*pid);
+    }
+    if !pids.is_empty() {
+        crate::warm_trace!("pool: reaped {} in flight spare(s) on teardown: {:?}", pids.len(), pids);
+    }
+    pids.len()
+}
+
 #[cfg(test)]
 #[path = "../tests-rs/test_warm_pane_sync.rs"]
 mod test_warm_pane_sync;
+
+#[cfg(test)]
+#[path = "../tests-rs/test_issue686_pool_reap.rs"]
+mod tests_issue686_pool_reap;
+
+#[cfg(test)]
+#[path = "../tests-rs/test_warm_pool_depth.rs"]
+mod test_warm_pool_depth;
+
+#[cfg(test)]
+#[path = "../tests-rs/test_issue661_warm_pool_depth.rs"]
+mod test_issue661_warm_pool_depth;
+
+#[cfg(test)]
+#[path = "../tests-rs/test_pane_id_monotonic_claim.rs"]
+mod test_pane_id_monotonic_claim;

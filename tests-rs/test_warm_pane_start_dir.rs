@@ -15,27 +15,37 @@ use super::*;
 /// with a single CR so it submits as exactly one command line.
 #[test]
 fn rehome_command_wraps_dir_and_clears() {
-    let cmd = rehome_command(r"C:\code\project", "pwsh");
+    let cmd = rehome_command(r"C:\code\project", RehomeSyntax::PowerShell);
     assert!(cmd.starts_with(' '), "must start with a space, got {cmd:?}");
     assert!(cmd.ends_with('\r'), "must end with CR, got {cmd:?}");
     assert!(
         cmd.contains(r"cd 'C:\code\project'"),
         "must cd into the dir, got {cmd:?}"
     );
-    let clear = if cfg!(windows) { "cls" } else { "clear" };
+    let clear = "cls";
     assert!(cmd.contains(clear), "must chain {clear}, got {cmd:?}");
-    assert_eq!(cmd.matches('\r').count(), 1, "exactly one line, got {cmd:?}");
+    assert_eq!(
+        cmd.matches('\r').count(),
+        1,
+        "exactly one line, got {cmd:?}"
+    );
 }
 
 /// A single quote in the path must be doubled so the single-quoted string stays
 /// well-formed — otherwise the `cd` breaks (or a crafted path could inject a
 /// second command). Precondition: the input actually contains a lone quote.
+/// Doubling is the PowerShell rule; the POSIX `'\''` rule is covered in
+/// tests-rs/test_issue600_bash_rehome.rs.
 #[test]
 fn rehome_command_escapes_single_quotes() {
     let input = r"C:\weird'dir";
-    assert_eq!(input.matches('\'').count(), 1, "precondition: one lone quote");
+    assert_eq!(
+        input.matches('\'').count(),
+        1,
+        "precondition: one lone quote"
+    );
 
-    let cmd = rehome_command(input, "pwsh");
+    let cmd = rehome_command(input, RehomeSyntax::PowerShell);
     assert!(
         cmd.contains(r"cd 'C:\weird''dir'"),
         "lone quote must be doubled, got {cmd:?}"
@@ -55,7 +65,7 @@ fn rehome_command_escapes_single_quotes() {
 fn rehome_command_exact_windows_form() {
     if cfg!(windows) {
         assert_eq!(
-            rehome_command(r"C:\x", "pwsh"),
+            rehome_command(r"C:\x", RehomeSyntax::PowerShell),
             " cd 'C:\\x'; try { [System.IO.Directory]::SetCurrentDirectory($PWD.ProviderPath) } catch {}; cls\r"
         );
     }
@@ -67,7 +77,7 @@ fn rehome_command_exact_windows_form() {
 #[test]
 fn rehome_command_includes_current_directory_sync_on_windows() {
     if cfg!(windows) {
-        let cmd = rehome_command(r"C:\code\project", "pwsh");
+        let cmd = rehome_command(r"C:\code\project", RehomeSyntax::PowerShell);
         assert!(
             cmd.contains("[System.IO.Directory]::SetCurrentDirectory"),
             "must sync Win32 CurrentDirectory so a PEB-walk-based cwd query \
@@ -82,14 +92,14 @@ fn rehome_command_includes_current_directory_sync_on_windows() {
 #[test]
 fn rehome_command_uses_nushell_syntax() {
     assert_eq!(
-        rehome_command(r"E:\Tools\psmux", "nu"),
+        rehome_command(r"E:\Tools\psmux", RehomeSyntax::Nu),
         " cd r#'E:\\Tools\\psmux'#; clear\r"
     );
 }
 
 #[test]
 fn rehome_command_quotes_nushell_paths_without_injection() {
-    let cmd = rehome_command("C:\\a'#; clear; echo injected", "nu.exe --login");
+    let cmd = rehome_command("C:\\a'#; clear; echo injected", RehomeSyntax::Nu);
     assert_eq!(cmd, " cd r##'C:\\a'#; clear; echo injected'##; clear\r");
     assert!(!cmd.contains("$PWD.ProviderPath"));
 }
@@ -112,36 +122,18 @@ fn rehome_command_quotes_nushell_paths_without_injection() {
 fn test_app() -> AppState {
     let mut app = AppState::new("warm_start_dir_test".to_string());
     app.warm_enabled = true;
-    app.last_window_area = ratatui::prelude::Rect { x: 0, y: 0, width: 100, height: 30 };
+    app.last_window_area = ratatui::prelude::Rect {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 30,
+    };
     app
-}
-
-/// Kill the warm pane's child and wait until the OS reports it exited
-/// (TerminateProcess is asynchronous; try_wait flips within milliseconds).
-fn kill_warm_child(wp: &mut crate::types::WarmPane) {
-    wp.child.kill().ok();
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline {
-        if !matches!(wp.child.try_wait(), Ok(None)) {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    panic!("warm child did not report exit within 5s of kill()");
 }
 
 fn active_pane_of(win: &mut Window) -> &mut Pane {
     let path = win.active_path.clone();
     active_pane_mut(&mut win.root, &path).expect("active pane")
-}
-
-fn cleanup(app: &mut AppState) {
-    for win in app.windows.iter_mut() {
-        crate::tree::kill_all_children(&mut win.root);
-    }
-    if let Some(mut wp) = app.warm_pane.take() {
-        wp.child.kill().ok();
-    }
 }
 
 /// Control / precondition: a live spare consumed WITHOUT `-c` is transplanted
@@ -152,19 +144,26 @@ fn cleanup(app: &mut AppState) {
 fn create_window_live_spare_without_start_dir_does_not_rehome() {
     let pty = native_pty_system();
     let mut app = test_app();
-    let wp = spawn_warm_pane(&*pty, &mut app).expect("spawn warm pane");
+    let mut wp = spawn_warm_pane(&*pty, &mut app).expect("spawn warm pane");
+    // Settled by hand: these cases are about the transplant, not about the
+    // readiness gate. A spare spawned microseconds ago is by design not yet
+    // claimable, because its shell has not finished starting.
+    wp.ready = true;
     let warm_id = wp.pane_id;
-    app.warm_pane = Some(wp);
+    app.warm_pane.push(wp);
 
     create_window(&*pty, &mut app, None, None, false).expect("create_window");
 
     let pane = active_pane_of(&mut app.windows[0]);
-    assert_eq!(pane.id, warm_id, "live spare must be transplanted (warm fast path)");
+    assert_eq!(
+        pane.id, warm_id,
+        "live spare must be transplanted (warm fast path)"
+    );
     assert!(
         pane.squelch_until.is_none(),
         "no start_dir means no silent_rehome, so squelch_until must be None"
     );
-    cleanup(&mut app);
+    crate::util::kill_app_shells(&mut app);
 }
 
 /// #436 core: a live spare consumed WITH `-c <dir>` is STILL transplanted (warm
@@ -176,9 +175,13 @@ fn create_window_live_spare_with_start_dir_transplants_and_rehomes() {
     let mut app = test_app();
     let dir = std::env::temp_dir();
     let dir = dir.to_str().expect("temp dir path");
-    let wp = spawn_warm_pane(&*pty, &mut app).expect("spawn warm pane");
+    let mut wp = spawn_warm_pane(&*pty, &mut app).expect("spawn warm pane");
+    // Settled by hand: these cases are about the transplant, not about the
+    // readiness gate. A spare spawned microseconds ago is by design not yet
+    // claimable, because its shell has not finished starting.
+    wp.ready = true;
     let warm_id = wp.pane_id;
-    app.warm_pane = Some(wp);
+    app.warm_pane.push(wp);
 
     create_window(&*pty, &mut app, None, Some(dir), false).expect("create_window");
 
@@ -195,7 +198,7 @@ fn create_window_live_spare_with_start_dir_transplants_and_rehomes() {
         matches!(pane.child.try_wait(), Ok(None)),
         "the transplanted shell must be alive"
     );
-    cleanup(&mut app);
+    crate::util::kill_app_shells(&mut app);
 }
 
 /// #450 gate under #436's looser guard: a DEAD spare must not be transplanted
@@ -209,12 +212,15 @@ fn create_window_dead_spare_with_start_dir_cold_spawns() {
     let dir = dir.to_str().expect("temp dir path");
     let mut wp = spawn_warm_pane(&*pty, &mut app).expect("spawn warm pane");
     let warm_id = wp.pane_id;
-    kill_warm_child(&mut wp);
-    app.warm_pane = Some(wp);
+    crate::util::kill_pty_child(&mut *wp.child);
+    app.warm_pane.push(wp);
 
     create_window(&*pty, &mut app, None, Some(dir), false).expect("create_window");
 
-    assert!(app.warm_pane.is_none(), "the dead spare must be discarded, not restored");
+    assert!(
+        app.warm_pane.is_empty(),
+        "the dead spare must be discarded, not restored"
+    );
     let pane = active_pane_of(&mut app.windows[0]);
     assert_ne!(
         pane.id, warm_id,
@@ -224,7 +230,7 @@ fn create_window_dead_spare_with_start_dir_cold_spawns() {
         matches!(pane.child.try_wait(), Ok(None)),
         "the cold-spawned shell must be alive"
     );
-    cleanup(&mut app);
+    crate::util::kill_app_shells(&mut app);
 }
 
 /// Same gate on the split path: a dead spare must not be transplanted into a
@@ -238,19 +244,25 @@ fn split_dead_spare_with_start_dir_cold_spawns() {
     create_window(&*pty, &mut app, None, None, false).expect("create_window");
     let mut wp = spawn_warm_pane(&*pty, &mut app).expect("spawn warm pane");
     let warm_id = wp.pane_id;
-    kill_warm_child(&mut wp);
-    app.warm_pane = Some(wp);
+    crate::util::kill_pty_child(&mut *wp.child);
+    app.warm_pane.push(wp);
 
     split_active_with_command(&mut app, LayoutKind::Vertical, None, Some(&*pty), Some(dir))
         .expect("split");
 
     let win = &mut app.windows[0];
-    assert!(matches!(win.root, Node::Split { .. }), "split must still happen");
+    assert!(
+        matches!(win.root, Node::Split { .. }),
+        "split must still happen"
+    );
     let pane = active_pane_of(win);
-    assert_ne!(pane.id, warm_id, "dead spare transplanted into the -c split (#450 bug)");
+    assert_ne!(
+        pane.id, warm_id,
+        "dead spare transplanted into the -c split (#450 bug)"
+    );
     assert!(
         matches!(pane.child.try_wait(), Ok(None)),
         "the split's cold-spawned shell must be alive"
     );
-    cleanup(&mut app);
+    crate::util::kill_app_shells(&mut app);
 }

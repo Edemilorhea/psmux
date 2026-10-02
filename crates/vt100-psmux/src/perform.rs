@@ -220,6 +220,50 @@ impl<CB: crate::callbacks::Callbacks> vte::Perform for WrappedScreen<CB> {
                 self.callbacks.set_window_title(&mut self.screen, s);
                 self.screen.set_title(s);
             }
+            // ---- OSC 4 : set one or more palette entries (issue #685) ----
+            // `\e]4;<i>;<colour>[;<i>;<colour>]*\e\\`.  vte splits on ';', so
+            // the pairs arrive as flat params.  tmux parses exactly the same
+            // shape in `input_osc_4` (input.c:2927).  A `?` spec is a QUERY,
+            // which psmux answers on the raw output scan in the pane reader
+            // thread (pane.rs `scan_color_queries`, issue #473), preferring
+            // this pane's own entry when it has one; nothing to do here.
+            [b"4", rest @ ..] if !rest.is_empty() => {
+                let mut i = 0usize;
+                while i + 1 < rest.len() {
+                    let Some(idx) = crate::palette::parse_palette_index(rest[i])
+                    else {
+                        // tmux stops the whole sequence on a bad index
+                        // (input.c:2941 `bad = 1; break;`).
+                        break;
+                    };
+                    let spec = rest[i + 1];
+                    i += 2;
+                    if spec == b"?" {
+                        continue;
+                    }
+                    if let Some(rgb) = crate::palette::parse_x11_colour(spec) {
+                        self.screen.set_palette_entry(idx, Some(rgb));
+                    }
+                    // An unparseable colour is skipped, not fatal
+                    // (input.c:2959 `s = next; continue;`).
+                }
+            }
+            // ---- OSC 104 : reset palette entries (issue #685) ----
+            // Bare `\e]104\e\\` (and `\e]104;\e\\`, which vte hands us as an
+            // empty trailing param) clears everything; `\e]104;<i>[;<i>]*`
+            // clears those indexes.  tmux: `input_osc_104` (input.c:3446).
+            [b"104"] | [b"104", b""] => {
+                self.screen.clear_palette();
+            }
+            [b"104", rest @ ..] => {
+                for raw in rest {
+                    let Some(idx) = crate::palette::parse_palette_index(raw)
+                    else {
+                        break;
+                    };
+                    self.screen.set_palette_entry(idx, None);
+                }
+            }
             [b"7", uri] => {
                 self.screen.set_path(uri);
             }
@@ -237,6 +281,22 @@ impl<CB: crate::callbacks::Callbacks> vte::Perform for WrappedScreen<CB> {
                     .unwrap_or(0);
                 self.screen.set_progress(s, v);
                 self.callbacks.set_progress(&mut self.screen, s, v);
+            }
+            [b"9", b"9", cwd_rest @ ..] if !cwd_rest.is_empty() => {
+                // OSC 9;9;<cwd> — ConEmu's "set working directory", the form
+                // Windows Terminal documents for shell integration and the one
+                // a WSL shell can emit to tell psmux where it really is
+                // (issue #615).  A Windows path may contain ';' (rare but
+                // legal), which the OSC splitter turned into extra params, so
+                // rejoin them.
+                let mut cwd = Vec::new();
+                for (i, part) in cwd_rest.iter().enumerate() {
+                    if i > 0 {
+                        cwd.push(b';');
+                    }
+                    cwd.extend_from_slice(part);
+                }
+                self.screen.set_path_literal(&cwd);
             }
             [b"9999", ..] => {
                 self.screen.squelch_cleared = true;
@@ -263,8 +323,14 @@ impl<CB: crate::callbacks::Callbacks> vte::Perform for WrappedScreen<CB> {
                         self.callbacks
                             .paste_from_clipboard(&mut self.screen, ty);
                     }
+                    // tmux parity: b64_pton skips ASCII whitespace anywhere
+                    // in an OSC 52 payload, so producers that wrap long
+                    // base64 must still get through this gate. The server
+                    // side decoder applies the same tolerance.
                     (true, data)
-                        if data.iter().all(|c| BASE64.contains(c)) =>
+                        if data.iter().all(|c| {
+                            BASE64.contains(c) || c.is_ascii_whitespace()
+                        }) =>
                     {
                         // Stage the payload on Screen so the psmux server
                         // can drain it and forward an OSC 52 to the host

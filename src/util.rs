@@ -20,6 +20,321 @@ pub(crate) fn lock_test_env() -> std::sync::MutexGuard<'static, ()> {
     TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// The pty a pane fixture needs when no process is ever going to use it.
+///
+/// A fixture that only has to hand `Pane` a master, a writer and a child used
+/// to open a real pseudo console and spawn `cmd /c exit` into it. Measured over
+/// one full run of the suite, that is 464 pseudo consoles and 464 processes,
+/// plus the console host Windows starts behind each one, for tests whose
+/// subject is a struct field. Every one of them is also a chance to hit the
+/// spawn-then-close race #695 reports.
+///
+/// `resize` answers Ok because the warm pool probes a spare's liveness with it
+/// (`pane.rs`), reads yield nothing, and writes are discarded: no test in the
+/// suite reads back what was written to a pane's master.
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct StubMasterPty {
+    size: std::sync::Mutex<portable_pty::PtySize>,
+}
+
+#[cfg(test)]
+impl portable_pty::MasterPty for StubMasterPty {
+    fn resize(&self, size: portable_pty::PtySize) -> Result<(), anyhow::Error> {
+        *self.size.lock().unwrap_or_else(|e| e.into_inner()) = size;
+        Ok(())
+    }
+    fn get_size(&self) -> Result<portable_pty::PtySize, anyhow::Error> {
+        Ok(*self.size.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+    fn try_clone_reader(&self) -> Result<Box<dyn io::Read + Send>, anyhow::Error> {
+        Ok(Box::new(io::empty()))
+    }
+    fn take_writer(&self) -> Result<Box<dyn io::Write + Send>, anyhow::Error> {
+        Ok(Box::new(io::sink()))
+    }
+}
+
+/// The master and the writer for a pane fixture, without a pseudo console.
+#[cfg(test)]
+pub(crate) fn stub_pane_pty(
+    size: portable_pty::PtySize,
+) -> (Box<dyn portable_pty::MasterPty>, Box<dyn io::Write + Send>) {
+    (Box::new(StubMasterPty { size: std::sync::Mutex::new(size) }), Box::new(io::sink()))
+}
+
+/// The child a pane fixture names when no process is ever going to run.
+///
+/// `exited` is what `cmd /c exit` had already become by the time the test body
+/// ran, and `running` is what `cmd /c pause` was: the pools reap a spare whose
+/// child has exited (#450), so a fixture holding a spare has to say running.
+/// There is no pid to report, which is the state those fixtures already
+/// documented as "no live child, so every process probe fails"; the difference
+/// is that it is now true every time rather than most of the time.
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct StubChild {
+    running: bool,
+}
+
+#[cfg(test)]
+impl StubChild {
+    pub(crate) fn exited() -> Box<dyn portable_pty::Child + Send + Sync> {
+        Box::new(Self { running: false })
+    }
+
+    pub(crate) fn running() -> Box<dyn portable_pty::Child + Send + Sync> {
+        Box::new(Self { running: true })
+    }
+}
+
+#[cfg(test)]
+impl portable_pty::ChildKiller for StubChild {
+    fn kill(&mut self) -> io::Result<()> {
+        self.running = false;
+        Ok(())
+    }
+    fn clone_killer(&self) -> Box<dyn portable_pty::ChildKiller + Send + Sync> {
+        Box::new(Self { running: self.running })
+    }
+}
+
+#[cfg(test)]
+impl portable_pty::Child for StubChild {
+    fn try_wait(&mut self) -> io::Result<Option<portable_pty::ExitStatus>> {
+        if self.running {
+            Ok(None)
+        } else {
+            Ok(Some(portable_pty::ExitStatus::with_exit_code(0)))
+        }
+    }
+    fn wait(&mut self) -> io::Result<portable_pty::ExitStatus> {
+        self.running = false;
+        Ok(portable_pty::ExitStatus::with_exit_code(0))
+    }
+    fn process_id(&self) -> Option<u32> {
+        None
+    }
+    fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle> {
+        None
+    }
+}
+
+/// How long a test pty child is given to get out of its own loader.
+///
+/// Measured on Windows 11 with pwsh behind a ConPTY: a child whose pty is
+/// closed 0ms or 1ms after the spawn dies as 0xC0000142 (STATUS_DLL_INIT_FAILED)
+/// every time, one closed at 3ms survives, and from 8ms on it dies as
+/// 0xC000013A (STATUS_CONTROL_C_EXIT) like any console process whose console
+/// went away. The window is a couple of milliseconds wide; this budget is two
+/// orders above it so a loaded machine still clears it.
+#[cfg(test)]
+const PTY_CHILD_LOADER_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Spawn the child that holds a test pty open, and do not hand it back until it
+/// is past the point where closing that pty would kill it in the loader.
+///
+/// A test helper used to spawn and walk away:
+///
+/// ```ignore
+/// let child = pair.slave.spawn_command(cmd).expect("spawn dummy");
+/// ```
+///
+/// `CreateProcessW` has returned success by then, so the spawn looks fine, but
+/// the child is still loading its DLLs. A short test can finish and drop the
+/// pty inside that window, and the child dies as 0xC0000142. Nothing observed
+/// it: the exit code was never read, so the suite stayed green while Windows
+/// put an error dialog on the screen for a failure no test could attribute.
+///
+/// This waits for one of two proofs that the loader is done. A child that exits
+/// on its own, which is what `cmd /c exit` does, has plainly finished, and its
+/// code is checked. A child meant to stay up, which is what `cmd /c pause`
+/// does, proves it by still being alive after the grace period.
+/// It returns a `Result` because several helpers spawn inside a retry loop and
+/// treat a refusal as a reason to try again rather than to fail; an early bad
+/// exit is reported the same way so those loops keep their shape.
+#[cfg(test)]
+pub(crate) fn spawn_pty_child(
+    slave: &dyn portable_pty::SlavePty,
+    cmd: portable_pty::CommandBuilder,
+) -> io::Result<Box<dyn portable_pty::Child + Send + Sync>> {
+    let mut child = slave
+        .spawn_command(cmd)
+        .map_err(|e| io::Error::other(format!("spawn: {e:?}")))?;
+    let deadline = std::time::Instant::now() + PTY_CHILD_LOADER_GRACE;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let code = status.exit_code();
+                if code != 0 {
+                    return Err(io::Error::other(format!(
+                        "the child exited 0x{code:08X} before the test could use it; \
+                         0xC0000142 means its pty was closed while it was still loading"
+                    )));
+                }
+                return Ok(child);
+            }
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    return Ok(child);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            Err(e) => return Err(io::Error::other(format!("try_wait: {e:?}"))),
+        }
+    }
+}
+
+/// End every real shell an `AppState` is holding, before the state drops.
+///
+/// Only two test modules reach the production spawn, and both of them do it
+/// with a real shell rather than the dummy the other helpers use. Dropping the
+/// state closes those ptys, and a shell young enough is still in its loader
+/// when that happens, so the test has to end them itself and wait.
+///
+/// Both stores are drained: the windows, whose panes hold a transplanted or
+/// cold spawned shell, and the pool, whose spares were never claimed.
+#[cfg(test)]
+pub(crate) fn kill_app_shells(app: &mut AppState) {
+    fn walk(node: &mut Node) {
+        match node {
+            Node::Leaf(p) => kill_pty_child(&mut *p.child),
+            Node::Split { children, .. } => {
+                for c in children {
+                    walk(c);
+                }
+            }
+        }
+    }
+    for win in &mut app.windows {
+        walk(&mut win.root);
+        for f in &mut win.floating {
+            kill_pty_child(&mut *f.pane.child);
+        }
+    }
+    while let Some(mut spare) = app.warm_pane.take() {
+        kill_pty_child(&mut *spare.child);
+    }
+}
+
+/// End a test pty child and wait for it, so the pty outlives the process using
+/// it.
+///
+/// Killing without waiting is the same race from the other side: `kill` only
+/// asks, and a pty dropped before the ask lands leaves the child to die in its
+/// loader instead.
+///
+/// Takes the child by reference rather than by box so that both shapes in
+/// the suite fit: a pane's child carries `Send + Sync`, a warm pane's does
+/// not.
+#[cfg(test)]
+pub(crate) fn kill_pty_child(child: &mut dyn portable_pty::Child) {
+    // Look before ending it. A child that is already gone died on its own, and
+    // the code says how: 0xC0000142 means its pty was closed while it was
+    // still loading, which is the failure the suite used to swallow whole.
+    if let Ok(Some(status)) = child.try_wait() {
+        let code = status.exit_code();
+        assert!(
+            code != 0xC000_0142,
+            "a test shell died as 0xC0000142 before its test could end it,              which means its pty was closed while it was still loading"
+        );
+        return;
+    }
+    let _ = child.kill();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if !matches!(child.try_wait(), Ok(None)) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    panic!("a test pty child did not report exit within 5s of kill()");
+}
+
+/// Resolve a `-c` start-dir to one a freshly spawned pane shell can actually
+/// enter, falling back to the user's home directory when it cannot.
+///
+/// `portable_pty`'s `cwd()` maps to the child's initial working directory, and
+/// on Windows a directory the child cannot enter makes the spawn itself fail —
+/// before the shell runs, so no amount of profile-level healing helps. The pane
+/// dies on creation and psmux tears it straight back down. That is the
+/// "prefix + | splits, opens, then immediately aborts" report.
+///
+/// Two cases produce an unusable start-dir in practice:
+///   - the directory no longer exists (it was deleted, or renamed, since the
+///     pane that is being split last `cd`'d into it), and
+///   - a UNC path. `\\wsl.localhost\...` after a `cd` into WSL is the common
+///     one. These are rejected even when currently reachable: whether they work
+///     depends on the WSL VM being up and the share being mounted, so a split
+///     that succeeds now and dies in ten minutes is worse than one that
+///     predictably lands in the home directory.
+///
+/// Returning `None` means "do not set a cwd at all" and lets the child inherit
+/// the server's — the last resort for the case where even home is unusable.
+pub fn usable_start_dir(dir: &str) -> Option<std::path::PathBuf> {
+    // UNC rejection is a Windows concept (the `\\wsl.localhost\...` case). On
+    // Unix a leading `//` is a legitimate absolute path, so treating it as UNC
+    // would wrongly send existing directories to the home fallback.
+    #[cfg(windows)]
+    fn is_unc(p: &str) -> bool {
+        p.starts_with("\\\\") || p.starts_with("//")
+    }
+    #[cfg(not(windows))]
+    fn is_unc(_p: &str) -> bool {
+        false
+    }
+
+    if !dir.is_empty() && !is_unc(dir) && std::path::Path::new(dir).is_dir() {
+        return Some(std::path::PathBuf::from(dir));
+    }
+
+    let home = crate::paths::home_dir();
+    if !home.is_empty() && std::path::Path::new(&home).is_dir() {
+        return Some(std::path::PathBuf::from(home));
+    }
+
+    None
+}
+
+/// Render a directory the way `#{pane_current_path}` renders one read out of a
+/// live process, so a directory psmux was HANDED (`split-window -c <dir>`) and
+/// one psmux READ back out of the pane's process compare and print alike.
+///
+/// Windows accepts `/` and `\` interchangeably and tolerates a trailing
+/// separator; the PEB reading never has one except on a drive root (`C:\`),
+/// which must keep it or the value stops being a usable path. Case is left
+/// exactly as given: `C:\Users` is what the user typed and what the reading
+/// comes back as, and lowercasing it to compare would mean printing something
+/// nobody asked for.
+pub fn normalize_dir_for_display(dir: &str) -> String {
+    let mut s = if cfg!(windows) { dir.replace('/', "\\") } else { dir.to_string() };
+    if cfg!(windows) {
+        // `C:\` (and `\\server\share\`) keep their trailing separator; anything
+        // else loses it.  A bare `\` or `/` is a path in its own right.
+        while s.len() > 1 && s.ends_with('\\') && !s.ends_with(":\\") {
+            s.pop();
+        }
+    } else {
+        while s.len() > 1 && s.ends_with('/') {
+            s.pop();
+        }
+    }
+    s
+}
+
+/// True when two directory strings name the same directory as far as this
+/// platform is concerned: separator- and trailing-separator-insensitive
+/// everywhere, and case-insensitive on Windows, where `C:\USERS` and
+/// `C:\Users` are one directory.
+pub fn same_dir(a: &str, b: &str) -> bool {
+    let (a, b) = (normalize_dir_for_display(a), normalize_dir_for_display(b));
+    if cfg!(windows) {
+        a.eq_ignore_ascii_case(&b)
+    } else {
+        a == b
+    }
+}
+
 /// Expand `~` to the user's home directory in a shell command string,
 /// then rewrite `~/.psmux/plugins/` to `~/.config/psmux/plugins/` when
 /// the classic path does not exist but the XDG path does (issue psmux-plugins#2).
@@ -100,7 +415,28 @@ pub fn infer_title_from_prompt(screen: &vt100::Screen, rows: u16, cols: u16) -> 
 // resolve_last_session_name and resolve_default_session_name are in session.rs
 
 #[derive(Serialize, Deserialize)]
-pub struct WinInfo { pub id: usize, pub name: String, pub active: bool, #[serde(default)] pub activity: bool, #[serde(default)] pub bell: bool, #[serde(default)] pub last: bool, #[serde(default)] pub tab_text: String, #[serde(default)] pub idx: usize }
+pub struct WinInfo {
+    pub id: usize,
+    pub name: String,
+    pub active: bool,
+    #[serde(default)] pub activity: bool,
+    #[serde(default)] pub bell: bool,
+    #[serde(default)] pub last: bool,
+    #[serde(default)] pub tab_text: String,
+    #[serde(default)] pub idx: usize,
+    /// This window's OWN `window-status-*-style`, when it set one (#648).
+    ///
+    /// The five window status styles used to travel once per frame as server
+    /// wide strings, so a per window override had nowhere to live. They travel
+    /// per window now, and ONLY when the window overrode them: a default
+    /// configuration still adds nothing to the frame, and the client keeps
+    /// patching the server wide style when a field is absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub ws_style: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub wsc_style: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub wsa_style: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub wsb_style: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub wsl_style: Option<String>,
+}
 
 #[derive(Serialize, Deserialize)]
 pub struct PaneInfo { pub id: usize, pub title: String }
@@ -123,7 +459,7 @@ pub enum LayoutSimple {
 
 pub fn list_windows_json(app: &AppState) -> io::Result<String> {
     let mut v: Vec<WinInfo> = Vec::new();
-    for (i, w) in app.windows.iter().enumerate() { v.push(WinInfo { id: w.id, name: w.name.clone(), active: i == app.active_idx, activity: w.activity_flag, bell: w.bell_flag, last: i == app.last_window_idx, tab_text: String::new(), idx: app.win_display_index(i) }); }
+    for (i, w) in app.windows.iter().enumerate() { v.push(WinInfo { id: w.id, name: w.name.clone(), active: i == app.active_idx, activity: w.activity_flag, bell: w.bell_flag, last: i == app.last_window_idx, tab_text: String::new(), idx: app.win_display_index(i), ws_style: None, wsc_style: None, wsa_style: None, wsb_style: None, wsl_style: None }); }
     let s = serde_json::to_string(&v).map_err(|e| io::Error::new(io::ErrorKind::Other, format!("json error: {e}")))?;
     Ok(s)
 }
@@ -230,7 +566,13 @@ pub fn base64_encode(data: &str) -> String {
 
 pub fn base64_decode(encoded: &str) -> Option<String> {
     let mut result = Vec::new();
-    let chars: Vec<u8> = encoded.bytes().filter(|&b| b != b'=').collect();
+    // tmux parity: b64_pton (compat/base64.c) skips ASCII whitespace anywhere
+    // in the payload, so OSC 52 producers that wrap long base64 still decode.
+    // Any other non-alphabet byte still rejects the whole payload below.
+    let chars: Vec<u8> = encoded
+        .bytes()
+        .filter(|&b| b != b'=' && !b.is_ascii_whitespace())
+        .collect();
     for chunk in chars.chunks(4) {
         if chunk.len() < 2 { break; }
         let b0 = BASE64_CHARS.iter().position(|&c| c == chunk[0])? as u8;
@@ -251,10 +593,238 @@ pub fn base64_decode(encoded: &str) -> Option<String> {
 /// Return color name as a string. Uses static strings for Default and
 /// the 256 indexed colors to avoid heap allocations on every cell.
 /// Quote and escape an argument for safe transmission over the control protocol.
-/// Wraps the value in double quotes and escapes any embedded double quotes or backslashes.
+/// Wraps the value in double quotes and escapes any embedded double quotes or
+/// backslashes. Also escapes the two line-terminator bytes (0x0A/0x0D): the wire
+/// protocol is line-oriented and the server reads one command per `read_line`, so
+/// a raw newline inside an argument would cut the line and the tail would be
+/// executed as a separate command against the caller's session (issue #560, a
+/// send-keys injection). Escaping them to `\n`/`\r` keeps the whole argument on a
+/// single wire line. Backslash is escaped first so the escape bytes introduced
+/// here are not doubled.
 pub fn quote_arg(s: &str) -> String {
-    let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
+    let escaped = s
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r");
     format!("\"{}\"", escaped)
+}
+
+/// Split `claim-session` arguments into its positionals and its `-p` priority.
+///
+/// Lives here rather than inline in the connection handler so the wire contract
+/// can be unit tested against the real parser instead of a copy that drifts
+/// (#608). Returns `(positionals, priority)`, where positionals keep their
+/// historical meaning: `[0]` session name, `[1]` optional client CWD.
+///
+/// Priority is a FLAG and not a third positional on purpose. The CWD is
+/// optional, so a bare third positional would slide into index 1 whenever the
+/// CWD was omitted and be silently mistaken for the directory. Consuming
+/// `-p <value>` as a pair leaves both existing positionals exactly where they
+/// were, and cannot collide with a real path, because the pre-existing filter
+/// this replaces already assumed no positional starts with a dash.
+pub fn parse_claim_args(args: &[&str]) -> (Vec<String>, Option<String>) {
+    let parsed = parse_claim_args_full(args);
+    (parsed.positionals, parsed.priority)
+}
+
+/// Everything a `claim-session` line carries.
+#[derive(Debug, Default, PartialEq)]
+pub struct ClaimArgs {
+    /// `[0]` session name, `[1]` optional client CWD.
+    pub positionals: Vec<String>,
+    /// `-p`: the scheduling class the claiming client resolved (#608).
+    pub priority: Option<String>,
+    /// `-e`: file holding the claiming client's environment block (#659).
+    pub env_file: Option<String>,
+    /// `-n`: the `new-session -n NAME` window name (#674).
+    ///
+    /// The name belongs to the claim itself, not to a follow up request.
+    /// tmux names the initial window and turns `automatic-rename` off for it
+    /// before the session is ever visible (cmd-new-session.c), and psmux's
+    /// cold spawn path does the same. Carrying it here is what makes the warm
+    /// path match: a claim that answers OK has already applied the name, so
+    /// nothing can be observed under the standby's pool name and no second
+    /// request can fail and leave the name lost.
+    pub window_name: Option<String>,
+}
+
+/// Split a `claim-session` line into its positionals and its flags.
+///
+/// Every flag takes a value, and the value of a flag is NEVER a positional:
+/// the CWD is optional, so a stray value sliding into index 1 would be
+/// silently mistaken for the working directory. [`parse_claim_args`] is the
+/// two-field view of this, kept so the #608 wire tests read the same parser
+/// rather than a copy that can drift.
+pub fn parse_claim_args_full(args: &[&str]) -> ClaimArgs {
+    let mut parsed = ClaimArgs::default();
+    let mut i = 0usize;
+    while i < args.len() {
+        let a = args[i];
+        if a == "-p" {
+            parsed.priority = args.get(i + 1).map(|s| (*s).to_string());
+            i += 2;
+            continue;
+        }
+        if a == "-e" {
+            parsed.env_file = args.get(i + 1).map(|s| (*s).to_string());
+            i += 2;
+            continue;
+        }
+        if a == "-n" {
+            parsed.window_name = args.get(i + 1).map(|s| (*s).to_string());
+            i += 2;
+            continue;
+        }
+        if !a.starts_with('-') {
+            parsed.positionals.push(a.to_string());
+        }
+        i += 1;
+    }
+    parsed
+}
+
+/// Quote an argument for the wire only when the server's quote-aware
+/// re-tokenizer would otherwise corrupt it: empty (collapses into joining
+/// whitespace), whitespace (re-split), or quote characters (stripped as
+/// quoting syntax). Quoting always goes through `quote_arg` so backslashes
+/// are escaped to match what `parse_command_line` decodes inside double
+/// quotes — the old encoders escaped only `"`, so every `\\` collapsed to
+/// `\` and a trailing `\` consumed the closing quote and swallowed the
+/// following flags (issue #547). Values needing no quoting are passed
+/// through untouched on purpose: outside quotes the parser treats
+/// backslashes as literal, so an unquoted value is byte-exact.
+pub fn quote_arg_if_needed(s: &str) -> String {
+    if s.is_empty()
+        || s.chars().any(char::is_whitespace)
+        || s.contains('"')
+        || s.contains('\'')
+    {
+        quote_arg(s)
+    } else {
+        s.to_string()
+    }
+}
+
+/// Parse the canonical tmux logging idiom `cat > <path>` / `cat >> <path>`
+/// so `pipe-pane` can service it in-process as a direct file sink.
+///
+/// On Windows the piped command runs under PowerShell (`resolve_run_shell`),
+/// where `cat` is the `Get-Content` alias: it never reads stdin, exits at
+/// once, and the redirection leaves a 0-byte file — so the single most
+/// common tmux sink, and the one this repo's own docs show, could not work
+/// through the shell at all. Recognizing the idiom here lets the server
+/// write the pane's raw ConPTY bytes to the file itself: byte-faithful (no
+/// PowerShell line decoding/re-encoding) and with no child process to fail
+/// silently.
+///
+/// Returns `(path, append)` — `append` is true for `>>`. The path may be
+/// single- or double-quoted (one level stripped; inner quote characters
+/// arrive intact through the #547/#563 wire round-trip). Anything that is
+/// not exactly this shape — options on `cat`, an unquoted path containing
+/// whitespace, trailing tokens after a quoted path, shell metacharacters,
+/// anything a shell would expand (`$var`, backticks, `%var%`, leading `~`)
+/// — returns `None` and falls through to the shell sink unchanged: the
+/// file sink must only ever intercept a path the user meant literally.
+pub fn parse_cat_file_sink(cmd: &str) -> Option<(String, bool)> {
+    let trimmed = cmd.trim();
+    // PowerShell aliases are case-insensitive, so `CAT`/`Cat` hit the same
+    // Get-Content trap as `cat` — match the word the same way.
+    if trimmed.len() < 3 || !trimmed[..3].eq_ignore_ascii_case("cat") {
+        return None;
+    }
+    let rest = &trimmed[3..];
+    // `cat` must end at a word boundary: whitespace or the redirection itself.
+    if !rest.is_empty() && !rest.starts_with('>') && !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let rest = rest.trim_start();
+    let (append, rest) = if let Some(r) = rest.strip_prefix(">>") {
+        (true, r)
+    } else if let Some(r) = rest.strip_prefix('>') {
+        (false, r)
+    } else {
+        return None;
+    };
+    let path_part = rest.trim();
+    if path_part.is_empty() {
+        return None;
+    }
+    let quoted = |q: char| {
+        path_part.len() >= 2 && path_part.starts_with(q) && path_part.ends_with(q)
+    };
+    let path = if quoted('"') || quoted('\'') {
+        let inner = &path_part[1..path_part.len() - 1];
+        // A quote character inside means this was not one plainly quoted
+        // path (e.g. `"a" "b"`, or nested quoting) — shell territory. `$`
+        // and backticks are what PowerShell would expand inside double
+        // quotes; `#` is what tmux would expand as a format (`#I`, `#{...}`).
+        // Intercepting any of them would silently take the LITERAL text as
+        // a filename, so they go to the shell too.
+        if inner.is_empty() || inner.contains(['"', '\'', '$', '`', '#']) {
+            return None;
+        }
+        inner.to_string()
+    } else {
+        // Unquoted: whitespace, further shell syntax, or anything a shell
+        // would expand means the command is more than a plain literal file
+        // redirect — leave it to the shell.
+        if path_part.chars().any(char::is_whitespace)
+            || path_part.contains(['>', '<', '|', '&', '"', '\'', ';', '$', '`', '%', '(', ')', '^', '#'])
+            || path_part.starts_with('~')
+        {
+            return None;
+        }
+        path_part.to_string()
+    };
+    Some((path, append))
+}
+
+/// Path-shape gate for the direct file sink. The open runs on the server's
+/// single event loop, so every path class whose CreateFile can stall or hit
+/// a device instead of a file must be refused BEFORE opening:
+///
+/// - UNC (`\\server\share`, `//server/share`, `\\?\UNC\...`): CreateFile
+///   against an unreachable host blocks for tens of seconds and would
+///   freeze every pane. `\\?\C:\...` (extended-length local) is allowed.
+/// - DOS reserved device names (`CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`,
+///   `LPT1`-`LPT9`, with or without an extension, in any directory):
+///   CreateFile opens the DEVICE — `cat > CON` would tee raw VT bytes into
+///   the server's own console while looking like a successful log.
+///
+/// Returns `Some(reason)` when the path must be refused. Remote-drive
+/// detection needs a live Win32 call and lives with the caller.
+pub fn refuse_file_sink_path(path: &str) -> Option<String> {
+    if path.starts_with("\\\\.\\") {
+        return Some("device namespace not supported for the direct file sink".to_string());
+    }
+    let is_unc_verbatim = path.to_ascii_lowercase().starts_with("\\\\?\\unc\\");
+    let is_verbatim_local = path.starts_with("\\\\?\\") && !is_unc_verbatim;
+    if !is_verbatim_local
+        && (path.starts_with("\\\\") || path.starts_with("//"))
+    {
+        return Some("UNC path not supported for the direct file sink".to_string());
+    }
+    let basename = path
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(path);
+    let stem = basename.split('.').next().unwrap_or(basename);
+    // `NUL:` / `COM1:` etc. are still the device — strip the DOS-style
+    // trailing colon before matching.
+    let stem_upper = stem.trim().trim_end_matches(':').to_ascii_uppercase();
+    let reserved = matches!(stem_upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (stem_upper.len() == 4
+            && (stem_upper.starts_with("COM") || stem_upper.starts_with("LPT"))
+            && stem_upper.as_bytes()[3].is_ascii_digit()
+            && stem_upper.as_bytes()[3] != b'0');
+    if reserved {
+        return Some(format!(
+            "reserved device name '{}' not supported for the direct file sink",
+            stem_upper
+        ));
+    }
+    None
 }
 
 /// Parse `VARIABLE=value` for tmux `new-session -e` / internal `server -e`
@@ -322,10 +892,70 @@ pub fn collect_server_session_env_args(args: &[String]) -> Result<Vec<(String, S
     Ok(out)
 }
 
+/// Encode bytes as lowercase hex with no separators.
+///
+/// Used to carry a payload that must survive the control wire BYTE-EXACT.
+/// Every command line the server receives is tokenized before a handler sees
+/// it (`;` splits it into sub-commands, quote grouping is stripped, runs of
+/// whitespace collapse), so any operand that is data rather than a word has to
+/// be reduced to `[0-9a-f]` first.  `send -H` already does this for keystrokes;
+/// buffer contents use the same shape.
+pub fn hex_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        out.push_str(&format!("{:02x}", b));
+    }
+    out
+}
+
+/// Decode the output of [`hex_encode`].  `None` for an odd length or any
+/// non-hex character — a malformed payload is reported to the sender, never
+/// silently turned into partial data.
+pub fn hex_decode(s: &str) -> Option<Vec<u8>> {
+    if s.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(s.len() / 2);
+    let mut i = 0;
+    while i < bytes.len() {
+        let hi = (bytes[i] as char).to_digit(16)?;
+        let lo = (bytes[i + 1] as char).to_digit(16)?;
+        out.push(((hi << 4) | lo) as u8);
+        i += 2;
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::commands::parse_command_line;
+
+    /// The whole point of the hex wire: a buffer that the tokenizer would
+    /// otherwise destroy survives encode → tokenize → decode byte for byte.
+    #[test]
+    fn test_hex_buffer_wire_survives_tokenizer() {
+        let content = "printf '%s' 'QUOTED ARG'\tTAB\nline \"two\"; not-a-command\n\x1b[0m";
+        let line = format!("set-buffer -b pb -H {}", hex_encode(content.as_bytes()));
+        // What the server actually receives: the tokenized command line.
+        let toks = parse_command_line(&line);
+        assert_eq!(toks.len(), 5, "hex payload must stay a single token");
+        let decoded = hex_decode(&toks[4]).expect("valid hex");
+        assert_eq!(String::from_utf8(decoded).unwrap(), content);
+    }
+
+    #[test]
+    fn test_hex_encode_is_lowercase_pairs() {
+        assert_eq!(hex_encode(b"\x00\x0f\xff A"), "000fff2041");
+    }
+
+    #[test]
+    fn test_hex_decode_rejects_malformed() {
+        assert_eq!(hex_decode("abc"), None, "odd length");
+        assert_eq!(hex_decode("zz"), None, "non-hex digit");
+        assert_eq!(hex_decode(""), Some(Vec::new()));
+    }
 
     #[test]
     fn test_quote_arg_simple() {
@@ -582,3 +1212,184 @@ pub fn color_to_name(c: vt100::Color) -> std::borrow::Cow<'static, str> {
         vt100::Color::Rgb(r,g,b) => Cow::Owned(format!("rgb:{},{},{}", r,g,b)),
     }
 }
+
+/// Environment marker put on a popup/float child so it is not mistaken for a
+/// pane child by the nested-session guard.  See [`inside_psmux_pane`].
+pub const POPUP_CHILD_ENV: &str = "PSMUX_POPUP";
+
+/// True when this process runs inside a psmux **pane**, i.e. when a client that
+/// grabs this terminal would genuinely nest a session inside another one.
+///
+/// tmux's `server_client_check_nested()` needs BOTH conditions to hold: `$TMUX`
+/// is set AND the client's tty is the tty of one of the server's window panes.
+/// A `display-popup` runs on a pty created by `job_run()`, which is never
+/// registered in `all_window_panes`, so the tty half of the test fails and tmux
+/// lets `tmux attach -t other` through inside a popup.  That is precisely what
+/// makes the popup scratch-session idiom work upstream.
+///
+/// psmux has no ttys to compare, so the popup child carries
+/// [`POPUP_CHILD_ENV`] instead (set in `popup::create_popup_pane`, cleared for
+/// every real pane child in `pane::set_tmux_env`), and a popup child is treated
+/// as not-in-a-pane exactly like tmux treats it (#537).
+pub fn inside_psmux_pane() -> bool {
+    if in_popup_child() {
+        return false;
+    }
+    std::env::var("PSMUX_ACTIVE").ok().as_deref() == Some("1")
+        || std::env::var("PSMUX_SESSION")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .is_some()
+}
+
+/// True when this process was spawned as a popup/float child.
+pub fn in_popup_child() -> bool {
+    std::env::var(POPUP_CHILD_ENV).ok().as_deref() == Some("1")
+}
+
+/// True when the terminal this process talks to is drawn by psmux itself: a
+/// pane child or a popup/float child.
+///
+/// Use this, not [`inside_psmux_pane`], for anything that treats the terminal
+/// as a terminal (querying it and waiting for a reply). The two differ on
+/// purpose in both directions:
+///
+///   * a popup counts here but not there, because a popup is not a nested
+///     session yet its terminal is still psmux (#537), and
+///   * `PSMUX_ACTIVE` counts there but NOT here. That variable only says "this
+///     process is a psmux client", which every top-level client sets on itself
+///     before it queries its real terminal. Treating it as evidence that psmux
+///     draws the terminal would suppress the host-color query for EVERY client
+///     and quietly undo #473. Only what the server plants on the children it
+///     spawns is evidence about who draws the terminal.
+pub fn psmux_drawn_terminal() -> bool {
+    in_popup_child()
+        || std::env::var("PSMUX_SESSION")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .is_some()
+}
+
+/// tmux's `vis(3)` encoder, the `VIS_OCTAL|VIS_CSTYLE` subset tmux actually
+/// uses (compat/vis.c:57-120, driven from utf8.c utf8_strvis).
+///
+/// Valid UTF-8 passes through untouched, printable ASCII passes through, and
+/// anything else becomes a C escape (`\r`, `\a`, `\b`, `\f`, `\v`, `\0`, plus
+/// `\t` and `\n` when those are being escaped) or a three digit octal escape
+/// (`\033` for ESC, `\177` for DEL).
+///
+/// `escape_tab` / `escape_nl` are tmux's `VIS_TAB` / `VIS_NL`: unset, a tab or
+/// newline counts as visible and is copied through.
+///
+/// One deliberate deviation from tmux: a backslash is never doubled. tmux
+/// doubles it unless `VIS_NOSLASH` is set, which on Windows would rewrite
+/// every path shaped window name (`C:\src` becomes `C:\\src`, measured against
+/// tmux 3.4). Control characters, which is what #647 is about, are encoded
+/// identically.
+fn vis_encode(src: &str, escape_tab: bool, escape_nl: bool) -> String {
+    let mut out = String::with_capacity(src.len());
+    let mut chars = src.chars().peekable();
+    while let Some(c) = chars.next() {
+        if !c.is_ascii() {
+            // utf8.c:690-709: a complete, valid UTF-8 character is copied
+            // verbatim and never visually encoded. A Rust `&str` is UTF-8 by
+            // construction, so every non-ASCII char takes this branch.
+            out.push(c);
+            continue;
+        }
+        let b = c as u8;
+        let visible = b.is_ascii_graphic()
+            || b == b' '
+            || (b == b'\t' && !escape_tab)
+            || (b == b'\n' && !escape_nl);
+        if visible {
+            out.push(c);
+            continue;
+        }
+        match b {
+            b'\n' => out.push_str("\\n"),
+            b'\r' => out.push_str("\\r"),
+            0x08 => out.push_str("\\b"),
+            0x07 => out.push_str("\\a"),
+            0x0b => out.push_str("\\v"),
+            b'\t' => out.push_str("\\t"),
+            0x0c => out.push_str("\\f"),
+            0x00 => {
+                out.push_str("\\0");
+                // compat/vis.c:104-107: a following octal digit would be read
+                // as part of the escape, so pad it out to three digits.
+                if matches!(chars.peek(), Some(n) if ('0'..='7').contains(n)) {
+                    out.push_str("00");
+                }
+            }
+            _ => out.push_str(&format!("\\{b:03o}")),
+        }
+    }
+    out
+}
+
+/// Encode a string the way tmux encodes the stdout of `display-message -p`.
+///
+/// `display-message` prints through `server_client_print(tc, 0, evb)`
+/// (cmd-display-message.c:152), and the `parse == 0` arm always runs
+/// `utf8_stravisx(&msg, data, size, VIS_OCTAL|VIS_CSTYLE|VIS_NOSLASH)`
+/// (server-client.c:3089-3091). `VIS_TAB` and `VIS_NL` are absent, so a tab or
+/// a newline in a format result still reaches stdout literally and a multi
+/// line `#{...}` value still prints as multiple lines; ESC, CR, BEL and every
+/// other control byte become printable escapes. Measured against tmux 3.4:
+///
+///   display-message -p "A<TAB>B"  => 41 09 42     (tab kept)
+///   display-message -p "A<CR>B"   => 41 5C 72 42  (`A\rB`)
+///   display-message -p "A<ESC>B"  => 41 5C 30 33 33 42  (`A\033B`)
+///   display-message -p "A<DEL>B"  => `A\177B`
+///   display-message -p "A<U+2713>B" => 41 E2 9C 93 42  (UTF-8 kept)
+pub fn visual_escape_message(src: &str) -> String {
+    vis_encode(src, false, false)
+}
+
+/// Sanitize a name the way tmux sanitizes window, session and buffer names.
+///
+/// tmux runs every externally supplied name through `clean_name`
+/// (tmux.c:303-317), which visually encodes it with
+/// `VIS_OCTAL|VIS_CSTYLE|VIS_TAB|VIS_NL`. A name therefore can never contain a
+/// raw control byte, so `#{window_name}` is always safe to drop into a tab or
+/// newline separated record, which is what #647 (WIN-03) asks for. Measured
+/// against tmux 3.4:
+///
+///   rename-window "w<TAB>x"  then #{window_name} => `w\tx`
+///   rename-window "w<ESC>y"  then #{window_name} => `w\033y`
+pub fn clean_name(src: &str) -> String {
+    vis_encode(src, true, true)
+}
+
+#[cfg(test)]
+#[path = "../tests-rs/test_issue647_format_sanitize.rs"]
+mod tests_issue647_format_sanitize;
+
+#[cfg(test)]
+#[path = "../tests-rs/test_run_shell_format_and_start_dir.rs"]
+mod tests_run_shell_format_and_start_dir;
+
+#[cfg(test)]
+#[path = "../tests-rs/test_issue537_popup_attach.rs"]
+mod tests_issue537_popup_attach;
+
+#[cfg(test)]
+#[path = "../tests-rs/test_nested_client_color_query.rs"]
+mod tests_nested_client_color_query;
+
+#[cfg(test)]
+#[path = "../tests-rs/test_issue597_reply_fallback.rs"]
+mod tests_issue597_reply_fallback;
+
+#[cfg(test)]
+#[path = "../tests-rs/test_deps_base64_parity.rs"]
+mod tests_deps_base64_parity;
+
+#[cfg(test)]
+#[path = "../tests-rs/test_issue560_quote_arg_control_bytes.rs"]
+mod tests_issue560_quote_arg_control_bytes;
+
+#[cfg(test)]
+#[path = "../tests-rs/test_pipe_pane_cat_file_sink.rs"]
+mod tests_pipe_pane_cat_file_sink;

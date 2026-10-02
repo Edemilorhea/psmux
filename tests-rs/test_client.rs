@@ -92,7 +92,8 @@ fn flush_paste_pend_ascii_sends_as_paste() {
     let mut start: Option<std::time::Instant> = Some(std::time::Instant::now());
     let mut stage2 = true;
     let mut cmds: Vec<String> = Vec::new();
-    flush_paste_pend_as_text(&mut buf, &mut start, &mut stage2, &mut cmds);
+    let mut gesture = PasteGesture::default();
+    flush_paste_pend_as_text(&mut buf, &mut start, &mut stage2, &mut cmds, &mut gesture);
     assert_eq!(cmds.len(), 1);
     assert!(cmds[0].starts_with("send-paste "));
 }
@@ -106,7 +107,8 @@ fn flush_paste_pend_cjk_sends_as_text() {
     let mut start: Option<std::time::Instant> = Some(std::time::Instant::now());
     let mut stage2 = false;
     let mut cmds: Vec<String> = Vec::new();
-    flush_paste_pend_as_text(&mut buf, &mut start, &mut stage2, &mut cmds);
+    let mut gesture = PasteGesture::default();
+    flush_paste_pend_as_text(&mut buf, &mut start, &mut stage2, &mut cmds, &mut gesture);
     // Each character should be sent as individual send-text
     assert!(cmds.len() > 1, "CJK should be sent as individual send-text commands");
     for cmd in &cmds {
@@ -122,7 +124,8 @@ fn flush_paste_pend_short_ascii_sends_as_text() {
     let mut start: Option<std::time::Instant> = Some(std::time::Instant::now());
     let mut stage2 = false;
     let mut cmds: Vec<String> = Vec::new();
-    flush_paste_pend_as_text(&mut buf, &mut start, &mut stage2, &mut cmds);
+    let mut gesture = PasteGesture::default();
+    flush_paste_pend_as_text(&mut buf, &mut start, &mut stage2, &mut cmds, &mut gesture);
     assert_eq!(cmds.len(), 2);
     assert!(cmds[0].starts_with("send-text "));
     assert!(cmds[1].starts_with("send-text "));
@@ -183,38 +186,177 @@ fn non_control_key_not_buffered_even_when_paste_pending() {
     ));
 }
 
+/// Nothing on the clipboard and no Ctrl+V in flight: what a keystroke looks
+/// like to the flush decision.
+#[cfg(windows)]
+fn typed() -> PasteHeadEvidence<'static> {
+    PasteHeadEvidence::default()
+}
+
 #[cfg(windows)]
 #[test]
 fn leading_enter_waits_past_zero_latency_flush_when_detection_on() {
-    assert!(!should_zero_latency_flush_paste_pend("\n", true, false, false));
+    assert!(!should_zero_latency_flush_paste_pend("\n", true, false, false, typed()));
 }
 
 #[cfg(windows)]
 #[test]
 fn leading_tab_waits_past_zero_latency_flush_when_detection_on() {
-    assert!(!should_zero_latency_flush_paste_pend("\t", true, false, false));
+    assert!(!should_zero_latency_flush_paste_pend("\t", true, false, false, typed()));
 }
 
 #[cfg(windows)]
 #[test]
 fn leading_control_flushes_immediately_when_detection_off() {
-    assert!(should_zero_latency_flush_paste_pend("\n", false, false, false));
-    assert!(should_zero_latency_flush_paste_pend("\t", false, false, false));
+    assert!(should_zero_latency_flush_paste_pend("\n", false, false, false, typed()));
+    assert!(should_zero_latency_flush_paste_pend("\t", false, false, false, typed()));
 }
 
 #[cfg(windows)]
 #[test]
 fn normal_short_typing_still_flushes_immediately() {
-    assert!(should_zero_latency_flush_paste_pend("a", true, false, false));
-    assert!(should_zero_latency_flush_paste_pend("ab", true, false, false));
+    assert!(should_zero_latency_flush_paste_pend("a", true, false, false, typed()));
+    assert!(should_zero_latency_flush_paste_pend("ab", true, false, false, typed()));
 }
 
 #[cfg(windows)]
 #[test]
 fn paste_states_do_not_zero_latency_flush() {
-    assert!(!should_zero_latency_flush_paste_pend("a", true, true, false));
-    assert!(!should_zero_latency_flush_paste_pend("a", true, false, true));
-    assert!(!should_zero_latency_flush_paste_pend("abc", true, false, false));
+    assert!(!should_zero_latency_flush_paste_pend("a", true, true, false, typed()));
+    assert!(!should_zero_latency_flush_paste_pend("a", true, false, true, typed()));
+    assert!(!should_zero_latency_flush_paste_pend("abc", true, false, false, typed()));
+}
+
+// ── Issue #684 follow up: the head of a paste must not go out as typing ──
+//
+// gabri-ns measured a console host that hands the input buffer one character
+// at a time, so the client's first drained batch held a single character and
+// the zero latency flush committed it as `send-text` before the burst was
+// recognised.  The child then saw `M` `ESC[200~` `icrosoft...`, with the first
+// character of the paste outside the brackets.
+
+#[cfg(windows)]
+#[test]
+fn the_first_character_of_a_clipboard_paste_is_held() {
+    let clip = "Microsoft Windows [Version 10.0.19045.7725]";
+    let ev = PasteHeadEvidence { gesture_open: false, clip_head: Some(clip), held_for: Duration::ZERO };
+    assert!(!should_zero_latency_flush_paste_pend("M", true, false, false, ev));
+}
+
+#[cfg(windows)]
+#[test]
+fn a_burst_under_an_open_ctrl_v_gesture_is_held_whatever_the_clipboard_says() {
+    // Hosts that forward the Ctrl+V press give the client the stronger
+    // signal; the clipboard may even be unreadable at that instant.
+    let ev = PasteHeadEvidence { gesture_open: true, clip_head: None, held_for: Duration::ZERO };
+    assert!(!should_zero_latency_flush_paste_pend("M", true, false, false, ev));
+}
+
+#[cfg(windows)]
+#[test]
+fn a_character_that_is_not_the_clipboard_head_still_flushes_immediately() {
+    let ev = PasteHeadEvidence { gesture_open: false, clip_head: Some("Microsoft"), held_for: Duration::ZERO };
+    assert!(should_zero_latency_flush_paste_pend("x", true, false, false, ev));
+    // The second character of a burst is judged on its own pending buffer,
+    // which is why typing after the held head is not delayed as well.
+    assert!(should_zero_latency_flush_paste_pend("i", true, false, false, ev));
+}
+
+#[cfg(windows)]
+#[test]
+fn a_clipboard_of_one_or_two_characters_never_holds() {
+    // At two characters or fewer both paths end in the same `send-text`, so
+    // holding would buy nothing and cost the 20 ms window.
+    for clip in ["a", "ab"] {
+        let ev = PasteHeadEvidence { gesture_open: false, clip_head: Some(clip), held_for: Duration::ZERO };
+        assert!(should_zero_latency_flush_paste_pend("a", true, false, false, ev));
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn a_lone_clipboard_head_is_released_as_typing_after_the_short_hold() {
+    // The prefix is evidence at the first character and needs only as long as
+    // a real paste's second character takes to arrive (under a millisecond on
+    // the dripping host). Past PASTE_HEAD_PREFIX_HOLD a single character is a
+    // keystroke that happens to match the clipboard, and it goes out as
+    // typing 3 ms late rather than 20 (keystroke gate p99 23 ms otherwise).
+    let clip = "Microsoft Windows [Version 10.0.19045.7725]";
+    let early = PasteHeadEvidence { gesture_open: false, clip_head: Some(clip), held_for: Duration::from_millis(2) };
+    assert!(!should_zero_latency_flush_paste_pend("M", true, false, false, early));
+    let late = PasteHeadEvidence { gesture_open: false, clip_head: Some(clip), held_for: PASTE_HEAD_PREFIX_HOLD };
+    assert!(should_zero_latency_flush_paste_pend("M", true, false, false, late));
+    let later = PasteHeadEvidence { gesture_open: false, clip_head: Some(clip), held_for: Duration::from_millis(19) };
+    assert!(should_zero_latency_flush_paste_pend("M", true, false, false, later));
+}
+
+#[cfg(windows)]
+#[test]
+fn two_prefix_characters_keep_the_full_window() {
+    // A second character inside the hold is the burst shape; the ordinary
+    // 20 ms window then decides, however long the first has been held.
+    let clip = "Microsoft Windows [Version 10.0.19045.7725]";
+    let ev = PasteHeadEvidence { gesture_open: false, clip_head: Some(clip), held_for: Duration::from_millis(19) };
+    assert!(!should_zero_latency_flush_paste_pend("Mi", true, false, false, ev));
+}
+
+#[cfg(windows)]
+#[test]
+fn an_open_gesture_holds_past_the_short_hold() {
+    // The Ctrl+V press is the stronger signal and is not on a timer.
+    let ev = PasteHeadEvidence { gesture_open: true, clip_head: None, held_for: Duration::from_millis(19) };
+    assert!(!should_zero_latency_flush_paste_pend("M", true, false, false, ev));
+}
+
+#[cfg(windows)]
+#[test]
+fn paste_detection_off_never_holds_the_head() {
+    // The user asked for no paste detection: nothing may add latency, whatever
+    // is on the clipboard.
+    let ev = PasteHeadEvidence { gesture_open: true, clip_head: Some("Microsoft"), held_for: Duration::ZERO };
+    assert!(should_zero_latency_flush_paste_pend("M", false, false, false, ev));
+}
+
+#[cfg(windows)]
+#[test]
+fn a_ctrl_v_gesture_closes_and_stops_holding() {
+    let mut g = PasteGesture::default();
+    assert!(!g.is_open(), "a gesture that never started is not open");
+    g.start();
+    assert!(g.is_open(), "the press opens it");
+    g.finish();
+    assert!(!g.is_open(), "the paste going out closes it");
+}
+
+#[cfg(windows)]
+#[test]
+fn paste_detection_uses_low_latency_window_and_unicode_character_count() {
+    assert_eq!(PASTE_DETECTION_WINDOW, Duration::from_millis(5));
+    assert_eq!(PASTE_UNICODE_THRESHOLD, 8);
+    assert!(meets_unicode_paste_threshold("1234567é"));
+    assert!(!meets_unicode_paste_threshold("123456é"));
+}
+
+#[cfg(windows)]
+#[test]
+fn ctrl_v_routes_text_through_paste_detection() {
+    assert_eq!(
+        clipboard_ctrl_v_route(false, false),
+        ClipboardCtrlVRoute::Text,
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn ctrl_v_forwards_image_once_per_keypress() {
+    assert_eq!(
+        clipboard_ctrl_v_route(true, false),
+        ClipboardCtrlVRoute::ForwardImage,
+    );
+    assert_eq!(
+        clipboard_ctrl_v_route(true, true),
+        ClipboardCtrlVRoute::SuppressImageDuplicate,
+    );
 }
 
 // ── Issue #164: status-format[] must parse inline styles end-to-end ──
@@ -323,6 +465,8 @@ fn make_run(text: &str, width: u16) -> crate::layout::CellRunJson {
         flags: 0,
         width,
         link: None,
+        ul: 0,
+        ulc: None,
     }
 }
 
@@ -348,6 +492,7 @@ fn make_leaf(id: usize, rows: &[&str]) -> crate::layout::LayoutJson {
         active: id == 0,
         copy_mode: false,
         scroll_offset: 0,
+        view_offset: 0,
         sel_start_row: None,
         sel_start_col: None,
         sel_end_row: None,
@@ -449,6 +594,7 @@ fn extract_selection_text_block_mode() {
         active: true,
         copy_mode: false,
         scroll_offset: 0,
+        view_offset: 0,
         sel_start_row: None,
         sel_start_col: None,
         sel_end_row: None,
@@ -526,6 +672,7 @@ fn word_bounds_at_finds_word() {
         active: true,
         copy_mode: false,
         scroll_offset: 0,
+        view_offset: 0,
         sel_start_row: None,
         sel_start_col: None,
         sel_end_row: None,
@@ -702,4 +849,355 @@ fn paste_command_prompt_takes_precedence_over_other_overlays() {
     assert!(rename_buf.is_empty());
     assert!(pane_title_buf.is_empty());
     assert!(window_idx_buf.is_empty());
+}
+
+// ─── Duplicate paste read-back guard ───────────────────────────────────────
+//
+// The console host injects a clipboard paste as character events and crossterm
+// can emit Event::Paste for the very same keystroke, so the client has more than
+// one source for one paste, and the Ctrl+V Release fallback reads the clipboard
+// as well.  What was forwarded therefore has to be remembered per gesture, since
+// a paste can be split: `C2单元格应显示` arrives as `C2` (flushed immediately as
+// typing by the zero-latency path) and then the CJK part (flushed as typing by
+// the IME heuristic of issue #91), so the forwarded text is only a fragment of
+// the clipboard and comparing the two misses.
+
+#[cfg(windows)]
+fn delivered_burst(text: &str, age_ms: u64) -> (String, std::time::Instant) {
+    (
+        text.to_string(),
+        std::time::Instant::now() - std::time::Duration::from_millis(age_ms),
+    )
+}
+
+#[cfg(windows)]
+#[test]
+fn a_fragmented_paste_gesture_blocks_the_read_back_of_the_whole_text() {
+    let mut gesture = PasteGesture::default();
+    gesture.start();
+    gesture.record("C2");
+    gesture.record("单元格应显示");
+    // Only the last fragment is remembered, so the content comparison alone
+    // cannot see that this is the paste the clipboard still holds.
+    assert!(!duplicates_recent_paste("C2单元格应显示", gesture.recent()));
+    assert!(gesture.blocks("C2单元格应显示"));
+}
+
+#[cfg(windows)]
+#[test]
+fn a_fragmented_ascii_formula_blocks_the_read_back_too() {
+    // Reported the same way as the CJK case: `=(B3-B2)/B2` split by the
+    // zero-latency flush (`=` first) and then forwarded as a paste.
+    let mut gesture = PasteGesture::default();
+    gesture.start();
+    gesture.record("=");
+    gesture.record("(B3-B2)/B2");
+    assert!(!duplicates_recent_paste("=(B3-B2)/B2", gesture.recent()));
+    assert!(gesture.blocks("=(B3-B2)/B2"));
+}
+
+#[cfg(windows)]
+#[test]
+fn a_gesture_that_forwarded_characters_blocks_the_read_back() {
+    let mut gesture = PasteGesture::default();
+    gesture.record("abc");
+    assert!(gesture.blocks("abc"));
+    // The host injected this paste; reading the clipboard now would add a
+    // second copy of text the pane already has.
+    assert!(gesture.blocks("abd"));
+}
+
+#[cfg(windows)]
+#[test]
+fn a_fresh_gesture_starts_clean() {
+    let mut gesture = PasteGesture::default();
+    gesture.record("abc");
+    gesture.start();
+    assert!(!gesture.blocks("abc"));
+    assert!(!gesture.blocks("xyz"));
+}
+
+#[cfg(windows)]
+#[test]
+fn finishing_a_gesture_forgets_what_it_delivered() {
+    let mut gesture = PasteGesture::default();
+    gesture.record("abc");
+    gesture.finish();
+    assert!(!gesture.blocks("abc"));
+}
+
+#[cfg(windows)]
+#[test]
+fn nothing_delivered_is_never_a_duplicate() {
+    let gesture = PasteGesture::default();
+    assert!(!gesture.blocks("恭喜通关"));
+    assert!(!gesture.blocks(""));
+}
+
+#[cfg(windows)]
+#[test]
+fn an_empty_delivery_is_not_a_delivery() {
+    let mut gesture = PasteGesture::default();
+    gesture.record("");
+    assert!(!gesture.injected);
+    assert!(!gesture.blocks("abc"));
+}
+
+#[cfg(windows)]
+#[test]
+fn the_same_text_after_the_window_does_not_block_a_read_back() {
+    let mut gesture = PasteGesture::default();
+    gesture.delivered = Some(delivered_burst("恭喜通关", 400));
+    assert!(!gesture.blocks("恭喜通关"));
+}
+
+#[cfg(windows)]
+#[test]
+fn the_content_check_still_matches_an_identical_burst() {
+    let recent = delivered_burst("恭喜通关", 5);
+    assert!(duplicates_recent_paste("恭喜通关", Some((recent.0.as_str(), recent.1.elapsed()))));
+    assert!(!duplicates_recent_paste("恭喜通关！", Some((recent.0.as_str(), recent.1.elapsed()))));
+}
+
+#[cfg(windows)]
+#[test]
+fn the_interrupt_flush_records_on_the_gesture() {
+    let mut buf = String::from("恭喜通关");
+    let mut start: Option<std::time::Instant> = Some(std::time::Instant::now());
+    let mut stage2 = false;
+    let mut cmds: Vec<String> = Vec::new();
+    let mut gesture = PasteGesture::default();
+    flush_paste_pend_as_text(&mut buf, &mut start, &mut stage2, &mut cmds, &mut gesture);
+    assert!(cmds.iter().all(|c| c.starts_with("send-text ")),
+        "CJK bursts still go out as individual text (issue #91)");
+    assert!(gesture.blocks("恭喜通关"),
+        "the delivered CJK burst must be remembered so the read-back is dropped");
+}
+
+// ── copy-mode cursor vs. the selection it sits on ────────────────────────
+// Regression: the copy cursor cell used to be drawn REVERSED even when it was
+// one of the selected cells.  A reversed selected cell renders as "text colour
+// on the default background", so the last selected cell *looks* unselected and
+// the copy is reported as one cell longer than the highlight.
+
+#[cfg(windows)]
+#[test]
+fn a_cursor_on_a_selected_cell_must_not_be_reversed() {
+    // single line, cols 4..=24 selected (the reported case: a path in the
+    // middle of the line, cursor on the last cell)
+    let start = Some((0u16, 4u16));
+    let end = Some((0u16, 24u16));
+    assert!(copy_cursor_in_selection(0, 4, start, end, "char"));
+    assert!(copy_cursor_in_selection(0, 12, start, end, "char"));
+    assert!(copy_cursor_in_selection(0, 24, start, end, "char"));
+    // one past either end is outside
+    assert!(!copy_cursor_in_selection(0, 3, start, end, "char"));
+    assert!(!copy_cursor_in_selection(0, 25, start, end, "char"));
+}
+
+#[cfg(windows)]
+#[test]
+fn a_multi_row_cursor_follows_the_same_pairing_as_the_highlight() {
+    // anchor (row 1, col 6) -> endpoint (row 4, col 2), the up/left drag
+    let start = Some((1u16, 6u16));
+    let end = Some((4u16, 2u16));
+    assert!(copy_cursor_in_selection(1, 6, start, end, "char"));
+    assert!(copy_cursor_in_selection(1, 30, start, end, "char")); // first row: to the right edge
+    assert!(!copy_cursor_in_selection(1, 5, start, end, "char"));
+    assert!(copy_cursor_in_selection(2, 0, start, end, "char")); // middle rows: full width
+    assert!(copy_cursor_in_selection(4, 2, start, end, "char")); // last row: up to the endpoint
+    assert!(!copy_cursor_in_selection(4, 3, start, end, "char"));
+    assert!(!copy_cursor_in_selection(5, 0, start, end, "char"));
+}
+
+#[cfg(windows)]
+#[test]
+fn rectangle_and_line_modes_have_their_own_shape() {
+    let start = Some((1u16, 10u16));
+    let end = Some((3u16, 20u16));
+    assert!(copy_cursor_in_selection(2, 15, start, end, "rect"));
+    assert!(!copy_cursor_in_selection(2, 9, start, end, "rect"));
+    assert!(!copy_cursor_in_selection(2, 21, start, end, "rect"));
+    // line mode selects whole rows, whatever the columns are
+    assert!(copy_cursor_in_selection(2, 0, start, end, "line"));
+    assert!(copy_cursor_in_selection(3, 200, start, end, "line"));
+    assert!(!copy_cursor_in_selection(0, 15, start, end, "line"));
+}
+
+#[cfg(windows)]
+#[test]
+fn no_selection_means_the_cursor_is_still_drawn() {
+    // keyboard copy mode: nothing selected, so the cursor keeps its REVERSED
+    // cell and the host cursor stays where the user is working
+    assert!(!copy_cursor_in_selection(3, 3, None, None, "char"));
+    assert!(!copy_cursor_in_selection(3, 3, Some((1, 1)), None, "char"));
+    assert!(!copy_cursor_in_selection(3, 3, None, Some((5, 5)), "char"));
+}
+
+// ---------------------------------------------------------------------------
+// PasteGesture: the "already forwarded" latch must expire.
+//
+// A client that pastes without a Ctrl+V keystroke -- a mobile terminal, a paste
+// button on a terminal that does support bracketed paste -- never calls
+// `start()` or `finish()`.  The latch those two cleared used to be permanent,
+// so the first paste went through and every later one was dropped with
+// "dropping duplicate of N char(s) already sent as characters", whatever the
+// clipboard held.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn paste_gesture_latch_does_not_outlive_its_read_back_window() {
+    let mut g: super::PasteGesture = Default::default();
+    // A burst flushed as characters with no Ctrl+V press before it: the mobile
+    // terminal case.  Nothing opens or closes a gesture here.
+    g.record("C2");
+    // Right after the burst the read-back is still that paste -- the upstream
+    // contract (a_gesture_that_forwarded_characters_blocks_the_read_back).
+    assert!(
+        g.blocks("C2"),
+        "the read-back of a burst that just went out is still that paste"
+    );
+    // Once the window has passed, that burst must not suppress anything: a latch
+    // that never expired is what dropped every paste after the first.
+    std::thread::sleep(super::PASTE_GESTURE_WINDOW + std::time::Duration::from_millis(50));
+    assert!(
+        !g.blocks("a completely different clipboard payload"),
+        "a forwarded burst must not block later, unrelated pastes"
+    );
+    assert!(
+        !g.blocks("abc123abc"),
+        "the second paste of a fresh client must reach the pane"
+    );
+}
+
+#[test]
+fn paste_gesture_still_blocks_the_read_back_of_its_own_paste() {
+    let mut g: super::PasteGesture = Default::default();
+    g.start(); // Ctrl+V press: the characters arriving now are that paste
+    g.record("C2"); // first half went out as typing
+    assert!(
+        g.blocks("C2中文"),
+        "while the gesture is live, the read-back of the same paste stays a duplicate"
+    );
+    g.finish(); // Ctrl+V release / gesture over
+    assert!(
+        !g.blocks("C2中文"),
+        "after the gesture ends the same text is a new deliberate paste"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #598: a bracketed paste event is dropped only when it repeats
+// characters that just went out, never because of an earlier paste or a key.
+//
+// The sequence is the reporter's input_debug.log (iTerm2 over ssh, pwsh pane):
+//
+//   [event] Paste (203 bytes)  -> send-paste
+//   [event] Key C-c, 5x Backspace
+//   [event] Paste (31 bytes)   -> "dropping duplicate of 31 char(s) already sent as characters"
+//   [event] Paste (25 / 16 / 9 / 9 / 9 bytes), each dropped the same way
+//
+// No Ctrl+V keystroke ever reaches a client behind ssh, so nothing cleared the
+// latch the first paste's own send-paste had set.
+// ---------------------------------------------------------------------------
+
+/// What the `Event::Paste` arm does with one paste event: ask whether it is a
+/// duplicate, and when it is not, forward it and record it.
+fn issue598_paste_event(g: &mut super::PasteGesture, text: &str) -> bool {
+    if super::paste_event_is_duplicate(g, text) {
+        false
+    } else {
+        g.record(text);
+        true
+    }
+}
+
+#[test]
+fn issue598_every_paste_of_an_ssh_client_reaches_the_pane() {
+    let mut g: super::PasteGesture = Default::default();
+    let first = format!("FIRST598{}", "x".repeat(195));
+    assert_eq!(first.len(), 203);
+    assert!(issue598_paste_event(&mut g, &first), "the first paste is forwarded");
+    // Ctrl+C and the backspaces go out as send-key and are not recorded.
+    // The reporter's next paste came six seconds later; anything past the
+    // gesture window is the same case.
+    std::thread::sleep(super::PASTE_GESTURE_WINDOW + std::time::Duration::from_millis(50));
+    let later = [
+        "0123456789012345678901234567890",
+        "abcdefghijklmnopqrstuvwxy",
+        "sixteen chars ok",
+        "nine char",
+        "nine char",
+        "nine char",
+    ];
+    for (i, text) in later.iter().enumerate() {
+        assert!(
+            issue598_paste_event(&mut g, text),
+            "paste {} ({} bytes) was dropped as a duplicate of an earlier paste",
+            i + 2,
+            text.len()
+        );
+        std::thread::sleep(super::PASTE_GESTURE_WINDOW + std::time::Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn issue598_a_key_typed_just_before_a_paste_does_not_swallow_it() {
+    let mut g: super::PasteGesture = Default::default();
+    // `git commit -m ` and Cmd+V a moment later: the space went out through
+    // the zero latency typing path, which records it.
+    g.record(" ");
+    assert!(
+        !super::paste_event_is_duplicate(&g, "fix the build"),
+        "a paste right after a typed key is a new paste"
+    );
+    // A typed character that happens to be the paste's first character is
+    // still not the paste.
+    g.record("f");
+    assert!(!super::paste_event_is_duplicate(&g, "fix the build"));
+}
+
+#[test]
+fn issue598_a_paste_right_after_another_paste_is_not_dropped() {
+    let mut g: super::PasteGesture = Default::default();
+    assert!(issue598_paste_event(&mut g, "first clipboard"));
+    assert!(
+        issue598_paste_event(&mut g, "second clipboard"),
+        "a different paste inside the window is still a new paste"
+    );
+}
+
+#[test]
+fn issue598_the_host_forwarding_the_paste_as_characters_still_blocks_its_event() {
+    // The duplicate this check exists for: the characters of the paste went
+    // out first, in bursts, and the event for the same paste follows.
+    let mut g: super::PasteGesture = Default::default();
+    g.record("C2");
+    g.record("单元格应显示");
+    assert!(super::paste_event_is_duplicate(&g, "C2单元格应显示"));
+
+    let mut g: super::PasteGesture = Default::default();
+    g.record("=");
+    g.record("(B3-B2)/B2");
+    assert!(super::paste_event_is_duplicate(&g, "=(B3-B2)/B2"));
+
+    // A key typed before those bursts does not hide them.
+    let mut g: super::PasteGesture = Default::default();
+    g.record("x");
+    g.record("line one\rline two");
+    assert!(
+        super::paste_event_is_duplicate(&g, "line one\r\nline two"),
+        "line endings do not make the same paste a different one"
+    );
+}
+
+#[test]
+fn issue598_forwarded_characters_expire_with_the_gesture_window() {
+    let mut g: super::PasteGesture = Default::default();
+    g.record("same text");
+    std::thread::sleep(super::PASTE_GESTURE_WINDOW + std::time::Duration::from_millis(50));
+    assert!(
+        !super::paste_event_is_duplicate(&g, "same text"),
+        "pasting the same text again later is a deliberate repeat"
+    );
 }

@@ -1,5 +1,11 @@
 # Agent Instructions
 
+## Project Records
+
+- Before starting work, read the applicable records in `docs/agent-records/`.
+- Treat these records as project-specific operational constraints and lessons
+  learned from prior development work.
+
 ## Test Isolation
 
 - Never run psmux tests or commands that may create sessions in the default
@@ -11,11 +17,15 @@
   with `cargo check`.
 - Run runtime and integration checks with a unique namespace:
   `psmux -L <unique-test-namespace> ...`.
+- See `docs/agent-records/runtime-test-isolation.md` for the warm-server reason
+  that `-L` is required when testing a newly built binary.
 - Snapshot the default session list before and after runtime checks. Stop and
   investigate if it changes.
 - Clean up only the test namespace with
   `psmux -L <unique-test-namespace> kill-server`.
-- Never use bare `psmux kill-server` for test cleanup because it affects every
-  namespace.
+- Never use bare `psmux kill-server` for test cleanup: it is scoped to the
+  DEFAULT namespace (#649), so it misses your test namespace and hits whatever
+  the user is running in the default one. Never use `kill-server -a` either,
+  which is the deliberate every-namespace sweep.
 - Run the full test suite only in CI or another disposable Windows environment
   where user sessions cannot be affected.

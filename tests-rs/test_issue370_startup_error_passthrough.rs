@@ -50,9 +50,19 @@ fn fresh_error_is_surfaced_with_path() {
     let got = crate::server::read_fresh_startup_error_at(path.to_str().unwrap(), 2_000_000_000);
     assert!(got.is_some(), "fresh log should be surfaced");
     let (reason, returned_path) = got.unwrap();
-    assert!(reason.contains("spawn shell error"), "reason should carry the spawn error, got: {reason}");
-    assert!(reason.contains("cannot find the path specified"), "reason should carry GetLastError text, got: {reason}");
-    assert_eq!(returned_path, path.to_str().unwrap(), "should return the log path it read");
+    assert!(
+        reason.contains("spawn shell error"),
+        "reason should carry the spawn error, got: {reason}"
+    );
+    assert!(
+        reason.contains("cannot find the path specified"),
+        "reason should carry GetLastError text, got: {reason}"
+    );
+    assert_eq!(
+        returned_path,
+        path.to_str().unwrap(),
+        "should return the log path it read"
+    );
 
     let _ = std::fs::remove_file(&path);
 }
@@ -64,7 +74,10 @@ fn stale_log_is_ignored() {
 
     // Current attempt started much later → stale log must be ignored.
     let got = crate::server::read_fresh_startup_error_at(path.to_str().unwrap(), 2_000_000_000);
-    assert!(got.is_none(), "stale log (older than attempt start) must NOT be surfaced");
+    assert!(
+        got.is_none(),
+        "stale log (older than attempt start) must NOT be surfaced"
+    );
 
     let _ = std::fs::remove_file(&path);
 }
@@ -92,12 +105,19 @@ fn missing_log_returns_none() {
 #[test]
 fn multiline_error_block_is_joined() {
     let path = temp_log("multiline");
-    write_log(&path, 2_000_000_000, "  line one of error\n  line two continues");
+    write_log(
+        &path,
+        2_000_000_000,
+        "  line one of error\n  line two continues",
+    );
     let got = crate::server::read_fresh_startup_error_at(path.to_str().unwrap(), 2_000_000_000);
     assert!(got.is_some());
     let (reason, _) = got.unwrap();
     assert!(reason.contains("line one of error"), "got: {reason}");
-    assert!(reason.contains("line two continues"), "multi-line error should be joined, got: {reason}");
+    assert!(
+        reason.contains("line two continues"),
+        "multi-line error should be joined, got: {reason}"
+    );
 
     let _ = std::fs::remove_file(&path);
 }

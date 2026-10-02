@@ -16,11 +16,44 @@ pub fn emit_osc52<W: Write>(writer: &mut W, text: &str) {
     let _ = writer.flush();
 }
 
-pub fn enter_copy_mode(app: &mut AppState) { 
-    app.mode = Mode::CopyMode; 
-    app.copy_scroll_offset = 0;
+/// True while the focused pane is in copy mode, including its search prompt.
+pub fn in_copy_mode(app: &AppState) -> bool {
+    matches!(app.mode, Mode::CopyMode | Mode::CopySearch { .. })
+}
+
+pub fn enter_copy_mode(app: &mut AppState) {
+    // tmux only creates the mode when the pane is not already in it
+    // (`window_pane_set_mode` returns 1 for the same mode), so `copy-mode`
+    // run again inside copy mode keeps the hidden indicator (#704).
+    let fresh = !in_copy_mode(app);
+    app.mode = Mode::CopyMode;
+    // Copy mode reads a snapshot of the pane's screen (tmux's copy-mode grid):
+    // the application keeps running underneath, so new output can neither
+    // shift nor evict what the user is reading.
+    {
+        let win = &mut app.windows[app.active_idx];
+        if let Some(p) = active_pane_mut(&mut win.root, &win.active_path) {
+            p.enter_copy_snapshot();
+        }
+    }
+    // Start at the view currently on screen: with a direct-scrolled pane
+    // (scroll-enter-copy-mode off, #193) the parser's scrollback is nonzero
+    // while no copy state exists yet, and copy mode must keep that view —
+    // an offset of 0 here would render live content but yank against the
+    // scrolled rows.  At the live bottom this is the usual 0.  Every later
+    // path keeps the two in sync (scroll_copy_up/down, exit_copy_mode).
+    app.copy_scroll_offset = {
+        let win = &app.windows[app.active_idx];
+        active_pane(&win.root, &win.active_path)
+            .and_then(|p| p.term.lock().ok().map(|t| t.screen().scrollback()))
+            .unwrap_or(0)
+    };
     app.copy_selection_mode = crate::types::SelectionMode::Char;
     app.copy_anchor = None;
+    // Nothing has pinned the endpoint to an older view, and a pin left by an
+    // earlier session must not survive into this one: `CopyModeState` does not
+    // carry it across a pane switch either.
+    app.copy_pos_scroll_offset = None;
     // Initialize copy_pos from the terminal cursor so the cursor is
     // visible immediately on entering copy mode (fixes #25).
     app.copy_pos = current_prompt_pos(app);
@@ -33,8 +66,126 @@ pub fn enter_copy_mode(app: &mut AppState) {
     app.copy_mark = None;
     app.copy_last_jump = None;
     app.copy_refresh_live = false;
+    // tmux sets `hide_position` from the `-H` flag every time the mode is
+    // created (`window-copy.c` `window_copy_init`), so a plain entry always
+    // shows the indicator. `enter_copy_mode_hidden` is the `-H` path.
+    if fresh {
+        app.copy_hide_position = false;
+    }
     // Mark the active pane as being in copy mode (pane-local state).
     save_copy_state_to_pane(app);
+}
+
+/// `copy-mode -H`: enter copy mode with the position indicator hidden (#704).
+///
+/// Separate from `enter_copy_mode` rather than a parameter on it: that function
+/// has more than forty callers and every one of them wants the indicator.
+/// Like tmux, `-H` only counts when the mode is created: a pane already in
+/// copy mode keeps whatever `toggle-position` left it with.
+pub fn enter_copy_mode_hidden(app: &mut AppState) {
+    let fresh = !in_copy_mode(app);
+    enter_copy_mode(app);
+    if fresh {
+        app.copy_hide_position = true;
+        save_copy_state_to_pane(app);
+    }
+}
+
+/// The flags of a `copy-mode` command that change what it does, read the way
+/// tmux's `cmd_copy_mode_exec` reads them (cmd-copy-mode.c).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CopyModeFlags {
+    /// `-q`: leave the pane's mode instead of entering copy mode.
+    pub quit: bool,
+    /// `-H`: a fresh entry starts with the position indicator hidden.
+    pub hide_position: bool,
+    /// `-u`: page up after entering.
+    pub page_up: bool,
+}
+
+impl CopyModeFlags {
+    /// Read the flags from the arguments after `copy-mode`. Clustered flags
+    /// (`-uH`) count like separate ones, and the values of `-t` and `-s` are
+    /// skipped so a target is never read as flags.
+    pub fn parse<S: AsRef<str>>(args: &[S]) -> Self {
+        let mut flags = CopyModeFlags::default();
+        let mut i = 0;
+        while i < args.len() {
+            let a = args[i].as_ref();
+            i += 1;
+            if a == "--" { break; }
+            if !a.starts_with('-') || a.len() < 2 { continue; }
+            for (pos, ch) in a[1..].char_indices() {
+                match ch {
+                    'q' => flags.quit = true,
+                    'H' => flags.hide_position = true,
+                    'u' => flags.page_up = true,
+                    't' | 's' => {
+                        // The value is the rest of this argument, or the next one.
+                        if pos + 1 == a.len() - 1 { i += 1; }
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        flags
+    }
+}
+
+/// Is `cmd` a `copy-mode` command that pages up (`-u`)? These are the
+/// bindings `scroll-enter-copy-mode off` skips so the key reaches the pane
+/// (#284). The flags are read the way `copy-mode` itself reads them, so a
+/// cluster such as `-Hu` counts and a target such as `-t my-ubuntu` does not.
+/// A text search for `-u` got both of those wrong.
+pub fn is_page_up_copy_mode_command(cmd: &str) -> bool {
+    // Only the first command of a `\;` chain decides, as the old prefix test did.
+    let first = crate::config::split_chained_commands_pub(cmd).into_iter().next().unwrap_or_default();
+    let parts = crate::commands::parse_command_line(&first);
+    parts.first().map(|s| s.as_str()) == Some("copy-mode")
+        && CopyModeFlags::parse(&parts[1..]).page_up
+}
+
+/// What running a `copy-mode` command did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CopyModeOutcome {
+    /// The pane entered copy mode, or `-q` left a mode.
+    ModeChanged,
+    /// `-q` with no mode to leave.
+    Nothing,
+    /// `-u` with `scroll-enter-copy-mode` off: the caller forwards PageUp to
+    /// the pane instead (#284).
+    ForwardPageUp,
+}
+
+/// Run a `copy-mode` command on the focused pane the way tmux does:
+/// `-q` leaves the mode (`window_pane_reset_mode_all`, which for psmux means
+/// copy mode and clock mode, the two modes `pane_in_mode` reports), otherwise
+/// the pane enters copy mode, hidden for `-H`, and `-u` pages up.
+pub fn run_copy_mode_command(app: &mut AppState, flags: CopyModeFlags) -> CopyModeOutcome {
+    if flags.quit {
+        if in_copy_mode(app) {
+            exit_copy_mode(app);
+            return CopyModeOutcome::ModeChanged;
+        }
+        if matches!(app.mode, Mode::ClockMode) {
+            app.mode = Mode::Passthrough;
+            return CopyModeOutcome::ModeChanged;
+        }
+        return CopyModeOutcome::Nothing;
+    }
+    if flags.page_up && !app.scroll_enter_copy_mode {
+        return CopyModeOutcome::ForwardPageUp;
+    }
+    if flags.hide_position {
+        enter_copy_mode_hidden(app);
+    } else {
+        enter_copy_mode(app);
+    }
+    if flags.page_up {
+        page_scroll(app, true, false);
+    }
+    CopyModeOutcome::ModeChanged
 }
 
 /// Exit copy mode: reset all copy state and scroll the active pane back to
@@ -45,6 +196,8 @@ pub fn exit_copy_mode(app: &mut AppState) {
     app.copy_anchor = None;
     app.copy_pos = None;
     app.copy_mouse_down_cell = None;
+    app.copy_pos_published = None;
+    app.copy_pos_scroll_offset = None;
     app.copy_scroll_offset = 0;
     // Clear the search prompt if it was lingering from CopySearch (#335).
     app.status_message = None;
@@ -53,9 +206,56 @@ pub fn exit_copy_mode(app: &mut AppState) {
         // Clear the pane-local copy state so re-entering this pane won't
         // restore a stale copy mode.
         p.copy_state = None;
+        // Show the live screen again first: `term` is the copy-mode snapshot
+        // while we are here, and it is the *live* parser that has to end up
+        // unscrolled (it may have been direct-scrolled when copy mode started,
+        // #193).
+        p.leave_copy_snapshot();
         if let Ok(mut parser) = p.term.lock() {
             parser.screen_mut().set_scrollback(0);
         }
+    }
+}
+
+/// Keep copy-mode snapshots in sync with the modes the panes are in.
+///
+/// Copy mode displays a snapshot of the pane's screen (see
+/// `Pane::enter_copy_snapshot`).  Entering and leaving normally go through
+/// `enter_copy_mode` / `exit_copy_mode`, but those are not the only paths that
+/// change `app.mode` or move focus; a missed restore would leave a pane frozen
+/// on an old screen, and a missed snapshot would put copy mode back on the live
+/// grid.  This is the idempotent reconciliation, safe to call per frame:
+/// every pane in copy mode holds a snapshot, exactly while it is in copy mode.
+///
+/// A mode belongs to ONE pane, as it does in tmux, where `window_copy_init`
+/// copies the grid of whichever `window_pane` enters the mode and that copy
+/// lives on the pane until the mode is dismissed, focused or not.  psmux keeps
+/// the live copy cursor in `AppState`, so the focused pane's mode is
+/// `app.mode` and every other pane's is parked in its own `copy_state` (#607),
+/// which is the same split `#{pane_in_mode}` answers from.  Gating this on the
+/// active pane of the active window (as PR #671 did) meant a pane put into
+/// copy mode with `copy-mode -t` lost its snapshot on the very next frame, and
+/// its own output went back to pushing the view (#673).
+pub fn sync_copy_snapshot(app: &mut AppState) {
+    let focused_in_copy = matches!(app.mode, Mode::CopyMode | Mode::CopySearch { .. });
+    let active_id = app
+        .windows
+        .get(app.active_idx)
+        .and_then(|w| active_pane(&w.root, &w.active_path))
+        .map(|p| p.id);
+    for win in app.windows.iter_mut() {
+        crate::tree::for_each_pane_mut(&mut win.root, &mut |p: &mut crate::types::Pane| {
+            let want = if Some(p.id) == active_id {
+                focused_in_copy
+            } else {
+                p.copy_state.is_some()
+            };
+            if want {
+                p.enter_copy_snapshot();
+            } else {
+                p.leave_copy_snapshot();
+            }
+        });
     }
 }
 
@@ -83,6 +283,7 @@ pub fn save_copy_state_to_pane(app: &mut AppState) {
         register: app.copy_register,
         mark: app.copy_mark,
         last_jump: app.copy_last_jump,
+        hide_position: app.copy_hide_position,
         in_search,
         search_input,
         search_input_forward,
@@ -117,6 +318,7 @@ pub fn restore_copy_state_from_pane(app: &mut AppState) {
         app.copy_register = s.register;
         app.copy_mark = s.mark;
         app.copy_last_jump = s.last_jump;
+        app.copy_hide_position = s.hide_position;
         if s.in_search {
             app.mode = Mode::CopySearch { input: s.search_input, forward: s.search_input_forward };
         } else {
@@ -147,6 +349,62 @@ pub fn switch_with_copy_save<F: FnOnce(&mut AppState)>(app: &mut AppState, switc
     } else if was_copy {
         // We were in copy mode but new pane is not — switch to passthrough.
         app.mode = Mode::Passthrough;
+    }
+}
+
+/// Id of the pane that is active right now, if there is one.
+pub fn active_pane_id(app: &AppState) -> Option<usize> {
+    let win = app.windows.get(app.active_idx)?;
+    crate::tree::get_active_pane_id(&win.root, &win.active_path)
+}
+
+/// Copy mode belongs to the pane it was entered in, exactly as it does in
+/// tmux, where a mode is a property of one `window_pane` (`window.c`
+/// `window_pane_create` starts every pane with an empty mode stack).  psmux
+/// keeps the live copy cursor and selection in `AppState`, so those globals
+/// are really "the mode of whichever pane is active", and `Pane::copy_state`
+/// is where each pane's own mode is parked while another pane holds focus.
+///
+/// Focus commands keep the two in step through `switch_with_copy_save`.
+/// Creating a pane or a window and killing a pane also change which pane is
+/// active, and before #607 they did it without telling the copy layer: the
+/// global `Mode::CopyMode` simply stayed put and became the brand new pane's
+/// mode, or the dead pane's mode became the survivor's.
+///
+/// `park_mode_on_active_pane` hands the outgoing pane its own state back;
+/// `retarget_mode_to_active_pane` makes the incoming pane's own state the
+/// live one.  Call the first before the active pane changes and the second
+/// after, passing the pane id captured before the change.
+pub fn park_mode_on_active_pane(app: &mut AppState) {
+    if matches!(app.mode, Mode::CopyMode | Mode::CopySearch { .. }) {
+        save_copy_state_to_pane(app);
+    }
+}
+
+/// Adopt the newly active pane's own mode.  `prev` is the pane id that was
+/// active before the change; when the active pane did not actually move this
+/// is a no-op, so a caller can use it unconditionally without clobbering the
+/// live copy cursor with the parked (older) copy of it.
+pub fn retarget_mode_to_active_pane(app: &mut AppState, prev: Option<usize>) {
+    let now = active_pane_id(app);
+    if now == prev {
+        return;
+    }
+    let has_copy = app.windows.get(app.active_idx)
+        .and_then(|w| active_pane(&w.root, &w.active_path))
+        .map_or(false, |p| p.copy_state.is_some());
+    if has_copy {
+        restore_copy_state_from_pane(app);
+    } else if matches!(app.mode, Mode::CopyMode | Mode::CopySearch { .. }) {
+        // The pane that owned copy mode is no longer the active one, and the
+        // pane that is has never been in copy mode.  Drop the live copy
+        // cursor with the mode so nothing of the old pane's selection is left
+        // pointing into the new pane's grid.
+        app.mode = Mode::Passthrough;
+        app.copy_anchor = None;
+        app.copy_pos = None;
+        app.copy_scroll_offset = 0;
+        app.copy_mouse_down_cell = None;
     }
 }
 
@@ -394,12 +652,190 @@ pub fn scroll_copy_down(app: &mut AppState, lines: usize) {
     app.copy_scroll_offset = parser.screen().scrollback();
 }
 
+/// The pane height every copy-mode page motion measures itself against.
+///
+/// One place for the `active_pane` lookup that the page keys, the
+/// `send-keys -X` verbs and `copy-mode -u` each used to spell out with their
+/// own invented fallback (10, 20 and 24 in three different files). None when
+/// there is no active pane to measure, and a caller that cannot measure a pane
+/// has nothing to scroll either: `scroll_pane_scrollback` returns on the same
+/// lookup.
+pub fn active_pane_rows(app: &AppState) -> Option<u16> {
+    app.windows
+        .get(app.active_idx)
+        .and_then(|w| active_pane(&w.root, &w.active_path))
+        .map(|p| p.last_rows)
+}
+
+/// Lines one page motion moves in a pane `height` rows tall.
+///
+/// tmux computes this in exactly one place, `window_copy_pageup1` and its
+/// `window_copy_pagedown1` twin (window-copy.c:767-773 and :825-831 at tag
+/// 3.7c, :723-729 and :781-787 at 3.6a):
+///
+/// ```c
+/// n = 1;
+/// if (screen_size_y(s) > 2) {
+///         if (half_page)
+///                 n = screen_size_y(s) / 2;
+///         else
+///                 n = screen_size_y(s) - 2;
+/// }
+/// ```
+///
+/// A full page is the height minus two lines, a half page is half the height,
+/// and a pane of two rows or fewer moves a single line so the view cannot get
+/// stuck or jump the whole buffer.
+pub fn page_lines(height: u16, half_page: bool) -> usize {
+    if height <= 2 {
+        return 1;
+    }
+    let n = if half_page { height / 2 } else { height - 2 };
+    n.max(1) as usize
+}
+
+/// The scroll offset the active pane's parser actually holds.
+///
+/// `app.copy_scroll_offset` mirrors it, but `sync_copy_freeze` (layout.rs)
+/// rewrites that field every frame, so a page motion that straddles a frame
+/// boundary has to ask the parser itself.
+fn active_pane_scroll_offset(app: &AppState) -> usize {
+    app.windows
+        .get(app.active_idx)
+        .and_then(|w| active_pane(&w.root, &w.active_path))
+        .and_then(|p| p.term.lock().ok().map(|t| t.screen().scrollback()))
+        .unwrap_or(app.copy_scroll_offset)
+}
+
+/// Scroll the copy-mode view one page, or one half page, like tmux's
+/// `window_copy_pageup1` / `window_copy_pagedown1`.
+///
+/// The view moves and the cursor keeps the screen row it is on.  The cursor
+/// only moves when the history end clamps the scroll: tmux then shifts the
+/// cursor row by the whole page amount, clamped to the top row going up
+/// (window-copy.c:775-782) and to the last row going down (:833-840), which is
+/// what lets repeated page-ups reach the first line of the history.
+pub fn page_scroll(app: &mut AppState, up: bool, half_page: bool) {
+    let rows = match active_pane_rows(app) { Some(r) => r, None => return };
+    let n = page_lines(rows, half_page);
+    let before = active_pane_scroll_offset(app);
+    if up {
+        scroll_copy_up(app, n);
+    } else {
+        scroll_copy_down(app, n);
+    }
+    let after = app.copy_scroll_offset;
+    let moved = if up { after.saturating_sub(before) } else { before.saturating_sub(after) };
+    if moved >= n {
+        return; // the view absorbed the whole page, so the cursor stays put
+    }
+    let (r, c) = match get_copy_pos(app) { Some(p) => p, None => return };
+    let n16 = n.min(u16::MAX as usize) as u16;
+    let nr = if up {
+        r.saturating_sub(n16)
+    } else {
+        r.saturating_add(n16).min(rows.saturating_sub(1))
+    };
+    app.copy_pos = Some((nr, c));
+}
+
+/// `rectangle-toggle`: flip block selection on or off, tmux's
+/// `window_copy_cmd_rectangle_toggle`.
+///
+/// One definition for every route that reaches it, because they had drifted:
+/// the `-X rectangle-toggle` verb and `v` toggled, while `C-v` on the
+/// pre-server dispatcher only ever switched block selection ON, so a second
+/// press could not switch it back off.
+pub fn toggle_rectangle(app: &mut AppState) {
+    app.copy_selection_mode = match app.copy_selection_mode {
+        crate::types::SelectionMode::Rect => crate::types::SelectionMode::Char,
+        _ => crate::types::SelectionMode::Rect,
+    };
+}
+
+/// `copy-mode -u`: enter copy mode and scroll up one page.
+///
+/// tmux runs the same page motion the `page-up` key does, not a full screen:
+/// cmd-copy-mode.c:99-100 calls `window_copy_pageup(wp, 0)`.
+///
+/// Returns false when `scroll-enter-copy-mode` is off, leaving copy mode
+/// untouched so the caller can forward PageUp to the pane instead (#284).
+pub fn enter_copy_mode_page_up(app: &mut AppState) -> bool {
+    let flags = CopyModeFlags { page_up: true, ..CopyModeFlags::default() };
+    run_copy_mode_command(app, flags) != CopyModeOutcome::ForwardPageUp
+}
+
+/// Copy-mode offset after the pane's retained history shrank by
+/// `filled_before - filled_after` lines: shift it by the number of lines the
+/// trim removed so the view stays on the same content, exactly like tmux's
+/// `window_copy_resize` (window-copy.c).  An offset that would land past the
+/// oldest retained line is clamped to that line: tmux pre-clamps `oy` to the
+/// history size and re-derives it after the reflow, so the view lands on the
+/// top of what is retained and copy mode stays up.  It never leaves copy
+/// mode on a resize, and neither does psmux.
+pub fn offset_after_trim(
+    offset_before: usize,
+    filled_before: usize,
+    filled_after: usize,
+) -> usize {
+    if filled_after >= filled_before {
+        return offset_before; // nothing was trimmed
+    }
+    offset_before
+        .saturating_sub(filled_before - filled_after)
+        .min(filled_after)
+}
+
+/// Keep the copy-mode view anchored across a pane resize.
+///
+/// `copy_scroll_offset` counts lines above the live bottom, so a resize that
+/// trims retained scrollback (the vt100 screen reflows history, and a frozen
+/// copy-mode pane can report a much smaller history mid-resize) leaves it
+/// pointing past the oldest retained line.  The pane then renders at the very
+/// top, and the freeze/dump sync writes that clamped offset straight back, so
+/// the user stays pinned at the top until they press Esc.
+///
+/// Reproduced live with a phone client whose on-screen keyboard toggles the
+/// pane height: in mode=1 the offset went 3771 -> 4390 while the retained
+/// history fell to 508, then settled at scroll == history_size with the view
+/// stuck on line 1.
+pub fn reanchor_after_resize(app: &mut AppState, offset_before: usize, filled_before: usize) {
+    if !matches!(app.mode, Mode::CopyMode | Mode::CopySearch { .. }) {
+        return;
+    }
+    let after = {
+        let win = &mut app.windows[app.active_idx];
+        let p = match active_pane_mut(&mut win.root, &win.active_path) {
+            Some(p) => p,
+            None => return,
+        };
+        let mut parser = match p.term.lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        let filled_after = parser.screen().scrollback_filled();
+        let after = offset_after_trim(offset_before, filled_before, filled_after);
+        parser.screen_mut().set_scrollback(after);
+        after
+    };
+    // tmux parity: a resize never leaves copy mode. When the old offset can
+    // no longer be reached the view sits on the oldest retained line, which
+    // is where tmux's window_copy_resize lands too, and the user scrolls on
+    // from there.
+    app.copy_scroll_offset = after;
+}
+
 pub fn scroll_to_top(app: &mut AppState) {
     let win = &mut app.windows[app.active_idx];
     let p = match active_pane_mut(&mut win.root, &win.active_path) { Some(p) => p, None => return };
     let mut parser = match p.term.lock() { Ok(g) => g, Err(_) => return };
     parser.screen_mut().set_scrollback(usize::MAX);
     app.copy_scroll_offset = parser.screen().scrollback();
+    drop(parser);
+    // tmux window_copy_cmd_history_top puts the cursor on the first cell of
+    // the oldest line (`data->cy = 0; data->cx = 0;`). Leaving the cursor on
+    // its old screen row parked it a whole screen below the top of history.
+    app.copy_pos = Some((0, 0));
 }
 
 pub fn scroll_to_bottom(app: &mut AppState) {
@@ -424,8 +860,14 @@ pub fn yank_selection(app: &mut AppState) -> io::Result<()> {
     // Compute absolute line positions (relative to an arbitrary reference).
     // abs = screen_row - scrollback_at_that_time
     // Higher abs = further down in the terminal buffer (more recent).
+    //
+    // Each end carries its OWN scrollback, not the current one: an edge
+    // auto-scroll (`scroll_copy_up`/`scroll_copy_down`) moves the view between
+    // the anchor and the endpoint, so reading the endpoint against the current
+    // offset puts it on the wrong content line and the yank no longer covers
+    // what the client painted.
     let anchor_abs = anchor.0 as i64 - anchor_scroll as i64;
-    let cursor_abs = pos.0 as i64 - current_scroll as i64;
+    let cursor_abs = pos.0 as i64 - app.copy_pos_scroll_offset.unwrap_or(current_scroll) as i64;
     let sel_top_abs = anchor_abs.min(cursor_abs);
     let sel_bot_abs = anchor_abs.max(cursor_abs);
     let total_lines = (sel_bot_abs - sel_top_abs + 1) as usize;
@@ -461,34 +903,23 @@ pub fn yank_selection(app: &mut AppState) -> io::Result<()> {
             match sel_mode {
                 crate::types::SelectionMode::Rect => {
                     let c0 = anchor.1.min(pos.1); let c1 = anchor.1.max(pos.1);
-                    let mut line = String::new();
-                    for c in c0..=c1 {
-                        if let Some(cell) = parser.screen().cell(r, c) { line.push_str(&cell.contents().to_string()); } else { line.push(' '); }
-                    }
+                    let line = capture_row_text(parser.screen(), r, c0..c1.saturating_add(1));
                     text.push_str(line.trim_end());
                     if !is_last { text.push('\n'); }
                 }
                 crate::types::SelectionMode::Line => {
-                    let mut line = String::new();
-                    for c in 0..cols {
-                        if let Some(cell) = parser.screen().cell(r, c) { line.push_str(&cell.contents().to_string()); } else { line.push(' '); }
-                    }
+                    let line = capture_row_text(parser.screen(), r, 0..cols);
                     text.push_str(line.trim_end());
                     text.push('\n');
                 }
                 crate::types::SelectionMode::Char => {
                     if total_lines == 1 {
                         let c0 = anchor.1.min(pos.1); let c1 = anchor.1.max(pos.1);
-                        for c in c0..=c1 {
-                            if let Some(cell) = parser.screen().cell(r, c) { text.push_str(&cell.contents().to_string()); } else { text.push(' '); }
-                        }
+                        text.push_str(&capture_row_text(parser.screen(), r, c0..c1.saturating_add(1)));
                     } else {
                         let line_start = if is_first { top_col } else { 0 };
                         let line_end   = if is_last  { bot_col } else { cols.saturating_sub(1) };
-                        let mut line = String::new();
-                        for c in line_start..=line_end {
-                            if let Some(cell) = parser.screen().cell(r, c) { line.push_str(&cell.contents().to_string()); } else { line.push(' '); }
-                        }
+                        let line = capture_row_text(parser.screen(), r, line_start..line_end.saturating_add(1));
                         text.push_str(line.trim_end());
                         if !is_last { text.push('\n'); }
                     }
@@ -571,13 +1002,11 @@ pub fn paste_latest(app: &mut AppState) -> io::Result<()> {
 pub fn capture_active_pane(app: &mut AppState) -> io::Result<()> {
     let win = &mut app.windows[app.active_idx];
     let p = match active_pane_mut(&mut win.root, &win.active_path) { Some(p) => p, None => return Ok(()) };
-    let parser = match p.term.lock() { Ok(g) => g, Err(_) => return Ok(()) };
+    let parser = match p.live_parser().lock() { Ok(g) => g, Err(_) => return Ok(()) };
     let screen = parser.screen();
     let mut text = String::new();
     for r in 0..p.last_rows {
-        let mut row = String::new();
-        for c in 0..p.last_cols { if let Some(cell) = screen.cell(r, c) { row.push_str(&cell.contents().to_string()); } else { row.push(' '); } }
-        text.push_str(row.trim_end());
+        text.push_str(capture_row_text(screen, r, 0..p.last_cols).trim_end());
         text.push('\n');
     }
     app.paste_buffers.insert(0, text);
@@ -603,16 +1032,54 @@ fn push_capture_cell(row: &mut String, cell: Option<&vt100::Cell>) {
     }
 }
 
-pub fn capture_active_pane_text(app: &mut AppState) -> io::Result<Option<String>> {
-    let win = &mut app.windows[app.active_idx];
-    let p = match active_pane_mut(&mut win.root, &win.active_path) { Some(p) => p, None => return Ok(None) };
-    let parser = match p.term.lock() { Ok(g) => g, Err(_) => return Ok(None) };
+/// Serialize grid columns `cols` of `row` with `push_capture_cell` semantics.
+///
+/// Every path that turns grid cells back into user-visible text routes through
+/// here so the blank-cell backfill and wide-glyph handling of issue #443 stay
+/// consistent across `capture-pane` and the copy-mode yanks. Callers that only
+/// need a trimmed line should `trim_end()` the result themselves, since the
+/// range variants of `capture-pane` deliberately keep their padding.
+fn capture_row_text(screen: &vt100::Screen, row: u16, cols: std::ops::Range<u16>) -> String {
+    let mut out = String::with_capacity(cols.len());
+    for c in cols {
+        push_capture_cell(&mut out, screen.cell(row, c));
+    }
+    out
+}
+
+/// Resolve the (window index, tree path) a capture should read.
+///
+/// An explicit `-t %N` pane id wins and is searched across every window
+/// (same pane-by-id lookup as kill-pane); a missing or unresolvable id
+/// falls back to the active pane of the active window, keeping the
+/// pre-targeting behavior and error shape.
+fn capture_target(app: &AppState, pane_id: Option<usize>) -> (usize, Vec<usize>) {
+    if let Some(pid) = pane_id {
+        if let Some((wi, path)) = app.windows.iter().enumerate().find_map(|(wi, win)| {
+            crate::tree::find_path_by_id(&win.root, pid).map(|path| (wi, path))
+        }) {
+            return (wi, path);
+        }
+    }
+    (app.active_idx, app.windows[app.active_idx].active_path.clone())
+}
+
+pub fn capture_active_pane_text(app: &mut AppState, pane_id: Option<usize>, preserve_trailing: bool) -> io::Result<Option<String>> {
+    let (win_idx, path) = capture_target(app, pane_id);
+    let win = &mut app.windows[win_idx];
+    let p = match active_pane_mut(&mut win.root, &path) { Some(p) => p, None => return Ok(None) };
+    let parser = match p.live_parser().lock() { Ok(g) => g, Err(_) => return Ok(None) };
     let screen = parser.screen();
     let mut text = String::new();
     for r in 0..p.last_rows {
-        let mut row = String::new();
-        for c in 0..p.last_cols { push_capture_cell(&mut row, screen.cell(r, c)); }
-        text.push_str(row.trim_end());
+        let row = capture_row_text(screen, r, 0..p.last_cols);
+        // -N (preserve_trailing) keeps the full row width, trailing spaces
+        // included; without it, trim like tmux does by default.
+        if preserve_trailing {
+            text.push_str(&row);
+        } else {
+            text.push_str(row.trim_end());
+        }
         text.push('\n');
     }
     // Trim trailing all-empty lines so iTerm2 doesn't advance its cursor
@@ -627,46 +1094,162 @@ pub fn save_latest_buffer(app: &mut AppState, file: &str) -> io::Result<()> {
     Ok(())
 }
 
-/// Search the active pane's screen content for a query string.
-/// Populates `app.copy_search_matches` with (row, col_start, col_end) tuples.
-/// If forward is true, sorts matches top-to-bottom; otherwise bottom-to-top.
+/// Geometry of the active pane's whole grid, as copy mode search needs it.
+/// `history` is the number of lines currently held in the scrollback buffer,
+/// `rows`/`cols` the size of the visible screen and `scrollback` the current
+/// scroll offset. An absolute line index `abs` runs 0..history+rows and maps
+/// to the visible row `abs - (history - scrollback)` whenever that is on
+/// screen. This mirrors tmux's `gd->hsize` / `gd->sy` / `data->oy` triple.
+struct GridGeometry {
+    history: usize,
+    rows: u16,
+    cols: u16,
+    scrollback: usize,
+}
+
+fn grid_geometry(app: &mut AppState) -> Option<GridGeometry> {
+    let win = app.windows.get_mut(app.active_idx)?;
+    let p = active_pane_mut(&mut win.root, &win.active_path)?;
+    let parser = p.term.lock().ok()?;
+    let screen = parser.screen();
+    Some(GridGeometry {
+        history: screen.scrollback_filled(),
+        rows: p.last_rows,
+        cols: p.last_cols,
+        scrollback: screen.scrollback(),
+    })
+}
+
+/// Read every line of the pane, scrollback first and then the visible screen,
+/// as one vector indexed by absolute line number.
+///
+/// The vt100 screen only ever exposes the rows currently framed by the scroll
+/// offset, so the whole buffer is walked one screenful at a time by moving the
+/// offset and restoring it afterwards. `Screen::rows` walks its iterator once
+/// per screenful, which keeps this linear in the size of the buffer.
+fn read_all_lines(app: &mut AppState) -> Option<(Vec<String>, GridGeometry)> {
+    let geom = grid_geometry(app)?;
+    let total = geom.history + geom.rows as usize;
+    let win = app.windows.get_mut(app.active_idx)?;
+    let p = active_pane_mut(&mut win.root, &win.active_path)?;
+    let mut parser = p.term.lock().ok()?;
+    let mut lines: Vec<String> = vec![String::new(); total];
+    let step = geom.rows.max(1) as usize;
+    let mut sb = geom.history;
+    loop {
+        parser.screen_mut().set_scrollback(sb);
+        let actual = parser.screen().scrollback();
+        // top absolute line currently framed by the viewport
+        let top = geom.history - actual;
+        for (r, text) in parser.screen().rows(0, geom.cols).enumerate() {
+            let abs = top + r;
+            if abs < total { lines[abs] = text; }
+        }
+        if actual == 0 { break; }
+        sb = actual.saturating_sub(step);
+    }
+    parser.screen_mut().set_scrollback(geom.scrollback);
+    Some((lines, geom))
+}
+
+/// Bring absolute line `abs` into view and park the copy cursor on it.
+///
+/// Ported from tmux `window_copy_scroll_to` (window-copy.c): a line already on
+/// screen never moves the viewport, otherwise the match is placed a quarter of
+/// a screen up from the bottom.
+pub fn scroll_to_abs_line(app: &mut AppState, abs: usize, col: u16) {
+    let geom = match grid_geometry(app) { Some(g) => g, None => return };
+    let rows = geom.rows.max(1) as usize;
+    let hist = geom.history;
+    let top = hist - geom.scrollback.min(hist);
+
+    let (new_scrollback, cy) = if abs >= top && abs < top + rows {
+        // Already visible: leave the viewport alone.
+        (geom.scrollback, abs - top)
+    } else {
+        let gap = rows / 4;
+        let offset = if abs < rows {
+            0
+        } else if abs + gap > hist + rows {
+            hist
+        } else {
+            (abs + gap).saturating_sub(rows)
+        };
+        (hist - offset.min(hist), abs.saturating_sub(offset))
+    };
+
+    let win = match app.windows.get_mut(app.active_idx) { Some(w) => w, None => return };
+    let p = match active_pane_mut(&mut win.root, &win.active_path) { Some(p) => p, None => return };
+    if let Ok(mut parser) = p.term.lock() {
+        parser.screen_mut().set_scrollback(new_scrollback);
+        app.copy_scroll_offset = parser.screen().scrollback();
+    }
+    app.copy_pos = Some((cy.min(rows - 1) as u16, col));
+}
+
+/// The copy cursor as an absolute line index plus a column.
+fn copy_cursor_abs(app: &mut AppState) -> (usize, u16) {
+    let geom = match grid_geometry(app) { Some(g) => g, None => return (0, 0) };
+    let (r, c) = get_copy_pos(app).unwrap_or((0, 0));
+    let top = geom.history - geom.scrollback.min(geom.history);
+    (top + r as usize, c)
+}
+
+/// Search the active pane for a query string across the WHOLE buffer, the
+/// scrollback history included, exactly as tmux `window_copy_search_jump`
+/// walks lines 0..gd->hsize + gd->sy - 1 (window-copy.c).
+///
+/// Populates `app.copy_search_matches` with (absolute_line, col_start,
+/// col_end) tuples ordered along the search direction, starting from the
+/// match nearest to the cursor, so `copy_search_matches[0]` is the hit a user
+/// pressing Enter expects and `n` walks on from there.
 pub fn search_copy_mode(app: &mut AppState, query: &str, forward: bool) {
     app.copy_search_matches.clear();
     app.copy_search_idx = 0;
     if query.is_empty() { return; }
 
-    let win = &mut app.windows[app.active_idx];
-    let p = match active_pane_mut(&mut win.root, &win.active_path) { Some(p) => p, None => return };
-    let parser = match p.term.lock() { Ok(g) => g, Err(_) => return };
-    let screen = parser.screen();
-    let query_lower = query.to_lowercase();
-    let qlen = query_lower.len() as u16;
+    let (cur_abs, cur_col) = copy_cursor_abs(app);
+    let (lines, _geom) = match read_all_lines(app) { Some(v) => v, None => return };
 
-    // Scan all visible rows
-    for r in 0..p.last_rows {
-        // Build the row text
-        let mut row_text = String::with_capacity(p.last_cols as usize);
-        for c in 0..p.last_cols {
-            if let Some(cell) = screen.cell(r, c) {
-                let t = cell.contents();
-                if t.is_empty() { row_text.push(' '); } else { row_text.push_str(t); }
-            } else {
-                row_text.push(' ');
-            }
-        }
-        // Case-insensitive search
-        let row_lower = row_text.to_lowercase();
-        let mut start = 0;
-        while let Some(pos) = row_lower[start..].find(&query_lower) {
-            let col_start = (start + pos) as u16;
-            let col_end = col_start + qlen;
-            app.copy_search_matches.push((r, col_start, col_end));
-            start += pos + 1;
+    let query_lower = query.to_lowercase();
+    let qlen = query_lower.chars().count() as u16;
+
+    // Ascending absolute order first; the direction ordering is applied below.
+    let mut ascending: Vec<(usize, u16, u16)> = Vec::new();
+    for (abs, line) in lines.iter().enumerate() {
+        let lower = line.to_lowercase();
+        let mut start = 0usize;
+        while let Some(pos) = lower[start..].find(&query_lower) {
+            let byte_at = start + pos;
+            let col_start = lower[..byte_at].chars().count() as u16;
+            ascending.push((abs, col_start, col_start + qlen));
+            start = byte_at + 1;
+            if start >= lower.len() { break; }
         }
     }
+    if ascending.is_empty() { return; }
 
-    if !forward {
-        app.copy_search_matches.reverse();
+    // tmux starts the scan from the cursor and only then wraps, so order the
+    // list the same way: nearest hit in the search direction first.
+    if forward {
+        let after = |m: &(usize, u16, u16)| m.0 > cur_abs || (m.0 == cur_abs && m.1 > cur_col);
+        let split = ascending.iter().position(after).unwrap_or(ascending.len());
+        app.copy_search_matches.extend_from_slice(&ascending[split..]);
+        app.copy_search_matches.extend_from_slice(&ascending[..split]);
+    } else {
+        let before = |m: &(usize, u16, u16)| m.0 < cur_abs || (m.0 == cur_abs && m.1 < cur_col);
+        let count = ascending.iter().filter(|m| before(m)).count();
+        let mut descending = ascending;
+        descending.reverse();
+        // `descending` is bottom-to-top; the first `len - count` entries sit at
+        // or after the cursor, so rotate them to the back.
+        let split = descending.len() - count;
+        app.copy_search_matches.extend_from_slice(&descending[split..]);
+        app.copy_search_matches.extend_from_slice(&descending[..split]);
+    }
+
+    if let Some(&(abs, col, _)) = app.copy_search_matches.first() {
+        scroll_to_abs_line(app, abs, col);
     }
 }
 
@@ -681,8 +1264,8 @@ pub fn search_next(app: &mut AppState) {
     } else {
         app.copy_search_idx = next;
     }
-    let (r, c, _) = app.copy_search_matches[app.copy_search_idx];
-    app.copy_pos = Some((r, c));
+    let (abs, c, _) = app.copy_search_matches[app.copy_search_idx];
+    scroll_to_abs_line(app, abs, c);
 }
 
 /// Move by WORD (whitespace-delimited) forward — W key
@@ -917,6 +1500,25 @@ pub fn toggle_refresh(app: &mut AppState) {
     }
 }
 
+/// Hide or show the copy-mode position indicator, the `P` key and the
+/// `toggle-position` command (#704).
+///
+/// tmux keeps this on the mode entry and flips it in
+/// `window_copy_cmd_toggle_position` (`window-copy.c`), which is why it is
+/// saved with the rest of the pane-local copy state rather than kept as a
+/// client setting: two panes in copy mode answer independently, and leaving
+/// the mode forgets it.
+pub fn toggle_position(app: &mut AppState) {
+    app.copy_hide_position = !app.copy_hide_position;
+    // Nothing in the pane or the layout changes, so the frame has to be asked
+    // for: measured on a key press without this, the indicator took 2.6s and
+    // 3.8s to go, and once did not go at all inside ten seconds, because it
+    // waited for an unrelated frame. The `-X` route never had the problem
+    // because a command request marks the state dirty on its own.
+    app.copy_needs_redraw = true;
+    save_copy_state_to_pane(app);
+}
+
 /// Yank from cursor to end of line — D key
 pub fn copy_end_of_line(app: &mut AppState) -> io::Result<()> {
     let (r, c) = match get_copy_pos(app) { Some(p) => p, None => return Ok(()) };
@@ -925,11 +1527,7 @@ pub fn copy_end_of_line(app: &mut AppState) -> io::Result<()> {
     let parser = match p.term.lock() { Ok(g) => g, Err(_) => return Ok(()) };
     let screen = parser.screen();
     let cols = p.last_cols;
-    let mut text = String::new();
-    for col in c..cols {
-        if let Some(cell) = screen.cell(r, col) { text.push_str(&cell.contents().to_string()); } else { text.push(' '); }
-    }
-    let text = text.trim_end().to_string();
+    let text = capture_row_text(screen, r, c..cols).trim_end().to_string();
     app.paste_buffers.insert(0, text.clone());
     if app.paste_buffers.len() > 10 { app.paste_buffers.pop(); }
     copy_to_system_clipboard(&text);
@@ -946,8 +1544,8 @@ pub fn search_prev(app: &mut AppState) {
     } else {
         app.copy_search_idx -= 1;
     }
-    let (r, c, _) = app.copy_search_matches[app.copy_search_idx];
-    app.copy_pos = Some((r, c));
+    let (abs, c, _) = app.copy_search_matches[app.copy_search_idx];
+    scroll_to_abs_line(app, abs, c);
 }
 
 /// Compute the (start, end) row range for capture-pane given optional -S/-E
@@ -972,10 +1570,11 @@ pub fn compute_capture_range(s: Option<i32>, e: Option<i32>, last_row: u16) -> (
     (start, end)
 }
 
-pub fn capture_active_pane_range(app: &mut AppState, s: Option<i32>, e: Option<i32>) -> io::Result<Option<String>> {
-    let win = &mut app.windows[app.active_idx];
-    let p = match active_pane_mut(&mut win.root, &win.active_path) { Some(p) => p, None => return Ok(None) };
-    let mut parser = match p.term.lock() { Ok(g) => g, Err(_) => return Ok(None) };
+pub fn capture_active_pane_range(app: &mut AppState, s: Option<i32>, e: Option<i32>, pane_id: Option<usize>, preserve_trailing: bool) -> io::Result<Option<String>> {
+    let (win_idx, path) = capture_target(app, pane_id);
+    let win = &mut app.windows[win_idx];
+    let p = match active_pane_mut(&mut win.root, &path) { Some(p) => p, None => return Ok(None) };
+    let mut parser = match p.live_parser().lock() { Ok(g) => g, Err(_) => return Ok(None) };
     let rows = p.last_rows;
     let cols = p.last_cols;
     let last_row = rows.saturating_sub(1) as i32;
@@ -987,9 +1586,13 @@ pub fn capture_active_pane_range(app: &mut AppState, s: Option<i32>, e: Option<i
         let screen = parser.screen();
         let mut text = String::new();
         for r in start..=end {
-            let mut row = String::new();
-            for c in 0..cols { push_capture_cell(&mut row, screen.cell(r, c)); }
-            text.push_str(row.trim_end());
+            let row = capture_row_text(screen, r, 0..cols);
+            // -N keeps trailing spaces per row; default trims them.
+            if preserve_trailing {
+                text.push_str(&row);
+            } else {
+                text.push_str(row.trim_end());
+            }
             text.push('\n');
         }
         // An explicit range (-S/-E) is honored line for line, matching tmux:
@@ -1044,11 +1647,13 @@ pub fn capture_active_pane_range(app: &mut AppState, s: Option<i32>, e: Option<i
 
         for aline in read_start..=read_end {
             let r = (aline + actual_sb) as u16;
-            let mut row = String::new();
-            for c in 0..cols {
-                push_capture_cell(&mut row, parser.screen().cell(r, c));
+            let row = capture_row_text(parser.screen(), r, 0..cols);
+            // -N keeps trailing spaces per row; default trims them.
+            if preserve_trailing {
+                text.push_str(&row);
+            } else {
+                text.push_str(row.trim_end());
             }
-            text.push_str(row.trim_end());
             text.push('\n');
         }
         next_abs = read_end + 1;
@@ -1068,13 +1673,23 @@ pub fn capture_active_pane_range(app: &mut AppState, s: Option<i32>, e: Option<i
     Ok(Some(text))
 }
 
-/// Capture the active pane's screen content with ANSI escape sequences preserved.
+/// Capture a pane's screen content with ANSI escape sequences preserved.
 /// This is the `-e` flag for capture-pane.  Supports optional start/end range.
 /// Negative -S values read from scrollback history; i32::MIN means all retained history.
-pub fn capture_active_pane_styled(app: &mut AppState, s: Option<i32>, e: Option<i32>) -> io::Result<Option<String>> {
-    let win = &mut app.windows[app.active_idx];
-    let p = match active_pane_mut(&mut win.root, &win.active_path) { Some(p) => p, None => return Ok(None) };
-    let mut parser = match p.term.lock() { Ok(g) => g, Err(_) => return Ok(None) };
+/// `pane_id` is an explicit `-t %N` target (None = active pane); `preserve_trailing`
+/// is the `-N` flag (keep trailing spaces per row, styled ones included).
+///
+/// Issue #685: the pane's OSC 4 palette is deliberately NOT applied here.
+/// tmux's `capture-pane -e` goes through `grid_string_cells` (`grid.c`), which
+/// reads `gc->fg` / `gc->bg` straight out of the cell; only the tty path
+/// (`tty_check_fg` and friends) substitutes the palette.  So a capture reports
+/// the indexed colour the pane actually wrote, and a caller that wants the
+/// resolved RGB reads the rendered frame instead.
+pub fn capture_active_pane_styled(app: &mut AppState, s: Option<i32>, e: Option<i32>, pane_id: Option<usize>, preserve_trailing: bool) -> io::Result<Option<String>> {
+    let (win_idx, path) = capture_target(app, pane_id);
+    let win = &mut app.windows[win_idx];
+    let p = match active_pane_mut(&mut win.root, &path) { Some(p) => p, None => return Ok(None) };
+    let mut parser = match p.live_parser().lock() { Ok(g) => g, Err(_) => return Ok(None) };
     let rows = p.last_rows;
     let cols = p.last_cols;
     let last_row = rows.saturating_sub(1) as i32;
@@ -1086,6 +1701,8 @@ pub fn capture_active_pane_styled(app: &mut AppState, s: Option<i32>, e: Option<
     let mut prev_dim = false;
     let mut prev_italic = false;
     let mut prev_underline = false;
+    let mut prev_ul_style = vt100::UnderlineStyle::None;
+    let mut prev_ulcolor: Option<vt100::Color> = None;
     let mut prev_blink = false;
     let mut prev_inverse = false;
     let mut prev_hidden = false;
@@ -1108,6 +1725,8 @@ pub fn capture_active_pane_styled(app: &mut AppState, s: Option<i32>, e: Option<
                 let dim = cell.dim();
                 let italic = cell.italic();
                 let underline = cell.underline();
+                let ul_style = cell.underline_style();
+                let ulcolor = cell.underline_color();
                 let blink = cell.blink();
                 let inverse = cell.inverse();
                 let hidden = cell.hidden();
@@ -1116,7 +1735,10 @@ pub fn capture_active_pane_styled(app: &mut AppState, s: Option<i32>, e: Option<
                 let style_changed = Some(fg) != prev_fg || Some(bg) != prev_bg
                     || bold != prev_bold || dim != prev_dim
                     || italic != prev_italic
-                    || underline != prev_underline || blink != prev_blink
+                    || underline != prev_underline
+                    || ul_style != prev_ul_style
+                    || Some(ulcolor) != prev_ulcolor
+                    || blink != prev_blink
                     || inverse != prev_inverse || hidden != prev_hidden
                     || strikethrough != prev_strikethrough;
 
@@ -1126,7 +1748,16 @@ pub fn capture_active_pane_styled(app: &mut AppState, s: Option<i32>, e: Option<
                     if bold { params.push("1".to_string()); }
                     if dim { params.push("2".to_string()); }
                     if italic { params.push("3".to_string()); }
-                    if underline { params.push("4".to_string()); }
+                    // tmux re-encodes styled underscores with the SGR 4
+                    // subparameter form (grid.c grid_string_cells_code maps
+                    // GRID_ATTR_UNDERSCORE_2..5 to codes 42..45 and prints
+                    // them as "4:2".."4:5"), so a capture replays byte for
+                    // byte in any terminal that understands undercurl.
+                    match ul_style {
+                        vt100::UnderlineStyle::None => {}
+                        vt100::UnderlineStyle::Single => params.push("4".to_string()),
+                        other => params.push(format!("4:{}", other.sgr_subparam())),
+                    }
                     if blink { params.push("5".to_string()); }
                     if inverse { params.push("7".to_string()); }
                     if hidden { params.push("8".to_string()); }
@@ -1149,12 +1780,19 @@ pub fn capture_active_pane_styled(app: &mut AppState, s: Option<i32>, e: Option<
                         }
                         vt100::Color::Rgb(r, g, b) => { params.push(format!("48;2;{};{};{}", r, g, b)); }
                     }
+                    match ulcolor {
+                        vt100::Color::Default => {}
+                        vt100::Color::Idx(n) => { params.push(format!("58;5;{}", n)); }
+                        vt100::Color::Rgb(r, g, b) => { params.push(format!("58;2;{};{};{}", r, g, b)); }
+                    }
                     prev_fg = Some(fg);
                     prev_bg = Some(bg);
                     prev_bold = bold;
                     prev_dim = dim;
                     prev_italic = italic;
                     prev_underline = underline;
+                    prev_ul_style = ul_style;
+                    prev_ulcolor = Some(ulcolor);
                     prev_blink = blink;
                     prev_inverse = inverse;
                     prev_hidden = hidden;
@@ -1175,8 +1813,15 @@ pub fn capture_active_pane_styled(app: &mut AppState, s: Option<i32>, e: Option<
                 row_chars.push(" ".to_string());
             }
         }
-        let last_non_ws = row_chars.iter().rposition(|s| !s.is_empty() && s.trim() != "");
-        let trim_end = match last_non_ws { Some(pos) => pos + 1, None => 0 };
+        // -N (preserve_trailing): emit the full row width so styled trailing
+        // spaces (e.g. a TUI's background fill painted to end-of-line) keep
+        // their SGR when the capture is replayed. Without -N, trim after the
+        // last non-whitespace cell like tmux does by default.
+        let trim_end = if preserve_trailing {
+            row_chars.len()
+        } else {
+            match row_chars.iter().rposition(|s| !s.is_empty() && s.trim() != "") { Some(pos) => pos + 1, None => 0 }
+        };
         for c in 0..trim_end {
             if let Some(ref sgr) = row_sgr[c] { text.push_str(sgr); }
             text.push_str(&row_chars[c]);
@@ -1189,6 +1834,8 @@ pub fn capture_active_pane_styled(app: &mut AppState, s: Option<i32>, e: Option<
             prev_dim = false;
             prev_italic = false;
             prev_underline = false;
+            prev_ul_style = vt100::UnderlineStyle::None;
+            prev_ulcolor = Some(vt100::Color::Default);
             prev_blink = false;
             prev_inverse = false;
             prev_hidden = false;
@@ -1640,3 +2287,39 @@ pub fn select_a_word_big(app: &mut AppState) {
     }
     app.copy_selection_mode = crate::types::SelectionMode::Char;
 }
+
+#[cfg(test)]
+#[path = "../tests-rs/test_issue443_blank_cell_capture.rs"]
+mod tests_issue443_blank_cell_capture;
+
+#[cfg(test)]
+#[path = "../tests-rs/test_capture_pane_fidelity.rs"]
+mod tests_capture_pane_fidelity;
+
+#[cfg(test)]
+#[path = "../tests-rs/test_copy_mode_resize_reanchor.rs"]
+mod test_copy_mode_resize_reanchor;
+
+#[cfg(test)]
+#[path = "../tests-rs/test_copy_mode_snapshot.rs"]
+mod test_copy_mode_snapshot;
+
+#[cfg(test)]
+#[path = "../tests-rs/test_copy_cancel_stale_state.rs"]
+mod tests_copy_cancel_stale_state;
+
+#[cfg(test)]
+#[path = "../tests-rs/test_issue612_copy_search_scrollback.rs"]
+mod tests_issue612_copy_search_scrollback;
+
+#[cfg(test)]
+#[path = "../tests-rs/test_issue673_copy_snapshot_per_pane.rs"]
+mod test_issue673_copy_snapshot_per_pane;
+
+#[cfg(test)]
+#[path = "../tests-rs/test_issue687_copy_mode_keyboard_selection.rs"]
+mod test_issue687_copy_mode_keyboard_selection;
+
+#[cfg(test)]
+#[path = "../tests-rs/test_issue704_toggle_position.rs"]
+mod test_issue704_toggle_position;

@@ -6,7 +6,15 @@
 // itself (live raw-mode TUIs).  Misclassifying a TUI as a shell reintroduces
 // the bug, so lock the classification down here.
 
+use super::mouse_inject::should_skip_raw_ctrl_c_signal;
 use super::process_info::is_shell_exe;
+
+#[test]
+fn raw_mode_skips_signal_unless_force_is_explicit() {
+    assert!(should_skip_raw_ctrl_c_signal(false, false));
+    assert!(!should_skip_raw_ctrl_c_signal(false, true));
+    assert!(!should_skip_raw_ctrl_c_signal(true, false));
+}
 
 #[test]
 fn shells_are_classified_as_shell() {

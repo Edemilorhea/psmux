@@ -35,26 +35,30 @@ pub fn split_with_gaps(is_horizontal: bool, sizes: &[u16], area: Rect) -> Vec<Re
         child_sizes.push(size);
     }
 
-    // If total space allows at least 1 cell per child, guarantee that minimum
-    // by stealing from the largest siblings. This prevents previews of windows
+    // If total space allows the minimum for every child, guarantee it by
+    // stealing from the largest siblings. This prevents previews of windows
     // with many nested splits from completely hiding deeply-nested panes when
-    // the preview area is small.
-    if total_available >= n as u16 {
+    // the preview area is small, and on the horizontal axis it is what keeps a
+    // cell from ever being one column wide: a pseudoconsole squeezed to one
+    // column with a wide glyph in it never echoes again after it grows back
+    // (see `crate::pane::MIN_PTY_COLS`). Rows keep tmux's minimum of one.
+    let min_cell: u16 = if is_horizontal { crate::pane::MIN_PTY_COLS } else { 1 };
+    if total_available >= n as u16 * min_cell {
         loop {
-            let mut zero_idx: Option<usize> = None;
+            let mut short_idx: Option<usize> = None;
             for (i, &s) in child_sizes.iter().enumerate() {
-                if s == 0 { zero_idx = Some(i); break; }
+                if s < min_cell { short_idx = Some(i); break; }
             }
-            let Some(zi) = zero_idx else { break };
-            // Find largest child with > 1 cell to steal from.
+            let Some(si) = short_idx else { break };
+            // Find the largest child that can spare a cell and stay at the minimum.
             let mut max_idx = 0usize;
             let mut max_val = 0u16;
             for (i, &s) in child_sizes.iter().enumerate() {
                 if s > max_val { max_val = s; max_idx = i; }
             }
-            if max_val <= 1 { break; }
+            if max_val <= min_cell { break; }
             child_sizes[max_idx] -= 1;
-            child_sizes[zi] += 1;
+            child_sizes[si] += 1;
         }
     }
 
@@ -238,11 +242,40 @@ pub fn compute_rects(node: &Node, area: Rect, out: &mut Vec<(Vec<usize>, Rect)>)
     rec(node, area, &mut path, out);
 }
 
-/// Resize all panes in the current window to match their computed areas
-pub fn resize_all_panes(app: &mut AppState) {
-    if app.windows.is_empty() { return; }
-    let area = app.last_window_area;
-    if area.width == 0 || area.height == 0 { return; }
+/// The pseudoconsole size a pane gets for the layout slot it owns.
+///
+/// `border_rows` is the row `pane-border-status` takes out of the slot for the
+/// pane's label (#288).
+///
+/// The rule is tmux's: a pane is exactly as big as its cell.  tmux keeps no
+/// second opinion about a pane's size, it just calls `window_pane_resize` with
+/// the cell's `sx`/`sy` (tmux window.c:1564) and its floor is `PANE_MINIMUM 1`
+/// (tmux.h:110), so a one row cell holds a one row pane.
+///
+/// This used to clamp to `MIN_PANE_DIM` (2) instead, which is what #644 was: a
+/// slot one row tall got a two row screen, `pane_height` said 2 while
+/// `pane_top` and `pane_bottom` were both 0, and the client, seeing a source
+/// taller than the rect it had, went down its oversized preview path and
+/// painted the screen's blank second row into the only row on offer.  The
+/// program kept running and `capture-pane` kept showing live content, so the
+/// pane looked healthy from every server side check while the client drew
+/// nothing at all.
+///
+/// Width is the one axis with a floor above one: `MIN_PTY_COLS` (2), because a
+/// one column pseudoconsole holding a wide glyph never echoes again after it is
+/// grown back (issue #534's suite caught this the day the floor was dropped to
+/// one). `split_with_gaps` applies the same floor to the cell, so the slot and
+/// the pane still agree.
+#[must_use]
+pub fn pane_inner_size(rect: Rect, border_rows: u16) -> (u16, u16) {
+    let height = rect.height.saturating_sub(border_rows).max(crate::pane::MIN_PTY_DIM);
+    let width = rect.width.max(crate::pane::MIN_PTY_COLS);
+    (height, width)
+}
+
+/// Resize all panes in one window to match the supplied window area.
+pub fn resize_window_panes(app: &mut AppState, window_index: usize, area: Rect) {
+    if window_index >= app.windows.len() || area.width == 0 || area.height == 0 { return; }
     // Reserve 1 row per leaf pane when pane-border-status is enabled (#288)
     let border_status_rows: u16 = match app.user_options.get("pane-border-status").map(|s| s.as_str()) {
         Some("top") | Some("bottom") => 1,
@@ -271,11 +304,11 @@ pub fn resize_all_panes(app: &mut AppState) {
                     if rect.width == 0 || rect.height == 0 {
                         return;
                     }
-                    // Clamp to MIN_PANE_DIM so ConPTY never receives a
-                    // dimension small enough to crash the child process.
-                    let inner_height = rect.height.saturating_sub(border_rows).max(crate::pane::MIN_PANE_DIM);
-                    let inner_width = rect.width.max(crate::pane::MIN_PANE_DIM);
-                    
+                    // Size the pane to the slot the layout actually gave it
+                    // (#644).  See `pane_inner_size` for why nothing is
+                    // rounded up here.
+                    let (inner_height, inner_width) = pane_inner_size(*rect, border_rows);
+
                     if pane.last_rows != inner_height || pane.last_cols != inner_width {
                         let _ = pane.master.resize(portable_pty::PtySize {
                             rows: inner_height,
@@ -283,8 +316,12 @@ pub fn resize_all_panes(app: &mut AppState) {
                             pixel_width: 0,
                             pixel_height: 0
                         });
-                        if let Ok(mut parser) = pane.term.lock() {
-                            parser.screen_mut().set_size(inner_height, inner_width);
+                        // Both screens: the visible one (a copy-mode snapshot
+                        // while copy mode is up) and the live one behind it.
+                        for term in pane.each_term() {
+                            if let Ok(mut parser) = term.lock() {
+                                parser.screen_mut().set_size(inner_height, inner_width);
+                            }
                         }
                         pane.last_rows = inner_height;
                         pane.last_cols = inner_width;
@@ -301,31 +338,62 @@ pub fn resize_all_panes(app: &mut AppState) {
         }
     }
     
-    // Only resize the active window immediately — background windows will be
-    // resized lazily when switched to.  This avoids O(total_panes) ConPTY
-    // resize syscalls on every structural change.
-    if app.active_idx < app.windows.len() {
-        let win = &mut app.windows[app.active_idx];
-        let mut rects: Vec<(Vec<usize>, Rect)> = Vec::new();
-        compute_rects(&win.root, area, &mut rects);
-        // When the window is zoomed, split_with_gaps still subtracts the
-        // separator gap (1 px) AND the minimum-size steal (1 px) from the
-        // visible pane, making it 2 rows/cols shorter than the full viewport.
-        // The client renders the zoomed pane using the full area, so the PTY
-        // must also be sized to the full area — otherwise the bottom/right
-        // edge shows blank rows/columns.
-        let zoom_active_path = if win.zoom_saved.is_some() {
-            let active_path = win.active_path.clone();
-            if let Some((_, rect)) = rects.iter_mut().find(|(p, _)| *p == active_path) {
-                *rect = area;
-            }
-            Some(active_path)
-        } else {
-            None
-        };
-        let mut path = Vec::new();
-        resize_node(&mut win.root, &rects, &mut path, border_status_rows, zoom_active_path.as_ref());
+    // A resize can trim retained scrollback. A copy-mode pane counts its view
+    // in lines above the live bottom, so remember what it was showing (offset
+    // plus the retained depth it was measured against) and re-anchor after the
+    // panes have their new size. Without this the view lands on the oldest
+    // retained line and stays there until Esc (see
+    // copy_mode::reanchor_after_resize).
+    // `copy_scroll_offset` and `reanchor_after_resize` both address the ACTIVE
+    // window's active pane, so only that window's resize may re-anchor: a
+    // background window resizing (resize_all_panes walks every window) would
+    // otherwise measure its own pane's retained depth and apply the shift to
+    // the pane the user is actually looking at.
+    let copy_view_before = if window_index == app.active_idx
+        && matches!(app.mode, crate::types::Mode::CopyMode | crate::types::Mode::CopySearch { .. })
+    {
+        let win = &app.windows[window_index];
+        active_pane(&win.root, &win.active_path).map(|p| {
+            let filled = p.term.lock().map(|t| t.screen().scrollback_filled()).unwrap_or(0);
+            (app.copy_scroll_offset, filled)
+        })
+    } else {
+        None
+    };
+
+    let win = &mut app.windows[window_index];
+    let mut rects: Vec<(Vec<usize>, Rect)> = Vec::new();
+    compute_rects(&win.root, area, &mut rects);
+    // When the window is zoomed, split_with_gaps still subtracts the
+    // separator gap (1 px) AND the minimum-size steal (1 px) from the
+    // visible pane, making it 2 rows/cols shorter than the full viewport.
+    // The client renders the zoomed pane using the full area, so the PTY
+    // must also be sized to the full area — otherwise the bottom/right
+    // edge shows blank rows/columns.
+    let zoom_active_path = if win.zoom_saved.is_some() {
+        let active_path = win.active_path.clone();
+        if let Some((_, rect)) = rects.iter_mut().find(|(p, _)| *p == active_path) {
+            *rect = area;
+        }
+        Some(active_path)
+    } else {
+        None
+    };
+    let mut path = Vec::new();
+    resize_node(&mut win.root, &rects, &mut path, border_status_rows, zoom_active_path.as_ref());
+
+    if let Some((offset_before, filled_before)) = copy_view_before {
+        crate::copy_mode::reanchor_after_resize(app, offset_before, filled_before);
     }
+}
+
+/// Resize the active window. Its stored geometry is authoritative, including
+/// when a previous `resize-window` put it in manual mode.
+pub fn resize_all_panes(app: &mut AppState) {
+    if app.active_idx >= app.windows.len() { return; }
+    let area = app.windows[app.active_idx].area;
+    app.last_window_area = area;
+    resize_window_panes(app, app.active_idx, area);
 }
 
 pub fn kill_all_children(node: &mut Node) {
@@ -427,13 +495,42 @@ pub fn get_split_mut<'a>(node: &'a mut Node, path: &Vec<usize>) -> Option<&'a mu
 /// - `newly_dead_count` tracks panes that transitioned alive→dead in this call
 ///   (remain-on-exit case), so callers can fire hooks even when the tree shape
 ///   doesn't change.
+/// The whole `remain-on-exit` decision for one pane that just exited.
+///
+/// The chain is pane, then window, then global, exactly as tmux resolves an
+/// option (options.c walks the pane table, the window table, then the global
+/// window table). `pane` is the pane's own `set-option -p` entry, `window` is
+/// what `set-option -w` resolved to for the window that holds it (#648) with
+/// the session-wide value as its parent, and `failed` keeps the pane only when
+/// the process exited nonzero — what a supervisor wants: crashed panes stay
+/// visible with their error, clean exits close.
+pub fn keep_dead_pane(pane: Option<&str>, window: bool, exit_success: bool) -> bool {
+    match pane {
+        Some("on") => true,
+        Some("off") => false,
+        Some("failed") => !exit_success,
+        _ => window,
+    }
+}
+
 pub fn prune_exited(n: Node, remain_on_exit: bool, kill_descendants: bool) -> (Option<Node>, usize) {
     match n {
         Node::Leaf(mut p) => {
             if p.dead { return (Some(Node::Leaf(p)), 0); }
             match p.child.try_wait() {
-                Ok(Some(_)) => {
-                    if remain_on_exit {
+                Ok(Some(status)) => {
+                    // Pane-scoped remain-on-exit overrides the session global
+                    // (issue #580; tmux pane-option semantics): `on` keeps the
+                    // dead pane, `off` closes it, `failed` keeps it only when
+                    // the process exited nonzero — which is exactly what a
+                    // teammate supervisor wants: crashed panes stay visible
+                    // with their error, clean exits close.
+                    let keep = keep_dead_pane(
+                        p.pane_options.get("remain-on-exit").map(String::as_str),
+                        remain_on_exit,
+                        status.success(),
+                    );
+                    if keep {
                         p.dead = true;
                         (Some(Node::Leaf(p)), 1)
                     } else {
@@ -590,6 +687,26 @@ pub fn swap_nodes(root: &mut Node, a: &[usize], b: &[usize]) -> bool {
     true
 }
 
+/// Swap the subtree at `a` in `a_root` with the subtree at `b` in `b_root`,
+/// where the two roots are the layouts of two DIFFERENT windows.
+///
+/// tmux's `cmd_swap_pane_exec` (cmd-swap-pane.c:123 to 148) allows `-s` and
+/// `-t` to live in different windows: it splices each pane into the other
+/// window's pane list and exchanges the two layout cells, so the panes trade
+/// places across the window boundary. `swap_nodes` cannot express that because
+/// it takes a single root, and the ancestor check it needs inside one tree is
+/// meaningless between two.
+///
+/// An empty path is allowed here (unlike `swap_nodes`): a single pane window's
+/// root IS the leaf, and swapping it with a pane in another window is exactly
+/// what tmux does.
+pub fn swap_nodes_across(a_root: &mut Node, a: &[usize], b_root: &mut Node, b: &[usize]) -> bool {
+    let Some(pa) = node_at_mut(a_root, a) else { return false };
+    let Some(pb) = node_at_mut(b_root, b) else { return false };
+    std::mem::swap(pa, pb);
+    true
+}
+
 #[cfg(test)]
 mod swap_node_tests {
     use crate::types::{Node, LayoutKind};
@@ -664,6 +781,16 @@ pub fn for_each_pane(node: &Node, f: &mut dyn FnMut(&Pane)) {
         Node::Leaf(p) => f(p),
         Node::Split { children, .. } => {
             for c in children { for_each_pane(c, f); }
+        }
+    }
+}
+
+/// Visit every pane in a tree node (DFS order), calling `f` on each, mutably.
+pub fn for_each_pane_mut(node: &mut Node, f: &mut dyn FnMut(&mut Pane)) {
+    match node {
+        Node::Leaf(p) => f(p),
+        Node::Split { children, .. } => {
+            for c in children { for_each_pane_mut(c, f); }
         }
     }
 }
@@ -743,6 +870,27 @@ pub fn find_pane_by_id_global(app: &AppState, pane_id: usize) -> Option<(usize, 
     None
 }
 
+/// Mutable access to a pane by its global pane ID across every window
+/// (issue #580: pane-scoped options must resolve `%N` regardless of the
+/// active window, like every other bare-%id target).
+pub fn find_pane_mut_by_id_global(app: &mut AppState, pane_id: usize) -> Option<&mut Pane> {
+    fn walk(node: &mut Node, pane_id: usize) -> Option<&mut Pane> {
+        match node {
+            Node::Leaf(p) => if p.id == pane_id { Some(p) } else { None },
+            Node::Split { children, .. } => {
+                for c in children {
+                    if let Some(p) = walk(c, pane_id) { return Some(p); }
+                }
+                None
+            }
+        }
+    }
+    for w in app.windows.iter_mut() {
+        if let Some(p) = walk(&mut w.root, pane_id) { return Some(p); }
+    }
+    None
+}
+
 /// Get the Nth leaf pane (0-based positional index) from the tree.
 pub fn get_nth_pane(node: &Node, n: usize) -> Option<&Pane> {
     fn collect_panes<'a>(node: &'a Node, panes: &mut Vec<&'a Pane>) {
@@ -812,6 +960,69 @@ pub fn focus_pane_by_index(app: &mut AppState, idx: usize) {
     }
 }
 
+/// Every pane path in a window's tree, in pane-index order.
+pub fn pane_paths(node: &Node) -> Vec<Vec<usize>> {
+    fn rec(node: &Node, path: &mut Vec<usize>, out: &mut Vec<Vec<usize>>) {
+        match node {
+            Node::Leaf(_) => out.push(path.clone()),
+            Node::Split { children, .. } => {
+                for (i, c) in children.iter().enumerate() {
+                    path.push(i);
+                    rec(c, path, out);
+                    path.pop();
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    let mut path = Vec::new();
+    rec(node, &mut path, &mut out);
+    out
+}
+
+/// Vec position of the window that holds pane `%pid`.
+pub fn find_window_pos_of_pane_id(app: &AppState, pid: usize) -> Option<usize> {
+    app.windows.iter().position(|w| {
+        pane_paths(&w.root).into_iter().any(|p| get_active_pane_id(&w.root, &p) == Some(pid))
+    })
+}
+
+/// Make pane index `idx` the active pane OF THE WINDOW at `win_pos`, without
+/// making that window the session's current window.
+///
+/// This is tmux's `window_set_active_pane(w, wp, 1)`, which cmd-select-pane.c
+/// calls on the TARGET window (`wl->window`, :274) and never follows with a
+/// `session_select`. psmux used to move the current window first, so
+/// `select-pane -t s:1.0` switched the user's window as a side effect
+/// (issue #693 item 3).
+///
+/// Returns true when the window's active pane actually moved.
+pub fn set_window_active_pane_by_index(app: &mut AppState, win_pos: usize, idx: usize) -> bool {
+    let Some(win) = app.windows.get_mut(win_pos) else { return false };
+    let paths = pane_paths(&win.root);
+    let Some(path) = paths.get(idx) else { return false };
+    if win.active_path == *path { return false; }
+    win.active_path = path.clone();
+    if let Some(pid) = get_active_pane_id(&win.root, &win.active_path) {
+        touch_mru(&mut win.pane_mru, pid);
+    }
+    true
+}
+
+/// `set_window_active_pane_by_index` for a `%id` target.
+pub fn set_window_active_pane_by_id(app: &mut AppState, win_pos: usize, pid: usize) -> bool {
+    let Some(win) = app.windows.get_mut(win_pos) else { return false };
+    let paths = pane_paths(&win.root);
+    let target = paths.into_iter().find(|p| {
+        get_active_pane_id(&win.root, p) == Some(pid)
+    });
+    let Some(path) = target else { return false };
+    if win.active_path == path { return false; }
+    win.active_path = path;
+    touch_mru(&mut win.pane_mru, pid);
+    true
+}
+
 /// Count the number of leaf (pane) nodes in a tree.
 pub fn count_panes(node: &Node) -> usize {
     match node {
@@ -879,7 +1090,7 @@ fn has_any_exited(node: &mut Node) -> bool {
 }
 
 pub fn reap_children(app: &mut AppState) -> io::Result<(bool, bool, bool)> {
-    let remain = app.remain_on_exit;
+    let global_remain = app.remain_on_exit;
     let kill_descendants = app.kill_descendants_on_exit();
     let mut any_pruned = false;
     let mut any_newly_dead = false;
@@ -890,6 +1101,11 @@ pub fn reap_children(app: &mut AppState) -> io::Result<(bool, bool, bool)> {
         }
         let leaves_before = count_panes(&app.windows[i].root);
         let active_pane_id = get_active_pane_id(&app.windows[i].root, &app.windows[i].active_path);
+        // #648: remain-on-exit is a WINDOW option. The reaper used to read one
+        // session-wide flag for every window, so `set -w -t <one window>
+        // remain-on-exit on` kept dead panes alive everywhere; the reporter's
+        // ordinary PowerShell panes stopped closing after `exit` because of it.
+        let remain = crate::server::options::window_flag(app, i, "remain-on-exit", global_remain);
         let root = std::mem::replace(&mut app.windows[i].root, Node::Split { kind: LayoutKind::Horizontal, sizes: vec![], children: vec![] });
         let (pruned_result, newly_dead_count) = prune_exited(root, remain, kill_descendants);
         if newly_dead_count > 0 {
@@ -961,3 +1177,7 @@ pub fn collect_leaves(node: Node) -> Vec<Node> {
 #[cfg(test)]
 #[path = "../tests-rs/test_issue171_layout_bugs.rs"]
 mod test_issue171_layout_bugs;
+
+#[cfg(test)]
+#[path = "../tests-rs/test_issue644_one_row_pane.rs"]
+mod test_issue644_one_row_pane;

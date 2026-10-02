@@ -1,5 +1,4 @@
 use crate::term::BufWrite as _;
-use unicode_width::UnicodeWidthChar as _;
 
 /// Parse an OSC 7 URI into a filesystem path.
 /// Accepts `file://hostname/path`, `file:///path`, or a bare `/path`.
@@ -121,6 +120,15 @@ pub struct Screen {
     mouse_protocol_mode: MouseProtocolMode,
     mouse_protocol_encoding: MouseProtocolEncoding,
 
+    /// Which of DECSET 1005 and 1006 the application currently has ON, kept
+    /// apart from `mouse_protocol_encoding` because they are two independent
+    /// switches and the encoding is only one answer.  tmux stores them as two
+    /// bits of the pane's screen mode (`MODE_MOUSE_UTF8` 0x100 and
+    /// `MODE_MOUSE_SGR` 0x200, tmux.h:683) and reports each on its own through
+    /// `#{mouse_utf8_flag}` / `#{mouse_sgr_flag}` (format.c:2015, 1991), so an
+    /// application that turned both on has both flags set.  Issue #662.
+    mouse_encoding_flags: u8,
+
     /// Window title set by the application via OSC 0 or OSC 2.
     osc_title: String,
 
@@ -162,6 +170,18 @@ pub struct Screen {
     /// (command done). Bare OSC 133;C (no recognized param) leaves the value
     /// alone so a prior SetUserVar/633;E can "latch" via the subsequent C marker.
     osc_shell_command: Option<String>,
+
+    /// Per pane colour palette set by OSC 4 and emptied by OSC 104 / RIS
+    /// (issue #685).  `None` until the first entry is set, so a pane that
+    /// never touches its palette costs one pointer and renders byte for byte
+    /// as it did before.  tmux keeps the same thing on the pane
+    /// (`tmux.h:1379`) and allocates it lazily too (`colour.c:1280`).
+    palette: Option<Box<crate::palette::ColourPalette>>,
+
+    /// Bumped on every change to `palette`.  The pane reader thread compares
+    /// it to the value it last published so it can mirror the low sixteen
+    /// entries for the OSC 4 query responder without locking on every batch.
+    palette_generation: u64,
 
     /// Set to `true` when the screen is cleared (CSI 2J) while
     /// `squelch_clear_pending` is active.  The layout serialiser
@@ -212,12 +232,15 @@ impl Screen {
             modes: 0,
             mouse_protocol_mode: MouseProtocolMode::default(),
             mouse_protocol_encoding: MouseProtocolEncoding::default(),
+            mouse_encoding_flags: 0,
             osc_title: String::new(),
             osc7_path: None,
             osc94_progress: None,
             osc52_clipboard: None,
             hyperlinks: Vec::new(),
             osc_shell_command: None,
+            palette: None,
+            palette_generation: 0,
             squelch_cleared: false,
             squelch_clear_pending: false,
             audible_bell_count: 0,
@@ -264,6 +287,49 @@ impl Screen {
     #[must_use]
     pub fn scrollback_filled(&self) -> usize {
         self.grid.scrollback_filled()
+    }
+
+    /// Returns roughly how many bytes the main grid's scrollback holds: the
+    /// cells the history rows actually store, plus per-row bookkeeping.  Since
+    /// a row is compacted to its used width when it becomes history (issue
+    /// #641), this tracks the text retained rather than the pane's width.
+    /// Reported as tmux's `#{history_bytes}`.
+    #[must_use]
+    pub fn history_bytes(&self) -> usize {
+        self.grid.history_bytes()
+    }
+
+    /// Reset the screen for a new process while KEEPING the main grid's
+    /// history, the way tmux's `screen_reinit` (screen.c) does when
+    /// `respawn-pane` / `respawn-window` reuse a pane (spawn.c, psmux issue
+    /// #708).
+    ///
+    /// Exactly what tmux resets goes: the visible rows are cleared WITHOUT
+    /// being pushed into history (`grid_clear_lines(hsize, sy)`), the cursor
+    /// goes home, the scroll region, saved cursor, modes (cursor keys, keypad,
+    /// mouse, bracketed paste, ...), attributes, title and progress are reset,
+    /// and the alternate screen is left.  The history above the visible rows
+    /// survives, still under the grid's own limit, and so does the hyperlink
+    /// table those history cells point into, plus the `alternate-screen`
+    /// option, which belongs to the pane rather than to the process.
+    ///
+    /// The OSC 4 palette survives as well: tmux keeps it on the
+    /// `window_pane` and clears it only on RIS, OSC 104 and `send-keys -R`
+    /// (input.c, cmd-send-keys.c), never on a respawn.
+    pub fn reinit_keep_history(&mut self) {
+        let size = self.grid.size();
+        let scrollback_len = self.grid.scrollback_len();
+        let history = self.grid.take_scrollback();
+        let hyperlinks = std::mem::take(&mut self.hyperlinks);
+        let palette = self.palette.take();
+        let palette_generation = self.palette_generation;
+        let allow_alternate_screen = self.allow_alternate_screen;
+        *self = Self::new(size, scrollback_len);
+        self.grid.put_scrollback(history);
+        self.hyperlinks = hyperlinks;
+        self.palette = palette;
+        self.palette_generation = palette_generation;
+        self.allow_alternate_screen = allow_alternate_screen;
     }
 
     /// Updates the maximum scrollback buffer size for the main grid.  Rows
@@ -798,6 +864,57 @@ impl Screen {
         self.mouse_protocol_encoding
     }
 
+    /// Is the application asking for mouse tracking at all?  tmux's
+    /// `#{mouse_any_flag}`, `wp->base.mode & ALL_MOUSE_MODES` where
+    /// `ALL_MOUSE_MODES` is `MODE_MOUSE_STANDARD|MODE_MOUSE_BUTTON|
+    /// MODE_MOUSE_ALL` (format.c:1952, tmux.h:698).  The reporting ENCODING
+    /// (1005/1006) is deliberately not part of it: an encoding on its own
+    /// reports nothing.
+    #[must_use]
+    pub fn mouse_any_flag(&self) -> bool {
+        self.mouse_protocol_mode != MouseProtocolMode::None
+    }
+
+    /// DECSET 1000, tmux's `#{mouse_standard_flag}` / `MODE_MOUSE_STANDARD`
+    /// (format.c:2003).  X10 tracking (DECSET 9) counts here too: tmux does
+    /// not implement 9 at all, this parser does, and it is the same
+    /// press-only report `1000` extends.
+    #[must_use]
+    pub fn mouse_standard_flag(&self) -> bool {
+        matches!(
+            self.mouse_protocol_mode,
+            MouseProtocolMode::Press | MouseProtocolMode::PressRelease
+        )
+    }
+
+    /// DECSET 1002, tmux's `#{mouse_button_flag}` / `MODE_MOUSE_BUTTON`
+    /// (format.c:1964): motion reported while a button is held.
+    #[must_use]
+    pub fn mouse_button_flag(&self) -> bool {
+        self.mouse_protocol_mode == MouseProtocolMode::ButtonMotion
+    }
+
+    /// DECSET 1003, tmux's `#{mouse_all_flag}` / `MODE_MOUSE_ALL`
+    /// (format.c:1940): motion reported with no button held.
+    #[must_use]
+    pub fn mouse_all_flag(&self) -> bool {
+        self.mouse_protocol_mode == MouseProtocolMode::AnyMotion
+    }
+
+    /// DECSET 1005, tmux's `#{mouse_utf8_flag}` / `MODE_MOUSE_UTF8`
+    /// (format.c:2015).
+    #[must_use]
+    pub fn mouse_utf8_flag(&self) -> bool {
+        self.mouse_encoding_flags & Self::ENCODING_UTF8 != 0
+    }
+
+    /// DECSET 1006, tmux's `#{mouse_sgr_flag}` / `MODE_MOUSE_SGR`
+    /// (format.c:1991).
+    #[must_use]
+    pub fn mouse_sgr_flag(&self) -> bool {
+        self.mouse_encoding_flags & Self::ENCODING_SGR != 0
+    }
+
     /// Returns the window title set via OSC 0 or OSC 2.
     #[must_use]
     pub fn title(&self) -> &str {
@@ -824,6 +941,23 @@ impl Screen {
             let path = parse_osc7_uri(s);
             if !path.is_empty() {
                 self.osc7_path = Some(path);
+            }
+        }
+    }
+
+    /// Store a path announced via ConEmu's `OSC 9 ; 9 ; <cwd>` (issue #615).
+    ///
+    /// Unlike OSC 7 this payload is a plain filesystem path, not a URL, so it
+    /// must NOT be percent-decoded: `%` is a legal Windows filename character
+    /// and `C:\tmp\100%20` is a directory name, not an escape.  ConEmu wraps
+    /// the value in double quotes and Windows Terminal does not, so both are
+    /// accepted.  Shares the OSC 7 slot: both answer the same question, and
+    /// the most recent announcement wins.
+    pub fn set_path_literal(&mut self, raw: &[u8]) {
+        if let Ok(s) = std::str::from_utf8(raw) {
+            let path = s.trim().trim_matches('"');
+            if !path.is_empty() {
+                self.osc7_path = Some(path.to_string());
             }
         }
     }
@@ -862,6 +996,80 @@ impl Screen {
     /// Terminal, etc.) can perform the actual copy.
     pub fn take_clipboard(&mut self) -> Option<(Vec<u8>, Vec<u8>)> {
         self.osc52_clipboard.take()
+    }
+
+    // ---- OSC 4 / OSC 104 per pane colour palette (issue #685) ----
+
+    /// This pane's palette, or `None` when no OSC 4 has ever been accepted.
+    ///
+    /// Serialisers take this once per pane per frame and hand it to
+    /// [`resolve_colour`](Self::resolve_colour), so a pane without a palette
+    /// pays a single null check for the whole frame.
+    #[must_use]
+    pub fn colour_palette(&self) -> Option<&crate::palette::ColourPalette> {
+        self.palette.as_deref()
+    }
+
+    /// The RGB override for one index, if set.  tmux's `colour_palette_get`
+    /// (`colour.c:1251`).
+    #[must_use]
+    pub fn palette_entry(&self, idx: u8) -> Option<(u8, u8, u8)> {
+        self.palette.as_ref().and_then(|p| p.get(idx))
+    }
+
+    /// Set or unset one palette entry.  Returns `true` when the stored value
+    /// changed, mirroring `colour_palette_set` (`colour.c:1272`), whose return
+    /// is what makes tmux schedule a full redraw.
+    pub fn set_palette_entry(
+        &mut self,
+        idx: u8,
+        rgb: Option<(u8, u8, u8)>,
+    ) -> bool {
+        if rgb.is_none() && self.palette.is_none() {
+            // Nothing allocated, nothing to unset: tmux returns 0 here too
+            // rather than allocating 256 slots for a reset.
+            return false;
+        }
+        let palette = self
+            .palette
+            .get_or_insert_with(|| Box::new(crate::palette::ColourPalette::default()));
+        if palette.set(idx, rgb) {
+            self.palette_generation = self.palette_generation.wrapping_add(1);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Drop the whole palette (`colour_palette_clear`, `colour.c:1227`).
+    /// Returns `true` when something was dropped.
+    pub fn clear_palette(&mut self) -> bool {
+        let dropped = self.palette.take().is_some_and(|p| !p.is_empty());
+        if dropped {
+            self.palette_generation = self.palette_generation.wrapping_add(1);
+        }
+        dropped
+    }
+
+    /// A counter bumped on every accepted palette change.  The pane reader
+    /// thread uses it to notice that the mirror it keeps for the OSC 4 query
+    /// responder is stale, without walking 256 entries per output batch.
+    #[must_use]
+    pub fn palette_generation(&self) -> u64 {
+        self.palette_generation
+    }
+
+    /// Replace an indexed colour with this pane's palette RGB.  This is the
+    /// substitution tmux performs in `tty_check_fg` / `tty_check_bg` /
+    /// `tty_check_us` (`tty.c:2822`, `2892`, `2945`) just before the cell
+    /// reaches the terminal.  A pane with no palette returns `c` untouched.
+    #[inline]
+    #[must_use]
+    pub fn resolve_colour(&self, c: crate::attrs::Color) -> crate::attrs::Color {
+        match &self.palette {
+            Some(p) => p.resolve(c),
+            None => c,
+        }
     }
 
     /// Begin an OSC 8 hyperlink: intern `uri` and set it as the current pen's
@@ -1006,6 +1214,18 @@ impl Screen {
         self.attrs.underline()
     }
 
+    /// Returns the extended underline style of the current drawing attributes.
+    #[must_use]
+    pub fn underline_style(&self) -> crate::attrs::UnderlineStyle {
+        self.attrs.underline_style()
+    }
+
+    /// Returns the underline colour of the current drawing attributes.
+    #[must_use]
+    pub fn ulcolor(&self) -> crate::Color {
+        self.attrs.ulcolor()
+    }
+
     /// Returns whether newly drawn text should be rendered with the inverse
     /// text attribute.
     #[must_use]
@@ -1116,39 +1336,155 @@ impl Screen {
         self.mouse_protocol_mode = mode;
     }
 
-    fn clear_mouse_mode(&mut self, mode: MouseProtocolMode) {
-        if self.mouse_protocol_mode == mode {
-            self.mouse_protocol_mode = MouseProtocolMode::default();
-        }
+    /// DECRST for a mouse tracking mode.  tmux turns the whole family off for
+    /// any of `1000`, `1001`, `1002` and `1003`
+    /// (`screen_write_mode_clear(sctx, ALL_MOUSE_MODES)`, input.c:1959), and
+    /// so does xterm: the three modes are one setting with three spellings,
+    /// so an application that enabled `1003` and disables with a bare
+    /// `ESC[?1000l` really is asking for the mouse to go quiet.  Matching only
+    /// the exact mode left such a pane reporting tracking that nobody wanted,
+    /// and `#{mouse_all_flag}` would have said so (#662).
+    fn clear_mouse_mode(&mut self, _mode: MouseProtocolMode) {
+        self.mouse_protocol_mode = MouseProtocolMode::default();
     }
 
     fn set_mouse_encoding(&mut self, encoding: MouseProtocolEncoding) {
+        self.mouse_encoding_flags |= Self::encoding_bit(encoding);
         self.mouse_protocol_encoding = encoding;
     }
 
     fn clear_mouse_encoding(&mut self, encoding: MouseProtocolEncoding) {
+        self.mouse_encoding_flags &= !Self::encoding_bit(encoding);
         if self.mouse_protocol_encoding == encoding {
-            self.mouse_protocol_encoding = MouseProtocolEncoding::default();
+            // Fall back to whichever of the two is still on rather than
+            // straight to the default: `1005h 1006h 1006l` leaves UTF-8
+            // reporting enabled, because `1005` was never withdrawn.
+            self.mouse_protocol_encoding =
+                if self.mouse_encoding_flags & Self::ENCODING_SGR != 0 {
+                    MouseProtocolEncoding::Sgr
+                } else if self.mouse_encoding_flags & Self::ENCODING_UTF8 != 0 {
+                    MouseProtocolEncoding::Utf8
+                } else {
+                    MouseProtocolEncoding::default()
+                };
+        }
+    }
+
+    const ENCODING_UTF8: u8 = 0b01;
+    const ENCODING_SGR: u8 = 0b10;
+
+    fn encoding_bit(encoding: MouseProtocolEncoding) -> u8 {
+        match encoding {
+            MouseProtocolEncoding::Utf8 => Self::ENCODING_UTF8,
+            MouseProtocolEncoding::Sgr => Self::ENCODING_SGR,
+            MouseProtocolEncoding::Default => 0,
         }
     }
 }
 
+/// U+FE0F VARIATION SELECTOR-16, which requests emoji presentation.
+const VS16: char = '\u{FE0F}';
+
 impl Screen {
+    /// Does appending the zero-width char `c` turn this cell into a
+    /// double-width sequence? (#533)
+    ///
+    /// Emoji presentation is a property of the *sequence*, not of any single
+    /// character: `U+2733` is one column on its own, but `U+2733 U+FE0F` is
+    /// two, in real terminals and in tmux alike. Because `text()` measures
+    /// width one char at a time, the base settles the cell at one column and
+    /// the selector is folded in afterwards as a zero-width mark, so the cell
+    /// stays narrow and every column after it drifts left by one.
+    ///
+    /// The trigger mirrors tmux's `screen_write_combine`, which forces the
+    /// stored width to 2 when a VS16 lands on a cell whose width is still 1
+    /// (`variation-selector-always-wide`, on by default). The width measured
+    /// over the whole cell is checked too, so any other sequence that
+    /// `unicode-width` considers double width is promoted as well.
+    fn wants_wide_promotion(cell: &crate::Cell, c: char) -> bool {
+        // A cell that is already wide must not be promoted again: tmux only
+        // promotes when the stored width is 1, so `📛 + VS16` stays 2 columns
+        // rather than growing to 4.
+        cell.has_contents()
+            && !cell.is_wide()
+            && (c == VS16 || crate::width::str_width(cell.contents()) > 1)
+    }
+
+    /// Widen the narrow cell at (`row`, `col`) into a two column cell, taking
+    /// the following cell as its continuation and advancing the cursor over
+    /// it. The cursor is expected to be sitting on that following cell, which
+    /// is the case for every caller (a zero-width char never moves it).
+    fn promote_cell_to_wide(
+        &mut self,
+        row: u16,
+        col: u16,
+        attrs: crate::attrs::Attrs,
+    ) {
+        let cont = crate::grid::Pos { row, col: col + 1 };
+        if cont.col >= self.grid().size().cols {
+            // The base sits in the last column, so there is nowhere to put the
+            // continuation. Leave the cell narrow rather than wrapping a
+            // half-drawn glyph onto the next row.
+            return;
+        }
+
+        // If the cell we are taking over is itself the base of a wide glyph,
+        // that glyph's own continuation is about to be orphaned, so clear it.
+        let clobbers_wide = self
+            .grid()
+            .drawing_cell(cont)
+            .is_some_and(crate::Cell::is_wide);
+        if clobbers_wide {
+            if let Some(orphan) = self.grid_mut().drawing_cell_mut(
+                crate::grid::Pos {
+                    row,
+                    col: cont.col + 1,
+                },
+            ) {
+                orphan.clear(attrs);
+                orphan.set_wide_continuation(false);
+            }
+        }
+
+        if let Some(base) = self
+            .grid_mut()
+            .drawing_cell_mut(crate::grid::Pos { row, col })
+        {
+            base.set_wide(true);
+        } else {
+            return;
+        }
+        if let Some(cell) = self.grid_mut().drawing_cell_mut(cont) {
+            cell.clear(crate::attrs::Attrs::default());
+            cell.set_wide_continuation(true);
+        }
+        self.grid_mut().col_inc(1);
+    }
+
     pub(crate) fn text(&mut self, c: char) {
         let pos = self.grid().pos();
         let size = self.grid().size();
         let attrs = self.attrs;
 
-        let width = c.width();
+        let width = crate::width::char_width(c);
         if width.is_none() && (u32::from(c)) < 256 {
             // don't even try to draw control characters
             return;
         }
-        let width = width
+        let width: u16 = width
             .unwrap_or(1)
             .try_into()
             // width() can only return 0, 1, or 2
             .unwrap();
+
+        // A glyph wider than the whole row can never be represented: there is
+        // nowhere to put its continuation, and `size.cols - width` underflows
+        // just below (#534, reachable once a pane is shrunk to one column).
+        // tmux drops the glyph in this situation, showing nothing for a CJK
+        // character in a one column pane, so do the same.
+        if width > size.cols {
+            return;
+        }
 
         // it doesn't make any sense to wrap if the last column in a row
         // didn't already have contents. don't try to handle the case where a
@@ -1179,11 +1515,12 @@ impl Screen {
 
         if width == 0 {
             if pos.col > 0 {
+                let mut base_col = pos.col - 1;
                 let mut prev_cell = self
                     .grid_mut()
                     .drawing_cell_mut(crate::grid::Pos {
                         row: pos.row,
-                        col: pos.col - 1,
+                        col: base_col,
                     })
                     // pos.row is valid, since it comes directly from
                     // self.grid().pos() which we assume to always have a
@@ -1191,11 +1528,12 @@ impl Screen {
                     // checked for pos.col > 0.
                     .unwrap();
                 if prev_cell.is_wide_continuation() {
+                    base_col = pos.col - 2;
                     prev_cell = self
                         .grid_mut()
                         .drawing_cell_mut(crate::grid::Pos {
                             row: pos.row,
-                            col: pos.col - 2,
+                            col: base_col,
                         })
                         // pos.row is valid, since it comes directly from
                         // self.grid().pos() which we assume to always have a
@@ -1206,6 +1544,9 @@ impl Screen {
                         .unwrap();
                 }
                 prev_cell.append(c);
+                if Self::wants_wide_promotion(prev_cell, c) {
+                    self.promote_cell_to_wide(pos.row, base_col, attrs);
+                }
             } else if pos.row > 0 {
                 let prev_row = self
                     .grid()
@@ -1658,6 +1999,23 @@ impl Screen {
                 [2] => self.attrs.set_dim(),
                 [3] => self.attrs.set_italic(true),
                 [4] => self.attrs.set_underline(true),
+                // SGR 4 with a subparameter: `4:0` .. `4:5` select the
+                // extended underline styles (tmux input.c
+                // input_csi_dispatch_sgr_colon, cases 0..5).  Windows ConPTY
+                // forwards these verbatim, so dropping them here is what made
+                // undercurl invisible inside a pane.
+                [4, n] => self
+                    .attrs
+                    .set_underline_style(
+                        crate::attrs::UnderlineStyle::from_sgr_subparam(*n),
+                    ),
+                // Legacy double underline.  ConPTY rewrites `4:2` to `21`, so
+                // this arm is the one that actually fires for double
+                // underlines coming out of a pane on Windows (tmux input.c
+                // case 21).
+                [21] => self
+                    .attrs
+                    .set_underline_style(crate::attrs::UnderlineStyle::Double),
                 [5] | [6] => self.attrs.set_blink(true),
                 [7] => self.attrs.set_inverse(true),
                 [8] => self.attrs.set_hidden(true),
@@ -1673,6 +2031,10 @@ impl Screen {
                     self.attrs.fgcolor = crate::Color::Idx(to_u8!(*n) - 30);
                 }
                 [38, 2, r, g, b] => {
+                    self.attrs.fgcolor =
+                        crate::Color::Rgb(to_u8!(*r), to_u8!(*g), to_u8!(*b));
+                }
+                [38, 2, _cs, r, g, b] => {
                     self.attrs.fgcolor =
                         crate::Color::Rgb(to_u8!(*r), to_u8!(*g), to_u8!(*b));
                 }
@@ -1705,6 +2067,10 @@ impl Screen {
                     self.attrs.bgcolor =
                         crate::Color::Rgb(to_u8!(*r), to_u8!(*g), to_u8!(*b));
                 }
+                [48, 2, _cs, r, g, b] => {
+                    self.attrs.bgcolor =
+                        crate::Color::Rgb(to_u8!(*r), to_u8!(*g), to_u8!(*b));
+                }
                 [48, 5, i] => {
                     self.attrs.bgcolor = crate::Color::Idx(to_u8!(*i));
                 }
@@ -1726,6 +2092,49 @@ impl Screen {
                 },
                 [49] => {
                     self.attrs.bgcolor = crate::Color::Default;
+                }
+                // SGR 58: underline colour.  Both the semicolon form
+                // (`58;2;r;g;b`) and the colon forms (`58:2::r:g:b`,
+                // `58:5:n`) are accepted, exactly as tmux does in
+                // input_csi_dispatch_sgr_colon / _sgr (p[0] == 58).
+                [58, 2, r, g, b] => {
+                    self.attrs.set_ulcolor(crate::Color::Rgb(
+                        to_u8!(*r),
+                        to_u8!(*g),
+                        to_u8!(*b),
+                    ));
+                }
+                // `58:2::r:g:b` carries an empty colour-space id, which vte
+                // reports as a leading zero subparameter.
+                [58, 2, _cs, r, g, b] => {
+                    self.attrs.set_ulcolor(crate::Color::Rgb(
+                        to_u8!(*r),
+                        to_u8!(*g),
+                        to_u8!(*b),
+                    ));
+                }
+                [58, 5, i] => {
+                    self.attrs.set_ulcolor(crate::Color::Idx(to_u8!(*i)));
+                }
+                [58] => match next_param!() {
+                    [2] => {
+                        let r = next_param_u8!();
+                        let g = next_param_u8!();
+                        let b = next_param_u8!();
+                        self.attrs
+                            .set_ulcolor(crate::Color::Rgb(r, g, b));
+                    }
+                    [5] => {
+                        self.attrs
+                            .set_ulcolor(crate::Color::Idx(next_param_u8!()));
+                    }
+                    _ => {
+                        unhandled(self);
+                        return;
+                    }
+                },
+                [59] => {
+                    self.attrs.set_ulcolor(crate::Color::Default);
                 }
                 [n] if (90..=97).contains(n) => {
                     self.attrs.fgcolor = crate::Color::Idx(to_u8!(*n) - 82);

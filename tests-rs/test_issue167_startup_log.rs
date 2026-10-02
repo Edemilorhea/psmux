@@ -38,14 +38,22 @@ fn cleanup() {
 fn writes_a_log_file_with_the_error_message() {
     let _g = crate::util::lock_test_env();
     cleanup();
-    write_startup_error_log(&"CreateProcessW \"pwsh.exe\" failed: Falscher Parameter. (os error 87)");
+    write_startup_error_log(
+        &"CreateProcessW \"pwsh.exe\" failed: Falscher Parameter. (os error 87)",
+    );
     let body = std::fs::read_to_string(log_path()).expect("log file must exist after call");
     cleanup();
 
-    assert!(body.contains("os error 87"),
-        "log must include the verbatim OS error so users can grep it: {}", body);
-    assert!(body.contains("CreateProcessW"),
-        "log must include the failing API name: {}", body);
+    assert!(
+        body.contains("os error 87"),
+        "log must include the verbatim OS error so users can grep it: {}",
+        body
+    );
+    assert!(
+        body.contains("CreateProcessW"),
+        "log must include the failing API name: {}",
+        body
+    );
 }
 
 #[test]
@@ -59,12 +67,21 @@ fn log_includes_environment_diagnostics() {
     // These three diagnostics are what the issue-167 conversation kept
     // asking for.  Future maintainers should NOT remove them without
     // also updating the response template.
-    assert!(body.contains("env vars (count)"),
-        "must report env var count: {}", body);
-    assert!(body.contains("env block size (wch)"),
-        "must report env block size in wide chars: {}", body);
-    assert!(body.contains("Windows hard limit: 32767"),
-        "must reference the Windows limit so users can compare: {}", body);
+    assert!(
+        body.contains("env vars (count)"),
+        "must report env var count: {}",
+        body
+    );
+    assert!(
+        body.contains("env block size (wch)"),
+        "must report env block size in wide chars: {}",
+        body
+    );
+    assert!(
+        body.contains("Windows hard limit: 32767"),
+        "must reference the Windows limit so users can compare: {}",
+        body
+    );
 }
 
 #[test]
@@ -75,14 +92,26 @@ fn log_includes_workaround_instructions() {
     let body = std::fs::read_to_string(log_path()).unwrap();
     cleanup();
 
-    assert!(body.contains("PSMUX_NO_PASSTHROUGH"),
-        "must surface the no-passthrough workaround: {}", body);
-    assert!(body.contains("PSMUX_BARE_ENV"),
-        "must surface the bare-env workaround: {}", body);
-    assert!(body.contains("local Windows account") || body.contains("Microsoft account"),
-        "must mention the MSA-vs-local workaround that worked for sungamma: {}", body);
-    assert!(body.contains("issues/167"),
-        "must link back to the tracking issue: {}", body);
+    assert!(
+        body.contains("PSMUX_NO_PASSTHROUGH"),
+        "must surface the no-passthrough workaround: {}",
+        body
+    );
+    assert!(
+        body.contains("PSMUX_BARE_ENV"),
+        "must surface the bare-env workaround: {}",
+        body
+    );
+    assert!(
+        body.contains("local Windows account") || body.contains("Microsoft account"),
+        "must mention the MSA-vs-local workaround that worked for sungamma: {}",
+        body
+    );
+    assert!(
+        body.contains("issues/167"),
+        "must link back to the tracking issue: {}",
+        body
+    );
 }
 
 #[test]
@@ -94,9 +123,12 @@ fn log_includes_psmux_version() {
     cleanup();
 
     let version = env!("CARGO_PKG_VERSION");
-    assert!(body.contains(version),
+    assert!(
+        body.contains(version),
         "must include the psmux version producing the log; expected '{}': {}",
-        version, body);
+        version,
+        body
+    );
 }
 
 #[test]
@@ -108,10 +140,14 @@ fn log_overwrites_previous_runs() {
     let body = std::fs::read_to_string(log_path()).unwrap();
     cleanup();
 
-    assert!(body.contains("NEW_MARKER_xyz_789"),
-        "second call must overwrite the file with the latest failure");
-    assert!(!body.contains("old error message"),
-        "stale content from previous failure must not linger");
+    assert!(
+        body.contains("NEW_MARKER_xyz_789"),
+        "second call must overwrite the file with the latest failure"
+    );
+    assert!(
+        !body.contains("old error message"),
+        "stale content from previous failure must not linger"
+    );
 }
 
 #[test]
@@ -120,7 +156,7 @@ fn log_call_does_not_panic_when_home_is_missing() {
     // Simulate a degenerate environment where neither USERPROFILE nor HOME
     // is set.  The helper must NOT panic; it should swallow and return.
     let saved_up = std::env::var("USERPROFILE").ok();
-    let saved_h  = std::env::var("HOME").ok();
+    let saved_h = std::env::var("HOME").ok();
     std::env::remove_var("USERPROFILE");
     std::env::remove_var("HOME");
 
@@ -130,8 +166,12 @@ fn log_call_does_not_panic_when_home_is_missing() {
         write_startup_error_log(&"err with no home");
     });
 
-    if let Some(v) = saved_up { std::env::set_var("USERPROFILE", v); }
-    if let Some(v) = saved_h  { std::env::set_var("HOME", v); }
+    if let Some(v) = saved_up {
+        std::env::set_var("USERPROFILE", v);
+    }
+    if let Some(v) = saved_h {
+        std::env::set_var("HOME", v);
+    }
 
     assert!(res.is_ok(), "helper must not panic when home env is unset");
 }

@@ -18,9 +18,15 @@
 use crate::types::AppState;
 use crate::config::{parse_config_content, parse_config_line};
 use crate::commands::execute_command_string;
-use std::sync::Mutex;
-
-static ENV_MUTEX: Mutex<()> = Mutex::new(());
+/// The process environment has exactly one owner across the whole test binary,
+/// and it is `crate::util::lock_test_env`. A second, file-local mutex only
+/// serialises this file against itself, so the three cursor tests below could
+/// still set `PSMUX_CURSOR_STYLE` while a test in another file was reading it,
+/// which is how `every_catalog_default_matches_a_fresh_appstate` could see a
+/// cursor style nobody configured.
+fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    crate::util::lock_test_env()
+}
 
 fn mock_app() -> AppState {
     AppState::new("config-test".to_string())
@@ -256,6 +262,12 @@ fn default_scroll_enter_copy_mode() {
 fn default_pwsh_mouse_selection() {
     let app = mock_app();
     assert!(!app.pwsh_mouse_selection);
+}
+
+#[test]
+fn default_mouse_selection_force() {
+    let app = mock_app();
+    assert!(!app.mouse_selection_force);
 }
 
 #[test]
@@ -1151,6 +1163,42 @@ fn config_file_window_active_style() {
 }
 
 #[test]
+fn config_only_if_unset_sets_window_style_after_unset() {
+    let mut app = mock_app();
+    parse_config_content(
+        &mut app,
+        "set -g window-style 'bg=black'\n\
+         set -gu window-style\n\
+         set -go window-style 'bg=colour235'\n",
+    );
+    assert_eq!(app.user_options.get("window-style").unwrap(), "bg=colour235");
+}
+
+#[test]
+fn negative_integer_is_rejected_before_only_if_unset_short_circuit() {
+    let mut app = mock_app();
+    parse_config_content(
+        &mut app,
+        "set -g history-limit 42\n\
+         set -go history-limit -1\n",
+    );
+    assert_eq!(app.history_limit, 42);
+    // An integer that is simply out of range is reported with tmux's strtonum
+    // wording (options.c:1295), which names the value and not the option; the
+    // config warning already carries the file and line that names it. A value
+    // that is not an integer at all still gets the psmux message that does name
+    // the option, see malformed_numeric_keeps_prior_value in
+    // test_issue370_config_warnings.rs.
+    assert!(
+        app.config_warnings
+            .iter()
+            .any(|warning| warning.contains("value is too small: -1")),
+        "expected an out of range refusal, got: {:?}",
+        app.config_warnings,
+    );
+}
+
+#[test]
 fn config_file_wrap_search() {
     let mut app = mock_app();
     parse_config_content(&mut app, "set -g wrap-search on\n");
@@ -1234,25 +1282,51 @@ fn config_flag_g_global() {
 fn config_flag_u_unset_user_option() {
     let mut app = mock_app();
     parse_config_content(&mut app, "set -g @test hello\nset -gu @test\n");
-    // -gu sets @user option to empty string
-    assert_eq!(app.user_options.get("@test").unwrap(), "");
+    // -gu REMOVES the @user option (#619). It used to blank it in place, which
+    // left the key present, so `set -o` afterwards still read the option as
+    // set and refused to apply. tmux removes a user option outright on -u:
+    // it has no table entry, so options_remove_or_default takes the
+    // options_remove branch.
+    assert!(
+        app.user_options.get("@test").is_none(),
+        "set -gu @test must remove the key, not leave it holding an empty string"
+    );
 }
 
 #[test]
 fn config_flag_u_unset_numeric_option() {
-    // -u on numeric options: tries to parse empty string as number, silently fails
+    // -u RESTORES THE TABLE DEFAULT (#619). This used to assert 100, pinning
+    // the defect: the config parser applied an EMPTY value on -u, `"".parse()`
+    // failed, and the number the user had set simply stayed. The same
+    // `set -gu escape-time` on the CLI route restored 500, so the two routes
+    // disagreed about what an unset even means. tmux runs every unset through
+    // options_remove_or_default (options.c), which writes the options-table
+    // default at a global scope.
     let mut app = mock_app();
     parse_config_content(&mut app, "set -g escape-time 100\nset -gu escape-time\n");
-    // escape-time stays at 100 because "".parse::<u64>() fails
+    assert_eq!(app.escape_time_ms, 500);
+}
+
+#[test]
+fn config_explicit_empty_numeric_value_is_rejected() {
+    let mut app = mock_app();
+    parse_config_content(
+        &mut app,
+        "set -g escape-time 100\nset -g escape-time \"\"\n",
+    );
     assert_eq!(app.escape_time_ms, 100);
+    assert!(app.config_warnings.iter().any(|warning| {
+        warning.contains("escape-time") && warning.contains("expected a number")
+    }));
 }
 
 #[test]
 fn config_flag_u_unset_string_option() {
+    // Same fix (#619): the default, not a blank. Blanking status-left produced
+    // an empty left status section where a fresh server shows `[#S] `.
     let mut app = mock_app();
     parse_config_content(&mut app, "set -g status-left HELLO\nset -gu status-left\n");
-    // -u on string option sets to empty string
-    assert_eq!(app.status_left, "");
+    assert_eq!(app.status_left, "[#S] ");
 }
 
 #[test]
@@ -1322,7 +1396,9 @@ fn config_flag_F_format_expand() {
 fn config_combined_flags_gu() {
     let mut app = mock_app();
     parse_config_content(&mut app, "set -g @x hello\nset -gu @x\n");
-    assert_eq!(app.user_options.get("@x").unwrap(), "");
+    // The combined token takes the same route as `-g -u`, so it removes the
+    // key rather than blanking it (#619).
+    assert!(app.user_options.get("@x").is_none());
 }
 
 #[test]
@@ -2296,7 +2372,7 @@ fn config_multiple_command_aliases() {
 
 #[test]
 fn config_cursor_style_sets_env() {
-    let _lock = ENV_MUTEX.lock().unwrap();
+    let _lock = env_lock();
     let mut app = mock_app();
     parse_config_content(&mut app, "set -g cursor-style block\n");
     assert_eq!(std::env::var("PSMUX_CURSOR_STYLE").unwrap(), "block");
@@ -2306,7 +2382,7 @@ fn config_cursor_style_sets_env() {
 
 #[test]
 fn config_cursor_blink_on() {
-    let _lock = ENV_MUTEX.lock().unwrap();
+    let _lock = env_lock();
     let mut app = mock_app();
     parse_config_content(&mut app, "set -g cursor-blink on\n");
     assert_eq!(std::env::var("PSMUX_CURSOR_BLINK").unwrap(), "1");
@@ -2315,7 +2391,7 @@ fn config_cursor_blink_on() {
 
 #[test]
 fn config_cursor_blink_off() {
-    let _lock = ENV_MUTEX.lock().unwrap();
+    let _lock = env_lock();
     let mut app = mock_app();
     parse_config_content(&mut app, "set -g cursor-blink off\n");
     assert_eq!(std::env::var("PSMUX_CURSOR_BLINK").unwrap(), "0");

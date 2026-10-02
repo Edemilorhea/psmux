@@ -56,14 +56,21 @@ mod attrs;
 mod callbacks;
 mod cell;
 mod grid;
+mod palette;
 mod parser;
 mod perform;
 mod row;
 mod screen;
 mod term;
+pub mod width;
 
-pub use attrs::Color;
+pub use attrs::{Color, UnderlineStyle};
 pub use callbacks::Callbacks;
 pub use cell::Cell;
+pub use palette::{parse_palette_index, parse_x11_colour, ColourPalette};
 pub use parser::Parser;
 pub use screen::{MouseProtocolEncoding, MouseProtocolMode, Screen};
+pub use width::{
+    char_width, clear_codepoint_widths, has_overrides, parse_entry as parse_codepoint_width_entry,
+    set_codepoint_widths, str_width, WidthOverride, MAX_OVERRIDE_WIDTH,
+};

@@ -1,5 +1,7 @@
 # FAQ
 
+Answers to the questions people ask most about psmux, the native tmux for Windows: what it runs on, how it relates to tmux and Windows Terminal, whether an existing `.tmux.conf` carries over, how the mouse and the wheel behave inside programs, and what to do when a key, a colour or a path does not look right. Each answer links to the guide that has the full detail.
+
 **Q: Is psmux cross-platform?**
 A: No. psmux is built exclusively for Windows using the Windows ConPTY API. For Linux/macOS, use tmux. psmux is the Windows counterpart.
 
@@ -13,10 +15,10 @@ A: psmux offers session persistence (detach/reattach), synchronized input to mul
 A: Yes! psmux reads `~/.tmux.conf` automatically. Most tmux config options, key bindings, and style settings work as-is.
 
 **Q: Can I use tmux themes?**
-A: Yes. psmux supports 14 style options with 24-bit true color, 256 indexed colors, and text attributes (bold, italic, dim, etc.). Most tmux theme configs are compatible.
+A: Yes. psmux supports 20+ style options with 24-bit true color, 256 indexed colors, and text attributes (bold, italic, dim, etc.). Most tmux theme configs are compatible. See the Style Options table in [configuration.md](configuration.md) for the full set.
 
 **Q: Can I use tmux commands with psmux?**
-A: Yes! psmux includes a `tmux` alias. Commands like `tmux new-session`, `tmux attach`, `tmux ls`, `tmux split-window` all work. 83 commands in total.
+A: Yes! psmux includes a `tmux` alias. Commands like `tmux new-session`, `tmux attach`, `tmux ls`, `tmux split-window` all work. 90+ commands in total. Run `psmux list-commands` to see exactly what your build accepts.
 
 **Q: How fast is psmux?**
 A: Session creation takes < 100ms. New windows/panes add < 80ms overhead. The bottleneck is your shell's startup time, not psmux. Compiled with opt-level 3 and full LTO.
@@ -24,8 +26,14 @@ A: Session creation takes < 100ms. New windows/panes add < 80ms overhead. The bo
 **Q: Does psmux support mouse?**
 A: Full mouse support: click to focus panes, drag to resize borders, scroll wheel, click status-bar tabs, drag-select text (including tmux-like copy-on-release with `pwsh-mouse-selection on`), and right-click copy/paste paths. Plus VT mouse forwarding for TUI apps like vim, htop, and midnight commander.
 
+**Q: The scroll wheel does nothing inside some full screen program. Why?**
+A: Because that program never asked for the mouse, and psmux follows tmux here. tmux only writes a mouse report to a pane whose application has enabled a mouse mode (`input_key_mouse` in `input-keys.c` returns immediately otherwise), and its default `WheelUpPane` binding treats the alternate screen only as a reason NOT to fall through to copy mode. So over a full screen program with no mouse support the wheel is a no-op in tmux, and now in psmux too. Before psmux 3.3.9 psmux forwarded the report anyway, and a program that does not parse mouse reports read the bytes as keystrokes: htop opened its `Search:` prompt and typed the report into it, and codex lost its transcript ([#598](https://github.com/psmux/psmux/issues/598)). Turn the program's own mouse support on (`:set mouse=a` in vim and neovim, `--mouse` for `less`, the mouse setting in htop) and the wheel starts working again. Over a plain shell prompt the wheel still enters copy mode and scrolls psmux's own scrollback, unchanged.
+
+**Q: The mouse works in some programs but not in Claude Code on Windows 10. Why?**
+A: On Windows builds below 22523 (Windows 10 19041 and 19045, Windows Server 2019 and Server 2022 build 20348) conhost's inbound VT parser does not pass an SGR mouse report to the pane's child. psmux writes that report into the pane, and on those builds it dies inside conhost, so a program that reads the mouse as VT bytes on stdin never sees it. That covers node based TUIs such as Claude Code and anything reading raw stdin. Programs that read the mouse as console INPUT_RECORDs do get it, because psmux also injects a Win32 `MOUSE_EVENT` record straight into the pane's console input buffer, which skips that parser entirely. That covers crossterm and ratatui apps, Bubble Tea and other Go TUIs, PSReadLine, and native Windows TUIs, and since psmux 3.3.9 it covers clicks, releases and drags on those builds and not only the wheel. On 22523 and above both kinds of program work. This was measured on real 19045 hardware in [#597](https://github.com/psmux/psmux/issues/597): a crossterm app received every wheel notch while a node child reading stdin received zero bytes. There is no psmux level fix for the VT half, the data is lost inside conhost. Upgrading to a build of 22523 or later is the only way to get the mouse into a VT reading program.
+
 **Q: What shells does psmux support?**
-A: PowerShell 7 (default), PowerShell 5, cmd.exe, Git Bash, WSL, nushell, and any Windows executable. Change with `set -g default-shell <shell>`.
+A: PowerShell 7 (default), PowerShell 5, cmd.exe, Git Bash, WSL, nushell, and any Windows executable. Change with `set -g default-shell <shell>`. Panes get PowerShell 7 even when you started psmux from a Windows PowerShell 5.1 tab, so `$PROFILE` inside a pane is the `Documents\PowerShell\` one, not `Documents\WindowsPowerShell\`. If you want your 5.1 profile and bindings, set `set -g default-shell powershell`, or set the `SHELL` environment variable to `powershell.exe` (psmux seeds `default-shell` from `SHELL` like tmux does).
 
 **Q: Is it stable for daily use?**
 A: Yes. psmux is stress-tested with 15+ rapid windows, 18+ concurrent panes, 5 concurrent sessions, kill+recreate cycles, and sustained load, all with zero hangs or resource leaks.
@@ -58,7 +66,7 @@ A: Yes, using the [psmux-resurrect](https://github.com/psmux/psmux-plugins/tree/
 A: Yes. The psmux session server persists even when your SSH connection drops. After reconnecting, run `psmux attach` to reattach to your sessions.
 
 **Q: How do I reload my config without restarting psmux?**
-A: Press `Prefix + :` to open the command prompt, then type `source-file ~/.psmux.conf`. You can also run `psmux source-file ~/.psmux.conf` from another terminal. This re-applies all options, key bindings, and styles immediately.
+A: Press `Prefix + :` to open the command prompt, then type `source-file ~/.psmux.conf`. You can also run `psmux source-file ~/.psmux.conf` from another terminal. Either way, all options, key bindings, and styles are re-applied immediately. To make it a one-key action, bind it: `bind-key R source-file ~/.psmux.conf \; display-message "Config reloaded"`. If a reloaded line seems to have been ignored, check `~/.psmux/config-warnings.log`, described in [diagnostics.md](diagnostics.md).
 
 **Q: How do I run commands from inside a psmux session?**
 A: Press `Prefix + :` to open the command prompt. Type any command (e.g. `split-window -h`, `new-window -n logs`, `set -g status-style "bg=blue"`). You can also run `list-commands` from the prompt to see all available commands.
@@ -71,6 +79,38 @@ A: Use the `-p` flag with a percentage: `split-window -v -p 30` gives the new pa
 
 **Q: How do I open a new pane in the same directory?**
 A: Use `split-window -c "#{pane_current_path}"`. You can bind this in your config for convenience: `bind-key '"' split-window -v -c "#{pane_current_path}"`.
+
+**Q: `#{pane_current_path}` does not follow `cd` inside `wsl`. Why?**
+A: psmux answers `#{pane_current_path}` the way tmux does, by asking the operating system for the working directory of the pane's foreground process. That works for PowerShell, `cmd`, Cygwin bash and Git Bash, because their `cd` also moves the Win32 working directory. It cannot work for WSL: the shell you are typing at is a Linux process inside the WSL VM, and the only Windows processes in the pane are `wsl.exe` and `wslhost.exe`, whose working directory is fixed when they start and never moves. Nothing on the Windows side can see where the Linux shell went.
+
+The fix is shell integration: have the Linux shell announce its directory. Add this one line to `~/.bashrc` in the distro:
+
+```bash
+PROMPT_COMMAND='printf "\033]7;file://%s%s\033\\" "$HOSTNAME" "$PWD"'
+```
+
+or for zsh, in `~/.zshrc`:
+
+```zsh
+precmd() { printf '\033]7;file://%s%s\033\\' "$HOST" "$PWD"; }
+```
+
+psmux translates what it receives into a native Windows path, so `/mnt/c/Users` becomes `C:\Users` and a Linux only directory such as `/home/you` becomes `\\wsl.localhost/<distro>/home/you` (written with backslashes), which `split-window -c` can actually open. ConEmu's `OSC 9;9` form is accepted too, if you already emit that:
+
+```bash
+PROMPT_COMMAND='printf "\033]9;9;%s\033\\" "$PWD"'
+```
+
+This is optional. Without it nothing breaks: `#{pane_current_path}` simply keeps the last directory it could observe, which is where you were before you typed `wsl`. Note that Windows Terminal needs the same shell integration for its own "duplicate tab in the same directory", so many WSL users already have it.
+
+**Q: Task Manager shows psmux at "Above normal" priority. Why, and can I turn it off?**
+A: By design. Windows gives its foreground scheduling boost to the process that owns the foreground window; the psmux server owns no window and the client draws inside a window the terminal host owns, so neither gets it and keystrokes queue behind compute jobs on a loaded machine. psmux therefore runs its own server and client at `above-normal`. Only psmux's processes are raised: the shells and programs inside panes always start at normal priority. Change it with `set -g priority normal` (or `high`) in your config, or per shell with `$env:PSMUX_PRIORITY = "normal"`, which outranks the option. `realtime` is refused. See [Process Priority](configuration.md#process-priority).
+
+**Q: `bind ы ...` or `bind M-ф ...` from my tmux config does nothing.**
+A: It works on current builds. Key names are parsed by character, so any single Unicode character is a valid key with or without `C-`, `M-` and `S-`. A key name psmux cannot parse is now reported rather than dropped: the CLI prints `unknown key: <name>` and exits 1, a config file line lands in the boot summary and in `~/.psmux/config-warnings.log`. tmux's mouse names (`WheelUpPane` and friends) are accepted so a ported config loads, though psmux does not act on them. See [Supported Key Names](keybindings.md#supported-key-names).
+
+**Q: Copy mode search cannot find text that has scrolled off screen.**
+A: It can on current builds. `/`, `?`, `Ctrl+s`, `Ctrl+r` and `n` / `N` walk the whole scrollback, and an off screen match scrolls the view to it the way tmux does. `send-keys -X search-backward <text>` from a script does the same and updates `#{search_match}`.
 
 **Q: How do I prevent psmux from nesting inside itself?**
 A: psmux automatically detects when it is already running inside a psmux session and prevents accidental nesting. If you try to start `psmux` inside an existing session, it will warn you instead of creating a nested instance. To explicitly create a new session from within psmux, use the command prompt (`Prefix + :`) and type `new-session`.
@@ -111,9 +151,6 @@ A: Add to your config: `set -g prefix C-Space` followed by `unbind-key C-b` and 
 **Q: Why does `Prefix + I` not work for plugin install?**
 A: Make sure you are pressing `Shift+I` (uppercase). Key bindings are case-sensitive: `I` and `i` are distinct bindings.
 
-**Q: How do I reload my config without restarting?**
-A: Press `Prefix + :` and type `source-file ~/.psmux.conf`. This works from within a live session. Alternatively, bind it: `bind-key R source-file ~/.psmux.conf \; display-message "Config reloaded"`.
-
 **Q: Does psmux work with Neovim/Vim?**
 A: Yes. Ctrl+[, Shift+Tab, mouse events, and truecolor rendering all work correctly inside psmux panes. Set `set -g default-terminal "xterm-256color"` for best compatibility.
 
@@ -124,7 +161,10 @@ A: PowerShell 7 automatically sets the terminal title to the current working dir
 A: Yes, use the `-L` flag for server namespaces: `psmux -L work new-session -s dev`. Each namespace gets its own server, sessions, and discovery files.
 
 **Q: How many tmux commands does psmux support?**
-A: 83 tmux-compatible commands including session management, window/pane control, copy mode, display popups/menus, interactive choosers, hooks, environment variables, pipe-pane, wait-for synchronization, and more. See [tmux_args_reference.md](tmux_args_reference.md) for the full list.
+A: 90+ tmux-compatible commands, covering session management, window and pane control, copy mode, popups and menus, interactive choosers, hooks, environment variables, pipe-pane, wait-for synchronization, and more. Rather than trusting a number in a doc, run `psmux list-commands`, which prints exactly what your build accepts. See [tmux_args_reference.md](tmux_args_reference.md) for per-command flags.
+
+**Q: psmux is misbehaving. Where are the logs?**
+A: Under `%USERPROFILE%\.psmux\`. Three files are written without you doing anything: `server-startup.log` (why a server failed to start, including the real Windows error and the path it tried to spawn), `config-warnings.log` (config lines that were silently ignored), and `crash.log` (a panic plus backtrace). Eleven more detailed loggers can be switched on one environment variable at a time, for example `$env:PSMUX_INPUT_DEBUG = "1"`. See [diagnostics.md](diagnostics.md) for the full list and for what to attach to a bug report.
 
 ---
 

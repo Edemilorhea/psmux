@@ -16,7 +16,10 @@ fn resolve_switch_target(
             } else if all_sessions.contains(&target) {
                 Some(target.to_string())
             } else {
-                all_sessions.iter().find(|s| s.starts_with(target)).map(|s| s.to_string())
+                all_sessions
+                    .iter()
+                    .find(|s| s.starts_with(target))
+                    .map(|s| s.to_string())
             }
         }
         'n' => {
@@ -35,11 +38,9 @@ fn resolve_switch_target(
                 None => all_sessions.last().map(|s| s.to_string()),
             }
         }
-        'l' => {
-            last_session
-                .map(|s| s.to_string())
-                .filter(|s| !s.is_empty() && s != current && all_sessions.iter().any(|a| a == s))
-        }
+        'l' => last_session
+            .map(|s| s.to_string())
+            .filter(|s| !s.is_empty() && s != current && all_sessions.iter().any(|a| a == s)),
         _ => None,
     }
 }
@@ -111,14 +112,20 @@ fn switch_client_last_session() {
 fn switch_client_last_session_same_as_current() {
     let sessions = vec!["alpha", "beta", "gamma"];
     let result = resolve_switch_target('l', "", "alpha", &sessions, Some("alpha"));
-    assert_eq!(result, None, "should return None when last session equals current");
+    assert_eq!(
+        result, None,
+        "should return None when last session equals current"
+    );
 }
 
 #[test]
 fn switch_client_last_session_not_found() {
     let sessions = vec!["alpha", "beta", "gamma"];
     let result = resolve_switch_target('l', "", "alpha", &sessions, Some("deleted"));
-    assert_eq!(result, None, "should return None when last session no longer exists");
+    assert_eq!(
+        result, None,
+        "should return None when last session no longer exists"
+    );
 }
 
 #[test]
@@ -132,7 +139,11 @@ fn switch_client_last_session_empty() {
 fn switch_client_next_single_session() {
     let sessions = vec!["only"];
     let result = resolve_switch_target('n', "", "only", &sessions, None);
-    assert_eq!(result, Some("only".to_string()), "wraps to same when single session");
+    assert_eq!(
+        result,
+        Some("only".to_string()),
+        "wraps to same when single session"
+    );
 }
 
 #[test]
@@ -209,7 +220,9 @@ fn session_name_from_target_plain() {
 /// Simulate the routing decision from main.rs:
 /// returns true if PSMUX_TARGET_SESSION should be set from the -t argument.
 fn should_set_target_session(args: &[&str], has_explicit_session: bool) -> bool {
-    let is_switch_client = args.iter().any(|a| *a == "switch-client" || *a == "switchc");
+    let is_switch_client = args
+        .iter()
+        .any(|a| *a == "switch-client" || *a == "switchc");
     has_explicit_session && !is_switch_client
 }
 
@@ -218,7 +231,7 @@ fn should_set_target_session(args: &[&str], has_explicit_session: bool) -> bool 
 #[test]
 fn pr214_switch_client_t_does_not_set_target_session() {
     let args = vec!["psmux", "switch-client", "-t", "beta"];
-    let result = should_set_target_session(&args, /*has_explicit_session=*/true);
+    let result = should_set_target_session(&args, /*has_explicit_session=*/ true);
     assert!(
         !result,
         "switch-client -t should NOT set PSMUX_TARGET_SESSION (would route to wrong server)"
@@ -230,18 +243,23 @@ fn pr214_switch_client_t_does_not_set_target_session() {
 fn pr214_switchc_alias_does_not_set_target_session() {
     let args = vec!["psmux", "switchc", "-t", "beta"];
     let result = should_set_target_session(&args, true);
-    assert!(
-        !result,
-        "switchc -t should NOT set PSMUX_TARGET_SESSION"
-    );
+    assert!(!result, "switchc -t should NOT set PSMUX_TARGET_SESSION");
 }
 
 /// Other commands WITH -t MUST still set PSMUX_TARGET_SESSION (routing).
 /// This ensures the guard is narrowly scoped to switch-client only.
 #[test]
 fn pr214_other_commands_still_set_target_session() {
-    for cmd in &["select-window", "selectw", "send-keys", "display-message",
-                 "capture-pane", "kill-pane", "split-window", "new-window"] {
+    for cmd in &[
+        "select-window",
+        "selectw",
+        "send-keys",
+        "display-message",
+        "capture-pane",
+        "kill-pane",
+        "split-window",
+        "new-window",
+    ] {
         let args = vec!["psmux", cmd, "-t", "beta"];
         let result = should_set_target_session(&args, true);
         assert!(
@@ -272,7 +290,10 @@ fn pr214_no_explicit_session_never_sets_target() {
 fn pr214_switch_client_n_no_explicit_session() {
     let args = vec!["psmux", "switch-client", "-n"];
     let result = should_set_target_session(&args, false);
-    assert!(!result, "switch-client -n has no explicit session, should not set target");
+    assert!(
+        !result,
+        "switch-client -n has no explicit session, should not set target"
+    );
 }
 
 /// switch-client -p (previous): same — TMUX env var resolves source session.

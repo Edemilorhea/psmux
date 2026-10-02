@@ -194,6 +194,22 @@ function Test-PrefixArms($name, $proc, $spec) {
 # ==========================================================================
 Write-Host "`n[Part A] Console records for Ctrl+Space, per terminal host" -ForegroundColor Yellow
 
+# sendhw drives the real hardware input queue, so it only works when the target
+# window can be brought to the foreground. It already reports that itself: it
+# prints NO_FOCUS and exits 3 when SetForegroundWindow loses. Every call site
+# used to pipe that to Out-Null, throwing away the one signal that separates
+# "this desktop refused focus" from "psmux is broken", so an unattended or
+# locked session reported product failures for keystrokes that were never
+# delivered. Capture it instead and let callers skip.
+function Invoke-SendHw {
+    param([string[]]$SendArgs)
+    $out = (& $sendhwExe @SendArgs 2>&1 | Out-String)
+    return [pscustomobject]@{
+        Focused = -not ($out -match "NO_FOCUS")
+        Output  = $out.Trim()
+    }
+}
+
 function Get-KeyRecords($launch, $mode, $keys, $tag) {
     $log = "$tmp\rec_$tag.log"
     Remove-Item $log -Force -EA SilentlyContinue
@@ -201,7 +217,7 @@ function Get-KeyRecords($launch, $mode, $keys, $tag) {
     if (-not $p) { return $null }
     Start-Sleep -Seconds 3
     $sendArgs = @("pid:$($p.Id)", "sleep:900") + $keys
-    & $sendhwExe @sendArgs | Out-Null
+    $script:LastSendFocused = (Invoke-SendHw -SendArgs $sendArgs).Focused
     Start-Sleep -Seconds 12
     try { Stop-Process -Id $p.Id -Force -EA SilentlyContinue } catch {}
     if (Test-Path $log) { return (Get-Content $log) }
@@ -222,8 +238,25 @@ $conRecs = Get-KeyRecords $launchConhost "rec" @("C-Space") "conhost"
 if ($conRecs) {
     $spaceRec = $conRecs | Where-Object { $_ -match "vk=0x20" -and $_ -match "down=1" } | Select-Object -First 1
     Write-Info "conhost   Ctrl+Space -> $spaceRec"
-    if ($spaceRec -match "ctrl=0x8") {
+    # Separate "conhost answered wrongly" from "the keys never arrived".
+    #
+    # This probe is the one place that cannot use WriteConsoleInput: it exists to
+    # measure what CONHOST makes of a real HARDWARE key, so it must use SendInput,
+    # and SendInput goes to the FOREGROUND window. sendhw calls
+    # SetForegroundWindow up to 20 times, but on a busy desktop, over RDP, or on a
+    # locked session, focus can simply be refused and not one keystroke lands.
+    #
+    # An empty record set means exactly that: no key was seen at all, which says
+    # nothing about conhost's Ctrl reporting. Reporting it as a failure blamed
+    # psmux for the desktop refusing focus. A record that IS present but lacks the
+    # Ctrl flag is still a genuine finding and still fails.
+    $anyKeyRec = $conRecs | Where-Object { $_ -match "vk=0x" } | Select-Object -First 1
+    if (-not $anyKeyRec) {
+        Write-Skip "conhost probe captured no keystrokes at all (SendInput needs foreground focus; none was granted)"
+    } elseif ($spaceRec -match "ctrl=0x8") {
         Write-Pass "conhost reports Ctrl+Space WITH the Ctrl flag (ctrl=0x8)"
+    } elseif (-not $spaceRec) {
+        Write-Skip "conhost probe saw keys but no Ctrl+Space record (keystroke lost before conhost)"
     } else {
         Write-Fail "conhost did not report a Ctrl flag: $spaceRec"
     }
@@ -235,7 +268,17 @@ if ($alacritty) {
         $downs = @($alacRecs | Where-Object { $_ -match "down=1" -and $_ -match "vk=0x20" })
         Write-Info "alacritty Ctrl+Space -> $($downs[0])"
         Write-Info "alacritty plain Space -> $($downs[1])"
-        if ($downs.Count -ge 1 -and $downs[0] -match "ctrl=0x0\b") {
+        # Same discrimination the conhost arm above already makes: no key record
+        # at all means nothing was delivered, which says nothing about what
+        # Alacritty reports for Ctrl.
+        $anyAlacRec = $alacRecs | Where-Object { $_ -match "vk=0x" } | Select-Object -First 1
+        if (-not $anyAlacRec) {
+            if (-not $script:LastSendFocused) {
+                Write-Skip "Alacritty probe: focus was refused, no keystroke was delivered (SendInput needs the foreground)"
+            } else {
+                Write-Skip "Alacritty probe captured no keystrokes at all"
+            }
+        } elseif ($downs.Count -ge 1 -and $downs[0] -match "ctrl=0x0\b") {
             Write-Pass "CONFIRMED upstream Alacritty defect: Ctrl+Space arrives with NO Ctrl flag"
         } else {
             Write-Fail "expected Alacritty to drop the Ctrl flag, got: $($downs[0])"
@@ -264,19 +307,29 @@ if ($alacritty) {
     Remove-Item $log -Force -EA SilentlyContinue
     $p = Start-Process -FilePath $alacritty -ArgumentList @("--config-file",$nulConf,"-e",$keydumpExe,"rec","14",$log) -PassThru
     Start-Sleep -Seconds 3
-    & $sendhwExe "pid:$($p.Id)" "sleep:900" "C-Space" | Out-Null
+    $sent = Invoke-SendHw -SendArgs @("pid:$($p.Id)", "sleep:900", "C-Space")
     Start-Sleep -Seconds 12
     try { Stop-Process -Id $p.Id -Force -EA SilentlyContinue } catch {}
 
     if (Test-Path $log) {
         $recs = Get-Content $log
         $nulRec = $recs | Where-Object { $_ -match "down=1" -and $_ -match "vk=0x32" } | Select-Object -First 1
+        $anyRec = $recs | Where-Object { $_ -match "vk=0x" } | Select-Object -First 1
         if ($nulRec) {
             Write-Info "alacritty + NUL workaround -> $nulRec"
             if ($nulRec -match "uchar=0x0000") {
                 Write-Pass "the NUL DOES reach the console, as VK_2 with UnicodeChar 0 (ConPTY's Ctrl+@ encoding)"
             } else {
                 Write-Fail "unexpected UnicodeChar in NUL record: $nulRec"
+            }
+        } elseif (-not $anyRec) {
+            # The probe ran (READY/DONE markers) but saw no key whatsoever, so
+            # the keystroke never left the input queue. Blaming the NUL
+            # workaround for that is blaming psmux for a refused foreground.
+            if (-not $sent.Focused) {
+                Write-Skip "NUL workaround probe: focus was refused, no keystroke was delivered"
+            } else {
+                Write-Skip "NUL workaround probe captured no keystrokes at all; records were: $($recs -join ' | ')"
             }
         } else {
             Write-Fail "NUL workaround produced no VK_2 record; records were: $($recs -join ' | ')"
@@ -425,12 +478,17 @@ if ($alacritty) {
     } else {
         $before = Wins $S
         # Real Ctrl+Space, then real 'c', straight from the hardware input queue.
-        & $sendhwExe "pid:$($ap.Id)" "sleep:1200" "C-Space" "sleep:600" "c" | Out-Null
+        $sentE = Invoke-SendHw -SendArgs @("pid:$($ap.Id)", "sleep:1200", "C-Space", "sleep:600", "c")
         Start-Sleep -Seconds 4
         $after = Wins $S
         Write-Info "windows in Alacritty session: $before -> $after"
         if ($after -gt $before) {
             Write-Pass "REAL Ctrl+Space in REAL Alacritty opened a window: the prefix works end to end"
+        } elseif (-not $sentE.Focused) {
+            # Nothing was typed, so nothing can be concluded about the prefix.
+            # Part C already proved the NUL fold itself over WriteConsoleInput,
+            # which needs no foreground.
+            Write-Skip "Alacritty end to end: focus was refused, no keystroke was delivered"
         } else {
             Write-Fail "Ctrl+Space in Alacritty did not trigger the prefix (windows $before -> $after)"
         }

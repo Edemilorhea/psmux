@@ -99,6 +99,18 @@ impl MasterPty for ProxyMasterPty {
             .map(|s| -> Box<dyn Write + Send> { Box::new(s) })
             .ok_or_else(|| anyhow::anyhow!("writer already taken"))
     }
+
+    // The proxied PTY lives in another process; there is no local fd or
+    // termios to expose. `pid_t` is `i32` on every unix target, so the
+    // plain alias is written out to avoid a `libc` dependency here.
+    #[cfg(unix)]
+    fn process_group_leader(&self) -> Option<i32> { None }
+
+    #[cfg(unix)]
+    fn as_raw_fd(&self) -> Option<std::os::unix::io::RawFd> { None }
+
+    #[cfg(unix)]
+    fn tty_name(&self) -> Option<std::path::PathBuf> { None }
 }
 
 // ── ProxyChild ──────────────────────────────────────────────────────────
@@ -250,7 +262,7 @@ pub fn create_proxy_pane(
     let epoch = Instant::now() - Duration::from_secs(2);
     Ok(crate::types::Pane {
         master: Box::new(proxy_master),
-        writer: Box::new(writer),
+        writer: crate::pane::spawn_pane_write_queue(Box::new(writer)),
         child: Box::new(proxy_child),
         term,
         last_rows: rows,
@@ -267,20 +279,25 @@ pub fn create_proxy_pane(
         last_special_key: None,
         vt_bridge_cache: None,
         vti_mode_cache: None,
-        mouse_input_cache: None,
-        scroll_fg_cache: None,
+        mouse_input_cache: None, win32_input_latched: false,
+        scroll_fg_cache: None, mouse_proto_owner: None, wheel_auth: None,
         cursor_shape: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         bell_pending: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         // CPR responses written via this field are TCP-forwarded to the source
         // ConPTY via the ProxyMasterPty writer.
         cpr_pending: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         color_query_pending: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-        copy_state: None,
+        copy_state: None, live_term: None,
         pane_style: None,
+        pane_options: Default::default(),
         squelch_until: None,
         output_ring: Arc::new(Mutex::new(std::collections::VecDeque::new())),
         // Proxy panes mirror a remote pane's ConPTY; respawning a local shell
         // here would be wrong, so they are never auto-healed.
         spawned_at: None,
+        // The command lives on the owning server's pane; a proxy reports no
+        // `#{pane_start_command}` of its own (#580).
+        start_command: String::new(),
+        cwd_hint: None,
     })
 }
